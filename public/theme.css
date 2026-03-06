@@ -1,0 +1,32 @@
+@import url("https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&family=Space+Grotesk:wght@500;700&family=IBM+Plex+Mono:wght@400;500&display=swap");
+
+:root {
+  --pf-font-display: "Space Grotesk", "Outfit", sans-serif;
+  --pf-font-body: "Outfit", "Segoe UI", sans-serif;
+  --pf-font-mono: "IBM Plex Mono", monospace;
+
+  --pf-bg-0: #040a14;
+  --pf-bg-1: #081221;
+  --pf-bg-2: #0c1a2b;
+  --pf-bg-3: #11243a;
+
+  --pf-surface: rgba(10, 23, 40, 0.72);
+  --pf-surface-strong: rgba(9, 19, 34, 0.9);
+  --pf-surface-soft: rgba(18, 34, 55, 0.78);
+
+  --pf-text: #e9f8ff;
+  --pf-text-muted: #9ab8c7;
+
+  --pf-primary: #61d7ef;
+  --pf-primary-2: #4fc2dd;
+  --pf-accent: #8af3ff;
+  --pf-warning: #f7b955;
+  --pf-good: #22c98a;
+  --pf-bad: #f46f7f;
+
+  --pf-border: rgba(132, 198, 220, 0.28);
+  --pf-border-strong: rgba(132, 198, 220, 0.45);
+
+  --pf-shadow-soft: 0 12px 30px rgba(5, 10, 18, 0.45);
+  --pf-glow: 0 0 0 1px rgba(97, 215, 239, 0.25), 0 12px 36px rgba(97, 215, 239, 0.12);
+}

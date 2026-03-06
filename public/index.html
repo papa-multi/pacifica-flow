@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PacificaFlow Dashboard</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="topbar-inner">
+        <div class="brand-wrap">
+          <div class="brand">
+            <img src="/assets/logo.svg" alt="PacificaFlow logo" />
+            <div>
+              <div class="brand-title">PacificaFlow</div>
+              <div class="brand-sub">Exchange Analytics Suite</div>
+            </div>
+          </div>
+
+          <nav class="nav-tabs">
+            <button class="tab-btn active" data-view="exchange">Exchange Overview</button>
+            <button class="tab-btn" data-view="wallets">Wallet Explorer</button>
+            <a class="tab-link" href="/live-trade/">Live Trades</a>
+          </nav>
+        </div>
+
+        <div class="header-actions">
+          <input id="account-input" placeholder="Optional tracked wallet/account" />
+          <button id="apply-account-btn" class="btn-primary">Track (Optional)</button>
+          <button id="refresh-all-btn" class="btn-ghost">Refresh</button>
+        </div>
+      </div>
+
+      <div class="status-row">
+        <span class="status-pill" id="status-sync">Sync: -</span>
+        <span class="status-pill" id="status-live">WS: -</span>
+        <span class="status-pill" id="status-wallet">Wallet: -</span>
+        <span class="status-pill" id="status-progress">Progress: -</span>
+        <span class="status-pill" id="status-updated">Updated: -</span>
+      </div>
+    </header>
+
+    <main class="shell">
+      <section id="exchange-view" class="view active">
+        <section class="panel controls-panel">
+          <div class="timeframe-group" id="timeframe-group">
+            <button class="chip-btn active" data-timeframe="all">All</button>
+            <button class="chip-btn" data-timeframe="24h">24h</button>
+            <button class="chip-btn" data-timeframe="30d">30d</button>
+          </div>
+          <div class="live-indicator">
+            <span class="live-dot"></span>
+            <span id="exchange-live-label">LIVE</span>
+          </div>
+        </section>
+
+        <section class="kpi-grid" id="exchange-kpis"></section>
+
+        <section class="panel">
+          <div class="panel-header">
+            <h2>VOLUME RANK</h2>
+            <span class="live-badge">LIVE</span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Rank</th>
+                  <th>Symbol</th>
+                  <th>Market</th>
+                  <th>Volume</th>
+                </tr>
+              </thead>
+              <tbody id="volume-rank-body"></tbody>
+            </table>
+          </div>
+        </section>
+      </section>
+
+      <section id="wallets-view" class="view">
+        <section class="panel controls-panel wallet-controls">
+          <input id="wallet-search" placeholder="Search wallet" />
+          <select id="wallet-page-size">
+            <option value="20">20 / page</option>
+            <option value="50">50 / page</option>
+            <option value="100">100 / page</option>
+          </select>
+          <button id="wallet-refresh-btn" class="btn-ghost">Refresh</button>
+          <button id="wallet-reindex-btn" class="btn-danger">Reindex From Zero</button>
+        </section>
+
+        <section class="panel">
+          <div class="panel-header">
+            <h2>INDEXING PROGRESS</h2>
+            <span id="indexer-backlog-label" class="muted-pill">Backlog: -</span>
+          </div>
+          <div class="kpi-grid progress-kpi-grid" id="indexer-progress-kpis"></div>
+          <div class="progress-wrap">
+            <div class="progress-bar">
+              <div id="indexer-progress-bar" class="progress-fill"></div>
+            </div>
+            <div id="indexer-progress-meta" class="progress-meta">-</div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-header">
+            <h2>WALLET EXPLORER</h2>
+            <span id="wallet-total-label" class="muted-pill">0 wallets</span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>Wallet</th>
+                  <th>Trades</th>
+                  <th>Volume</th>
+                  <th>Total Wins</th>
+                  <th>Total Losses</th>
+                  <th>PnL</th>
+                  <th>Win Rate</th>
+                  <th>First Trade</th>
+                  <th>Last Trade</th>
+                  <th>Stage</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody id="wallet-table-body"></tbody>
+            </table>
+          </div>
+          <div class="pagination-row">
+            <button id="wallet-prev-btn" class="btn-ghost">Prev</button>
+            <span id="wallet-page-label">Page 1 / 1</span>
+            <button id="wallet-next-btn" class="btn-ghost">Next</button>
+          </div>
+        </section>
+
+        <section class="panel" id="wallet-profile-panel">
+          <div class="panel-header">
+            <h2>WALLET PROFILE</h2>
+            <span id="wallet-profile-id" class="muted-pill">Select a wallet</span>
+          </div>
+          <div class="profile-kpis" id="wallet-profile-kpis"></div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Symbol</th>
+                  <th>Volume</th>
+                </tr>
+              </thead>
+              <tbody id="wallet-profile-symbols"></tbody>
+            </table>
+          </div>
+        </section>
+      </section>
+    </main>
+
+    <script src="/app.js"></script>
+  </body>
+</html>

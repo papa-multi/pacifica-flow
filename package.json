@@ -1,0 +1,40 @@
+{
+  "name": "pacifica-flow",
+  "version": "0.1.0",
+  "description": "PacificaFlow: Pacifica-native analytics + self-serve marketplace scaffold",
+  "main": "server.js",
+  "scripts": {
+    "start": "PACIFICA_SERVICE=all node server.js",
+    "start:all": "PACIFICA_SERVICE=all PORT=3200 node server.js",
+    "start:api": "PACIFICA_SERVICE=api PORT=3201 node server.js",
+    "start:ui": "PACIFICA_SERVICE=ui PORT=3200 node server.js",
+    "start:live": "PACIFICA_SERVICE=live PORT=3202 node server.js",
+    "worker:wallet-indexer": "PACIFICA_SERVICE=api PACIFICA_WS_ENABLED=false PACIFICA_SNAPSHOT_ENABLED=false PACIFICA_GLOBAL_KPI_ENABLED=false PACIFICA_INDEXER_ENABLED=true PACIFICA_INDEXER_RUNNER_ENABLED=true PACIFICA_ONCHAIN_ENABLED=false PACIFICA_ONCHAIN_RUNNER_ENABLED=false PACIFICA_INDEXER_DISCOVERY_ONLY=false node server.js",
+    "worker:onchain-discovery": "PACIFICA_SERVICE=api PACIFICA_WS_ENABLED=false PACIFICA_SNAPSHOT_ENABLED=false PACIFICA_GLOBAL_KPI_ENABLED=false PACIFICA_INDEXER_ENABLED=false PACIFICA_INDEXER_RUNNER_ENABLED=false PACIFICA_ONCHAIN_ENABLED=true PACIFICA_ONCHAIN_RUNNER_ENABLED=true node server.js",
+    "worker:global-kpi": "PACIFICA_SERVICE=api PACIFICA_WS_ENABLED=false PACIFICA_SNAPSHOT_ENABLED=false PACIFICA_GLOBAL_KPI_ENABLED=true PACIFICA_INDEXER_ENABLED=false PACIFICA_INDEXER_RUNNER_ENABLED=false PACIFICA_ONCHAIN_ENABLED=false PACIFICA_ONCHAIN_RUNNER_ENABLED=false node server.js",
+    "service:ui-api": "PACIFICA_SERVICE=all PACIFICA_INDEXER_ENABLED=true PACIFICA_INDEXER_RUNNER_ENABLED=false PACIFICA_ONCHAIN_ENABLED=false PACIFICA_ONCHAIN_RUNNER_ENABLED=false PACIFICA_SNAPSHOT_ENABLED=false PACIFICA_GLOBAL_KPI_ENABLED=false node server.js",
+    "systemd:install": "bash ./scripts/systemd/install.sh",
+    "systemd:install:now": "bash ./scripts/systemd/install.sh --now",
+    "systemd:status": "bash ./scripts/systemd/status.sh",
+    "systemd:uninstall": "bash ./scripts/systemd/uninstall.sh",
+    "start:onchain-lite": "PORT=3400 PACIFICA_SERVICE=api PACIFICA_WS_ENABLED=false SOLANA_RPC_RATE_LIMIT_CAPACITY=3 PACIFICA_ONCHAIN_SIGNATURE_PAGE_LIMIT=20 PACIFICA_ONCHAIN_TX_CONCURRENCY=1 PACIFICA_ONCHAIN_MAX_TX_PER_CYCLE=12 node server.js",
+    "audit:deposits": "node scripts/audit_deposit_wallets.js",
+    "enrich:deposit-evidence": "node scripts/enrich_deposit_evidence.js",
+    "test:proxies": "node scripts/test_pacifica_proxies.js"
+  },
+  "keywords": [
+    "pacifica",
+    "trading",
+    "marketplace",
+    "nft",
+    "dashboard"
+  ],
+  "author": "",
+  "license": "ISC",
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

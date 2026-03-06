@@ -1,0 +1,9 @@
+# One wallet address per line.
+# This is a discovery seed list for the exchange wallet indexer.
+#
+# For full-network indexing, point PACIFICA_WALLET_SOURCE_URL to a service
+# that returns all Pacifica wallet addresses (JSON array or {"wallets": [...]})
+# and keep this file for fallback seeds.
+#
+# Example:
+# BrZp5bidJ3WUvceSq7X78bhjTfZXeezzGvGEV4hAYKTa

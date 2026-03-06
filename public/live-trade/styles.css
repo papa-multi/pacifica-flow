@@ -1,0 +1,39 @@
+.live-kpis {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.active-link {
+  color: #05111c;
+  background: linear-gradient(120deg, rgba(79, 194, 221, 0.95), rgba(97, 215, 239, 0.95));
+  border-color: rgba(138, 243, 255, 0.7);
+  font-weight: 700;
+}
+
+.live-section {
+  display: none;
+}
+
+.live-section.active {
+  display: block;
+}
+
+#live-search {
+  min-width: 260px;
+}
+
+@media (max-width: 1200px) {
+  .live-kpis {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 820px) {
+  .live-kpis {
+    grid-template-columns: 1fr;
+  }
+
+  #live-search {
+    min-width: 0;
+  }
+}
+

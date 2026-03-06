@@ -1,0 +1,25 @@
+[Unit]
+Description=PacificaFlow UI/API Service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/pacifica-flow
+EnvironmentFile=/root/pacifica-flow/config/runtime.env
+Environment=PORT=3200
+Environment=PACIFICA_SERVICE=all
+Environment=PACIFICA_INDEXER_ENABLED=true
+Environment=PACIFICA_INDEXER_RUNNER_ENABLED=false
+Environment=PACIFICA_ONCHAIN_ENABLED=false
+Environment=PACIFICA_ONCHAIN_RUNNER_ENABLED=false
+Environment=PACIFICA_SNAPSHOT_ENABLED=false
+Environment=PACIFICA_GLOBAL_KPI_ENABLED=false
+ExecStart=/usr/bin/env PORT=3200 /usr/bin/npm run service:ui-api
+Restart=always
+RestartSec=3
+TimeoutStopSec=30
+
+[Install]
+WantedBy=pacifica-flow.target

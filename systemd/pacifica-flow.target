@@ -1,0 +1,10 @@
+[Unit]
+Description=PacificaFlow Full Worker Stack
+Wants=pacifica-wallet-indexer.service
+Wants=pacifica-onchain-discovery.service
+Wants=pacifica-global-kpi.service
+Wants=pacifica-ui-api.service
+After=network-online.target
+
+[Install]
+WantedBy=multi-user.target

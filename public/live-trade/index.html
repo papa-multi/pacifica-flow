@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PacificaFlow Live Trade</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="/live-trade/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="topbar-inner">
+        <div class="brand-wrap">
+          <div class="brand">
+            <img src="/assets/logo.svg" alt="PacificaFlow logo" />
+            <div>
+              <div class="brand-title">PacificaFlow</div>
+              <div class="brand-sub">Live Trade Monitor</div>
+            </div>
+          </div>
+          <nav class="nav-tabs">
+            <a class="tab-link" href="/">Exchange Overview</a>
+            <a class="tab-link active-link" href="/live-trade/">Live Trades</a>
+          </nav>
+        </div>
+        <div class="header-actions">
+          <input id="live-search" placeholder="Search symbol/wallet" />
+          <button id="live-refresh-btn" class="btn-primary">Refresh</button>
+        </div>
+      </div>
+      <div class="status-row">
+        <span class="status-pill" id="live-ws">WS: -</span>
+        <span class="status-pill" id="live-sync">Sync: -</span>
+        <span class="status-pill" id="live-updated">Updated: -</span>
+      </div>
+    </header>
+
+    <main class="shell">
+      <section class="kpi-grid live-kpis" id="live-kpis"></section>
+
+      <section class="panel controls-panel">
+        <div class="timeframe-group" id="live-tabs">
+          <button class="chip-btn active" data-tab="public">Market Trades</button>
+          <button class="chip-btn" data-tab="account">Account Trades</button>
+          <button class="chip-btn" data-tab="positions">Open Positions</button>
+          <button class="chip-btn" data-tab="wallets">Wallet Performance</button>
+        </div>
+      </section>
+
+      <section class="panel live-section active" id="tab-public">
+        <div class="panel-header">
+          <h2>Market Trades (Live)</h2>
+          <span class="muted-pill" id="public-count">0 rows</span>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Time</th>
+                <th>Symbol</th>
+                <th>Side</th>
+                <th>Price</th>
+                <th>Amount</th>
+                <th>Cause</th>
+                <th>LI</th>
+              </tr>
+            </thead>
+            <tbody id="public-trades-body"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel live-section" id="tab-account">
+        <div class="panel-header">
+          <h2>Tracked Account Trades</h2>
+          <span class="muted-pill" id="account-count">0 rows</span>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Time</th>
+                <th>Symbol</th>
+                <th>Side</th>
+                <th>Price</th>
+                <th>Amount</th>
+                <th>PnL</th>
+                <th>Fee</th>
+                <th>LI</th>
+              </tr>
+            </thead>
+            <tbody id="account-trades-body"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel live-section" id="tab-positions">
+        <div class="panel-header">
+          <h2>Open Positions</h2>
+          <span class="muted-pill" id="positions-count">0 rows</span>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Symbol</th>
+                <th>Side</th>
+                <th>Amount</th>
+                <th>Entry</th>
+                <th>Mark</th>
+                <th>Notional</th>
+                <th>uPnL</th>
+                <th>Risk</th>
+              </tr>
+            </thead>
+            <tbody id="positions-body"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel live-section" id="tab-wallets">
+        <div class="panel-header">
+          <h2>Wallet Performance (Indexed)</h2>
+          <span class="muted-pill" id="wallets-count">0 rows</span>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Wallet</th>
+                <th>Trades</th>
+                <th>Volume</th>
+                <th>PnL</th>
+                <th>Win Rate</th>
+                <th>First Trade</th>
+                <th>Last Trade</th>
+              </tr>
+            </thead>
+            <tbody id="wallets-body"></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+
+    <script src="/live-trade/app.js"></script>
+  </body>
+</html>
+

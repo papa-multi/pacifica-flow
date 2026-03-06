@@ -1,0 +1,27 @@
+[Unit]
+Description=PacificaFlow Wallet Indexer Worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/pacifica-flow
+EnvironmentFile=/root/pacifica-flow/config/runtime.env
+Environment=PORT=3201
+Environment=PACIFICA_SERVICE=api
+Environment=PACIFICA_WS_ENABLED=false
+Environment=PACIFICA_SNAPSHOT_ENABLED=false
+Environment=PACIFICA_GLOBAL_KPI_ENABLED=false
+Environment=PACIFICA_INDEXER_ENABLED=true
+Environment=PACIFICA_INDEXER_RUNNER_ENABLED=true
+Environment=PACIFICA_ONCHAIN_ENABLED=false
+Environment=PACIFICA_ONCHAIN_RUNNER_ENABLED=false
+Environment=PACIFICA_INDEXER_DISCOVERY_ONLY=false
+ExecStart=/usr/bin/env PORT=3201 /usr/bin/npm run worker:wallet-indexer
+Restart=always
+RestartSec=3
+TimeoutStopSec=30
+
+[Install]
+WantedBy=pacifica-flow.target
