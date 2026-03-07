@@ -2,6 +2,8 @@ const state = {
   view: "exchange",
   timeframe: "all",
   exchange: null,
+  volumeRankPage: 1,
+  volumeRankPageSize: 10,
   wallets: null,
   walletProfile: null,
   walletSearch: "",
@@ -204,6 +206,9 @@ function renderExchange() {
   if (source.defillamaSource) {
     volumeMetaParts.push(`src ${source.defillamaSource}`);
   }
+  if (Number.isFinite(Number(source.defillamaDailyVolumeFromPrices24h))) {
+    volumeMetaParts.push(`24h ref $${fmtCompact(Number(source.defillamaDailyVolumeFromPrices24h))}`);
+  }
   const backfill = source.defillamaBackfillProgress || {};
   const backfillStart = backfill.start_date || source.defillamaTrackingStartDate || null;
   const backfillCurrent =
@@ -264,6 +269,19 @@ function renderExchange() {
   } else if (indexedWallets > 0) {
     feeMetaParts.push(`indexed ${fmt(indexedWallets, 0)} wallets`);
   }
+  if (Number.isFinite(Number(kpis.totalTradingFeesUsd))) {
+    feeMetaParts.push(`trading $${fmtCompact(Number(kpis.totalTradingFeesUsd))}`);
+  }
+  if (Number.isFinite(Number(kpis.totalLiquidityPoolFeesUsd))) {
+    const lpValue = Number(kpis.totalLiquidityPoolFeesUsd);
+    if (lpValue > 0) {
+      feeMetaParts.push(`lp $${fmtCompact(lpValue)}`);
+    } else if (source.liquidityPoolFeesIncluded === false) {
+      feeMetaParts.push("lp unavailable");
+    }
+  } else if (source.liquidityPoolFeesIncluded === false) {
+    feeMetaParts.push("lp unavailable");
+  }
 
   const kpiRows = [
     { key: "Total Revenue", value: `$${fmtCompact(kpis.totalRevenueUsd)}` },
@@ -294,20 +312,42 @@ function renderExchange() {
       .join("");
   }
 
+  const volumeSpotValue = `$${fmtCompact(kpis.totalVolumeUsd)}`;
+  setText("volume-hero-value", volumeSpotValue);
+  setText(
+    "volume-hero-sub",
+    backfillCurrent
+      ? `Tracked through ${backfillCurrent} UTC`
+      : "Historical backfill in progress"
+  );
+
   const body = el("volume-rank-body");
+  const allRows = Array.isArray(payload.volumeRank) ? payload.volumeRank : [];
+  const totalRows = allRows.length;
+  const pageSize = Math.max(1, Number(state.volumeRankPageSize || 10));
+  const totalPages = Math.max(1, Math.ceil(totalRows / pageSize));
+  state.volumeRankPage = Math.max(1, Math.min(totalPages, Number(state.volumeRankPage || 1)));
+  const pageStart = (state.volumeRankPage - 1) * pageSize;
+  const pageRows = allRows.slice(pageStart, pageStart + pageSize);
+
   if (body) {
-    const rows = Array.isArray(payload.volumeRank) ? payload.volumeRank : [];
-    body.innerHTML = rows
+    body.innerHTML = pageRows
       .map(
         (row) => `<tr>
           <td><span class="rank-pill">#${row.rank}</span></td>
           <td><strong>${row.symbol}</strong></td>
-          <td>${row.market}</td>
           <td>$${fmtCompact(row.volume_24h_usd !== undefined ? row.volume_24h_usd : row.volumeUsd)}</td>
         </tr>`
       )
       .join("");
   }
+
+  setText("volume-total-label", `${fmt(totalRows, 0)} symbols`);
+  setText("volume-page-label", `Page ${state.volumeRankPage} / ${totalPages}`);
+  const volumePrev = el("volume-prev-btn");
+  const volumeNext = el("volume-next-btn");
+  if (volumePrev) volumePrev.disabled = state.volumeRankPage <= 1;
+  if (volumeNext) volumeNext.disabled = state.volumeRankPage >= totalPages;
 }
 
 function renderWallets() {
@@ -466,6 +506,7 @@ function bindEvents() {
   document.querySelectorAll(".chip-btn").forEach((btn) => {
     btn.addEventListener("click", async () => {
       state.timeframe = btn.dataset.timeframe || "all";
+      state.volumeRankPage = 1;
       document.querySelectorAll(".chip-btn").forEach((b) => b.classList.remove("active"));
       btn.classList.add("active");
       state.walletPage = 1;
@@ -544,10 +585,70 @@ function bindEvents() {
     const wallet = btn.getAttribute("data-wallet");
     await inspectWallet(wallet);
   });
+
+  el("volume-prev-btn")?.addEventListener("click", () => {
+    state.volumeRankPage = Math.max(1, state.volumeRankPage - 1);
+    renderExchange();
+  });
+
+  el("volume-next-btn")?.addEventListener("click", () => {
+    const totalRows = Array.isArray(state.exchange?.volumeRank) ? state.exchange.volumeRank.length : 0;
+    const totalPages = Math.max(1, Math.ceil(totalRows / Math.max(1, state.volumeRankPageSize)));
+    state.volumeRankPage = Math.min(totalPages, state.volumeRankPage + 1);
+    renderExchange();
+  });
+}
+
+function initBackgroundMotion() {
+  if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  const root = document.documentElement;
+  let targetX = 0;
+  let targetY = 0;
+  let currentX = 0;
+  let currentY = 0;
+  let rafId = 0;
+
+  const tick = () => {
+    rafId = 0;
+    currentX += (targetX - currentX) * 0.08;
+    currentY += (targetY - currentY) * 0.08;
+    root.style.setProperty("--pf-mx", currentX.toFixed(4));
+    root.style.setProperty("--pf-my", currentY.toFixed(4));
+    if (Math.abs(targetX - currentX) > 0.0008 || Math.abs(targetY - currentY) > 0.0008) {
+      rafId = window.requestAnimationFrame(tick);
+    }
+  };
+
+  const schedule = () => {
+    if (!rafId) rafId = window.requestAnimationFrame(tick);
+  };
+
+  window.addEventListener(
+    "pointermove",
+    (event) => {
+      const w = window.innerWidth || 1;
+      const h = window.innerHeight || 1;
+      targetX = ((event.clientX / w) * 2 - 1) * 0.85;
+      targetY = ((event.clientY / h) * 2 - 1) * 0.85;
+      schedule();
+    },
+    { passive: true }
+  );
+
+  window.addEventListener(
+    "pointerleave",
+    () => {
+      targetX = 0;
+      targetY = 0;
+      schedule();
+    },
+    { passive: true }
+  );
 }
 
 async function init() {
   bindEvents();
+  initBackgroundMotion();
   await loadInitialWallet();
   await postJson("/api/indexer/discover", {}).catch(() => null);
   await refreshAll();

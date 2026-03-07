@@ -139,12 +139,24 @@ function emptyWalletHistory(wallet) {
   };
 }
 
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, Number(value)));
+}
+
 class ExchangeWalletIndexer {
   constructor(options = {}) {
     this.restClient = options.restClient;
+    const rawConfiguredClientEntries = Array.isArray(options.restClientEntries)
+      ? options.restClientEntries
+      : [];
     this.restClients = Array.isArray(options.restClients)
       ? options.restClients.filter((client) => client && typeof client.get === "function")
       : [];
+    if (!this.restClients.length && rawConfiguredClientEntries.length) {
+      this.restClients = rawConfiguredClientEntries
+        .map((entry) => (entry && entry.client ? entry.client : null))
+        .filter((client) => client && typeof client.get === "function");
+    }
     if (!this.restClients.length && this.restClient && typeof this.restClient.get === "function") {
       this.restClients = [this.restClient];
     }
@@ -152,6 +164,50 @@ class ExchangeWalletIndexer {
       throw new Error("ExchangeWalletIndexer requires at least one rest client.");
     }
     this.restClientIds = Array.isArray(options.restClientIds) ? options.restClientIds : [];
+    this.restClientEntries = [];
+    const configuredClientEntries = rawConfiguredClientEntries.length
+      ? rawConfiguredClientEntries
+          .filter((entry) => entry && entry.client && typeof entry.client.get === "function")
+          .map((entry, idx) => ({
+            id: String(entry.id || this.restClientIds[idx] || `client_${idx + 1}`),
+            client: entry.client,
+            proxyUrl: entry.proxyUrl || null,
+          }))
+      : [];
+    if (configuredClientEntries.length) {
+      this.restClientEntries = configuredClientEntries;
+    } else {
+      this.restClientEntries = this.restClients.map((client, idx) => ({
+        id: String(this.restClientIds[idx] || `client_${idx + 1}`),
+        client,
+        proxyUrl: null,
+      }));
+    }
+    this.restClients = this.restClientEntries.map((entry) => entry.client);
+    this.restClientIds = this.restClientEntries.map((entry) => entry.id);
+    this.clientPoolState = this.restClientEntries.map((entry) => ({
+      id: entry.id,
+      client: entry.client,
+      proxyUrl: entry.proxyUrl || null,
+      inFlight: 0,
+      requests: 0,
+      successes: 0,
+      failures: 0,
+      failures429: 0,
+      failures500: 0,
+      timeoutFailures: 0,
+      networkFailures: 0,
+      consecutiveFailures: 0,
+      consecutive429: 0,
+      cooldownUntil: 0,
+      lastUsedAt: 0,
+      lastErrorReason: null,
+      lastErrorAt: 0,
+      latencyMsAvg: 0,
+      latencySampleCount: 0,
+      weight: 1,
+    }));
+    this.clientPoolById = new Map(this.clientPoolState.map((entry) => [entry.id, entry]));
     this.walletStore = options.walletStore;
     this.walletSource = options.walletSource || null;
     this.onchainDiscovery = options.onchainDiscovery || null;
@@ -236,6 +292,34 @@ class ExchangeWalletIndexer {
       5000,
       Number(options.scanRampStepMs || 60000)
     );
+    this.client429CooldownBaseMs = Math.max(
+      1000,
+      Number(options.client429CooldownBaseMs || 2000)
+    );
+    this.client429CooldownMaxMs = Math.max(
+      this.client429CooldownBaseMs,
+      Number(options.client429CooldownMaxMs || 120000)
+    );
+    this.clientServerErrorCooldownBaseMs = Math.max(
+      250,
+      Number(options.clientServerErrorCooldownBaseMs || 1000)
+    );
+    this.clientServerErrorCooldownMaxMs = Math.max(
+      this.clientServerErrorCooldownBaseMs,
+      Number(options.clientServerErrorCooldownMaxMs || 30000)
+    );
+    this.clientTimeoutCooldownBaseMs = Math.max(
+      250,
+      Number(options.clientTimeoutCooldownBaseMs || 1500)
+    );
+    this.clientTimeoutCooldownMaxMs = Math.max(
+      this.clientTimeoutCooldownBaseMs,
+      Number(options.clientTimeoutCooldownMaxMs || 45000)
+    );
+    this.clientDefaultCooldownMs = Math.max(
+      100,
+      Number(options.clientDefaultCooldownMs || 1000)
+    );
 
     this.state = emptyState();
     this.runtime = {
@@ -260,6 +344,7 @@ class ExchangeWalletIndexer {
       scanPagesCurrent: this.maxPagesPerWallet,
       scanLast429At: 0,
       scanLastRampAt: 0,
+      clientPickCursor: 0,
     };
   }
 
@@ -1040,10 +1125,34 @@ class ExchangeWalletIndexer {
       };
       if (cursor) query.cursor = cursor;
 
-      const response = await restClient.get(pathname, {
-        query,
-        cost: this.historyCost,
-      });
+      let response = null;
+      let requestError = null;
+      const clientEntry =
+        restClient && typeof restClient.get === "function" ? null : this.pickRestClientEntry();
+      const selectedClient =
+        restClient && typeof restClient.get === "function"
+          ? restClient
+          : clientEntry && clientEntry.client
+          ? clientEntry.client
+          : this.restClients[0];
+      const requestStartedAt = Date.now();
+      this.observeClientRequestStart(clientEntry);
+      try {
+        response = await selectedClient.get(pathname, {
+          query,
+          cost: this.historyCost,
+        });
+      } catch (error) {
+        requestError = error;
+      } finally {
+        if (requestError) {
+          this.observeClientRequestFailure(clientEntry, requestError);
+        } else {
+          this.observeClientRequestSuccess(clientEntry, Date.now() - requestStartedAt);
+        }
+        this.observeClientRequestEnd(clientEntry);
+      }
+      if (requestError) throw requestError;
       requests += 1;
 
       const payload = response && response.payload ? response.payload : {};
@@ -1086,7 +1195,7 @@ class ExchangeWalletIndexer {
     const mode = options && options.mode === "live" ? "live" : "backfill";
     const history = this.loadWalletHistory(wallet);
     const client =
-      restClient && typeof restClient.get === "function" ? restClient : this.restClients[0];
+      restClient && typeof restClient.get === "function" ? restClient : null;
 
     if (mode === "backfill") {
       const currentLifecycle = this.deriveWalletLifecycle(prev);
@@ -1349,8 +1458,7 @@ class ExchangeWalletIndexer {
         Math.min(this.runtime.scanConcurrencyCurrent, batch.length || 1)
       );
 
-      const worker = async (workerIndex) => {
-        const client = this.restClients[workerIndex % this.restClients.length];
+      const worker = async () => {
         while (true) {
           const current = index;
           index += 1;
@@ -1358,7 +1466,7 @@ class ExchangeWalletIndexer {
 
           const task = batch[current];
           if (!task || !task.wallet) continue;
-          const result = await this.scanWallet(task.wallet, client, { mode: task.mode });
+          const result = await this.scanWallet(task.wallet, null, { mode: task.mode });
           if (result && result.ok) ok += 1;
           else {
             failed += 1;
@@ -1369,7 +1477,7 @@ class ExchangeWalletIndexer {
       };
 
       for (let i = 0; i < workerCount; i += 1) {
-        workers.push(worker(i));
+        workers.push(worker());
       }
       await Promise.all(workers);
 
@@ -1378,13 +1486,21 @@ class ExchangeWalletIndexer {
       this.save();
 
       const now = Date.now();
-      const saw429 = Number(errorReasons.get("rate_limit_429") || 0) > 0;
-      if (saw429) {
+      const rate429Count = Number(errorReasons.get("rate_limit_429") || 0);
+      if (rate429Count > 0) {
         this.runtime.scanLast429At = now;
-        this.runtime.scanConcurrencyCurrent = Math.max(
-          1,
-          Math.floor(this.runtime.scanConcurrencyCurrent / 2) || 1
-        );
+        const ratio = batch.length > 0 ? rate429Count / batch.length : 0;
+        if (ratio >= 0.5) {
+          this.runtime.scanConcurrencyCurrent = Math.max(
+            1,
+            this.runtime.scanConcurrencyCurrent - 2
+          );
+        } else if (ratio >= 0.2) {
+          this.runtime.scanConcurrencyCurrent = Math.max(
+            1,
+            this.runtime.scanConcurrencyCurrent - 1
+          );
+        }
         if (!this.fullHistoryPerWallet) {
           this.runtime.scanPagesCurrent = Math.max(
             1,
@@ -1409,12 +1525,13 @@ class ExchangeWalletIndexer {
       }
 
       const summary = this.buildDiagnosticsSummary();
+      const clientPool = this.buildClientPoolSummary();
       const topReason =
         summary.topErrorReasons && summary.topErrorReasons.length
           ? `${summary.topErrorReasons[0].reason}:${summary.topErrorReasons[0].count}`
           : "none";
       this.logger.info(
-        `[wallet-indexer] scan summary scanned=${batch.length} backfill=${backfillBatchSize} live=${liveBatchSize} ok=${ok} failed=${failed} known=${this.state.knownWallets.length} indexed=${summary.indexed} partial=${summary.partial} pending=${summary.pending} failed_total=${summary.failed} live_tracking=${summary.liveTracking} backlog=${summary.backlog} queue=${this.runtime.priorityScanQueue.length} live_queue=${this.runtime.liveScanQueue.length} avg_pending_wait_ms=${summary.averagePendingWaitMs} avg_queue_wait_ms=${summary.averageQueueWaitMs} backlog_mode=${this.runtime.backlogMode ? "on" : "off"} backlog_reason=${this.runtime.backlogReason || "none"} scan_concurrency=${this.runtime.scanConcurrencyCurrent} scan_pages=${this.fullHistoryPerWallet ? "full_history" : this.runtime.scanPagesCurrent} top_error=${topReason}`
+        `[wallet-indexer] scan summary scanned=${batch.length} backfill=${backfillBatchSize} live=${liveBatchSize} ok=${ok} failed=${failed} known=${this.state.knownWallets.length} indexed=${summary.indexed} partial=${summary.partial} pending=${summary.pending} failed_total=${summary.failed} live_tracking=${summary.liveTracking} backlog=${summary.backlog} queue=${this.runtime.priorityScanQueue.length} live_queue=${this.runtime.liveScanQueue.length} avg_pending_wait_ms=${summary.averagePendingWaitMs} avg_queue_wait_ms=${summary.averageQueueWaitMs} backlog_mode=${this.runtime.backlogMode ? "on" : "off"} backlog_reason=${this.runtime.backlogReason || "none"} scan_concurrency=${this.runtime.scanConcurrencyCurrent} scan_pages=${this.fullHistoryPerWallet ? "full_history" : this.runtime.scanPagesCurrent} client_active=${clientPool.active}/${clientPool.total} client_cooling=${clientPool.cooling} client_inflight=${clientPool.inFlight} top_error=${topReason}`
       );
 
       return {
@@ -1563,6 +1680,7 @@ class ExchangeWalletIndexer {
           this.restClientIds && this.restClientIds.length
             ? this.restClientIds.slice(0, this.restClients.length)
             : null,
+        pool: this.buildClientPoolSummary(),
       },
       source:
         this.walletSource && typeof this.walletSource.getState === "function"
@@ -1715,6 +1833,177 @@ class ExchangeWalletIndexer {
       if (snapshot) out[wallet] = snapshot;
     });
     return out;
+  }
+
+  pickRestClientEntry() {
+    if (!this.clientPoolState.length) return null;
+    if (this.clientPoolState.length === 1) return this.clientPoolState[0];
+
+    const now = Date.now();
+    let best = null;
+    let bestScore = Number.POSITIVE_INFINITY;
+    const start = this.runtime.clientPickCursor % this.clientPoolState.length;
+
+    for (let i = 0; i < this.clientPoolState.length; i += 1) {
+      const idx = (start + i) % this.clientPoolState.length;
+      const row = this.clientPoolState[idx];
+      const coolingMs = Math.max(0, Number(row.cooldownUntil || 0) - now);
+      if (coolingMs > 0) continue;
+      const failureRatio = row.requests > 0 ? row.failures / row.requests : 0;
+      const latencyPenalty = row.latencyMsAvg > 0 ? row.latencyMsAvg / 750 : 0;
+      const score =
+        Number(row.inFlight || 0) * 6 +
+        Number(row.consecutiveFailures || 0) * 4 +
+        Number(row.consecutive429 || 0) * 8 +
+        failureRatio * 12 +
+        latencyPenalty +
+        Math.random() * 0.5;
+      if (score < bestScore) {
+        bestScore = score;
+        best = row;
+      }
+    }
+
+    if (best) {
+      this.runtime.clientPickCursor =
+        (this.clientPoolState.findIndex((row) => row.id === best.id) + 1) %
+        this.clientPoolState.length;
+      return best;
+    }
+
+    let earliest = this.clientPoolState[0];
+    for (let i = 1; i < this.clientPoolState.length; i += 1) {
+      if (Number(this.clientPoolState[i].cooldownUntil || 0) < Number(earliest.cooldownUntil || 0)) {
+        earliest = this.clientPoolState[i];
+      }
+    }
+    this.runtime.clientPickCursor =
+      (this.clientPoolState.findIndex((row) => row.id === earliest.id) + 1) %
+      this.clientPoolState.length;
+    return earliest;
+  }
+
+  observeClientRequestStart(clientEntry) {
+    if (!clientEntry) return;
+    clientEntry.inFlight = Math.max(0, Number(clientEntry.inFlight || 0)) + 1;
+    clientEntry.requests = Math.max(0, Number(clientEntry.requests || 0)) + 1;
+    clientEntry.lastUsedAt = Date.now();
+  }
+
+  observeClientRequestSuccess(clientEntry, latencyMs) {
+    if (!clientEntry) return;
+    clientEntry.successes = Math.max(0, Number(clientEntry.successes || 0)) + 1;
+    clientEntry.consecutiveFailures = 0;
+    clientEntry.consecutive429 = 0;
+    const sampleCount = Math.max(0, Number(clientEntry.latencySampleCount || 0)) + 1;
+    const prevAvg = Number(clientEntry.latencyMsAvg || 0);
+    const nextAvg =
+      sampleCount === 1
+        ? Number(latencyMs || 0)
+        : prevAvg + (Number(latencyMs || 0) - prevAvg) / sampleCount;
+    clientEntry.latencySampleCount = sampleCount;
+    clientEntry.latencyMsAvg = Number(nextAvg.toFixed(2));
+    if (Number(clientEntry.cooldownUntil || 0) > Date.now()) {
+      clientEntry.cooldownUntil = Date.now();
+    }
+  }
+
+  computeClientCooldownMs(reason, clientEntry) {
+    const failCount = Math.max(
+      1,
+      Number(clientEntry && clientEntry.consecutiveFailures ? clientEntry.consecutiveFailures : 1)
+    );
+    if (reason === "rate_limit_429") {
+      const streak = Math.max(
+        1,
+        Number(clientEntry && clientEntry.consecutive429 ? clientEntry.consecutive429 : 1)
+      );
+      return clamp(
+        this.client429CooldownBaseMs * 2 ** Math.min(6, streak - 1),
+        this.client429CooldownBaseMs,
+        this.client429CooldownMaxMs
+      );
+    }
+    if (reason === "server_error_500" || reason === "service_unavailable_503") {
+      return clamp(
+        this.clientServerErrorCooldownBaseMs * 2 ** Math.min(6, failCount - 1),
+        this.clientServerErrorCooldownBaseMs,
+        this.clientServerErrorCooldownMaxMs
+      );
+    }
+    if (reason === "timeout" || reason === "network_error" || reason === "connection_reset") {
+      return clamp(
+        this.clientTimeoutCooldownBaseMs * 2 ** Math.min(6, failCount - 1),
+        this.clientTimeoutCooldownBaseMs,
+        this.clientTimeoutCooldownMaxMs
+      );
+    }
+    return this.clientDefaultCooldownMs;
+  }
+
+  observeClientRequestFailure(clientEntry, error) {
+    if (!clientEntry) return;
+    const reason = summarizeErrorReason(toErrorMessage(error));
+    const now = Date.now();
+    clientEntry.failures = Math.max(0, Number(clientEntry.failures || 0)) + 1;
+    clientEntry.consecutiveFailures = Math.max(0, Number(clientEntry.consecutiveFailures || 0)) + 1;
+    clientEntry.lastErrorReason = reason;
+    clientEntry.lastErrorAt = now;
+    if (reason === "rate_limit_429") {
+      clientEntry.failures429 = Math.max(0, Number(clientEntry.failures429 || 0)) + 1;
+      clientEntry.consecutive429 = Math.max(0, Number(clientEntry.consecutive429 || 0)) + 1;
+    } else {
+      clientEntry.consecutive429 = 0;
+    }
+    if (reason === "server_error_500") {
+      clientEntry.failures500 = Math.max(0, Number(clientEntry.failures500 || 0)) + 1;
+    }
+    if (reason === "timeout") {
+      clientEntry.timeoutFailures = Math.max(0, Number(clientEntry.timeoutFailures || 0)) + 1;
+    }
+    if (reason === "network_error" || reason === "connection_reset") {
+      clientEntry.networkFailures = Math.max(0, Number(clientEntry.networkFailures || 0)) + 1;
+    }
+    const cooldownMs = this.computeClientCooldownMs(reason, clientEntry);
+    clientEntry.cooldownUntil = Math.max(Number(clientEntry.cooldownUntil || 0), now + cooldownMs);
+  }
+
+  observeClientRequestEnd(clientEntry) {
+    if (!clientEntry) return;
+    clientEntry.inFlight = Math.max(0, Number(clientEntry.inFlight || 0) - 1);
+  }
+
+  buildClientPoolSummary() {
+    const now = Date.now();
+    const rows = this.clientPoolState.map((entry) => ({
+      id: entry.id,
+      inFlight: Number(entry.inFlight || 0),
+      coolingMs: Math.max(0, Number(entry.cooldownUntil || 0) - now),
+      requests: Number(entry.requests || 0),
+      successes: Number(entry.successes || 0),
+      failures: Number(entry.failures || 0),
+      failures429: Number(entry.failures429 || 0),
+      failures500: Number(entry.failures500 || 0),
+      timeoutFailures: Number(entry.timeoutFailures || 0),
+      latencyMsAvg: Number(entry.latencyMsAvg || 0),
+      proxyUrl: entry.proxyUrl || null,
+      lastErrorReason: entry.lastErrorReason || null,
+    }));
+    const active = rows.filter((row) => row.inFlight > 0 || row.requests > 0).length;
+    const cooling = rows.filter((row) => row.coolingMs > 0).length;
+    const inFlight = rows.reduce((sum, row) => sum + row.inFlight, 0);
+    const topByRequests = rows
+      .slice()
+      .sort((a, b) => b.requests - a.requests)
+      .slice(0, 8);
+    return {
+      total: rows.length,
+      active,
+      cooling,
+      inFlight,
+      rows,
+      topByRequests,
+    };
   }
 
   getDiagnostics(options = {}) {

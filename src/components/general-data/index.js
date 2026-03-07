@@ -603,83 +603,62 @@ function createGeneralDataComponent({
       req.method === "GET"
     ) {
       try {
-        if (typeof getGlobalKpiState === "function") {
-          const shared = getGlobalKpiState();
-          if (
-            shared &&
-            typeof shared === "object" &&
-            Number(shared.fetchedAt || 0) > 0 &&
-            Number.isFinite(Number(shared.dailyVolume))
-          ) {
-            const meta =
-              shared.volumeMeta && typeof shared.volumeMeta === "object" ? shared.volumeMeta : {};
-            sendJson(res, 200, {
-              dailyVolume: Number(shared.dailyVolume || 0),
-              openInterestAtEnd: Number(shared.openInterestAtEnd || 0),
-              totalHistoricalVolume:
-                shared.totalHistoricalVolume !== null &&
-                shared.totalHistoricalVolume !== undefined &&
-                Number.isFinite(Number(shared.totalHistoricalVolume))
-                  ? Number(shared.totalHistoricalVolume)
-                  : null,
-              volumeMethod: shared.volumeMethod || "prices_rolling_24h",
-              volumeSource: shared.volumeSource || "/api/v1/info/prices:sum(volume_24h)",
-              fetchedAt: Number(shared.fetchedAt || 0),
-              trackingStartDate: meta.trackingStartDate || null,
-              lastProcessedDate: meta.lastProcessedDate || null,
-              remainingDaysToToday:
-                meta.remainingDaysToToday !== null && meta.remainingDaysToToday !== undefined
-                  ? Number(meta.remainingDaysToToday)
-                  : null,
-              processedDays:
-                meta.processedDays !== null && meta.processedDays !== undefined
-                  ? Number(meta.processedDays)
-                  : null,
-              totalDaysToToday:
-                meta.totalDaysToToday !== null && meta.totalDaysToToday !== undefined
-                  ? Number(meta.totalDaysToToday)
-                  : null,
-              backfillComplete:
-                meta.backfillComplete !== null && meta.backfillComplete !== undefined
-                  ? Boolean(meta.backfillComplete)
-                  : null,
-              backfillProgress: {
-                start_date: meta.trackingStartDate || null,
-                current_processed_day: meta.lastProcessedDate || null,
-                days_processed:
-                  meta.processedDays !== null && meta.processedDays !== undefined
-                    ? Number(meta.processedDays)
-                    : null,
-                days_remaining:
-                  meta.remainingDaysToToday !== null && meta.remainingDaysToToday !== undefined
-                    ? Number(meta.remainingDaysToToday)
-                    : null,
-              },
-            });
-            return true;
-          }
-        }
+        const shared = typeof getGlobalKpiState === "function" ? getGlobalKpiState() : null;
+        const meta =
+          shared && shared.volumeMeta && typeof shared.volumeMeta === "object"
+            ? shared.volumeMeta
+            : {};
 
         const resPrices = await restClient.get("/info/prices", { cost: 1 });
-        const rows = extractPayloadData(resPrices, []);
+        const payload = resPrices && resPrices.payload ? resPrices.payload : {};
+        const rows = Array.isArray(payload.data) ? payload.data : [];
         const out = computeDefiLlamaV2FromPrices(rows);
         sendJson(res, 200, {
           dailyVolume: out.dailyVolume,
           openInterestAtEnd: out.openInterestAtEnd,
-          totalHistoricalVolume: null,
-          volumeMethod: "prices_rolling_24h",
+          totalHistoricalVolume:
+            shared &&
+            shared.totalHistoricalVolume !== null &&
+            shared.totalHistoricalVolume !== undefined &&
+            Number.isFinite(Number(shared.totalHistoricalVolume))
+              ? Number(shared.totalHistoricalVolume)
+              : null,
+          volumeMethod:
+            shared && shared.volumeMethod ? String(shared.volumeMethod) : "prices_rolling_24h",
           volumeSource: "/api/v1/info/prices:sum(volume_24h)",
-          trackingStartDate: null,
-          lastProcessedDate: null,
-          remainingDaysToToday: null,
-          processedDays: null,
-          totalDaysToToday: null,
-          backfillComplete: null,
+          fetchedAt:
+            shared && Number.isFinite(Number(shared.fetchedAt))
+              ? Number(shared.fetchedAt)
+              : Date.now(),
+          trackingStartDate: meta.trackingStartDate || null,
+          lastProcessedDate: meta.lastProcessedDate || null,
+          remainingDaysToToday:
+            meta.remainingDaysToToday !== null && meta.remainingDaysToToday !== undefined
+              ? Number(meta.remainingDaysToToday)
+              : null,
+          processedDays:
+            meta.processedDays !== null && meta.processedDays !== undefined
+              ? Number(meta.processedDays)
+              : null,
+          totalDaysToToday:
+            meta.totalDaysToToday !== null && meta.totalDaysToToday !== undefined
+              ? Number(meta.totalDaysToToday)
+              : null,
+          backfillComplete:
+            meta.backfillComplete !== null && meta.backfillComplete !== undefined
+              ? Boolean(meta.backfillComplete)
+              : null,
           backfillProgress: {
-            start_date: null,
-            current_processed_day: null,
-            days_processed: null,
-            days_remaining: null,
+            start_date: meta.trackingStartDate || null,
+            current_processed_day: meta.lastProcessedDate || null,
+            days_processed:
+              meta.processedDays !== null && meta.processedDays !== undefined
+                ? Number(meta.processedDays)
+                : null,
+            days_remaining:
+              meta.remainingDaysToToday !== null && meta.remainingDaysToToday !== undefined
+                ? Number(meta.remainingDaysToToday)
+                : null,
           },
         });
       } catch (error) {

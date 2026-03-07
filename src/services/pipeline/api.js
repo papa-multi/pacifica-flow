@@ -660,14 +660,30 @@ function aggregateWallets(walletRecords = [], timeframe = "all") {
   let totalVolumeUsd = 0;
   let totalFeesUsd = 0;
   let totalRevenueUsd = 0;
+  let totalFeeRebatesUsd = 0;
+  let totalNetFeesUsd = 0;
+  let totalLiquidityPoolFeesUsd = 0;
 
   safe.forEach((record) => {
     const bucket = pickBucket(record, timeframe);
     if (!bucket) return;
     totalTrades += toNum(bucket.trades, 0);
     totalVolumeUsd += toNum(bucket.volumeUsd, 0);
-    totalFeesUsd += toNum(bucket.feesUsd, 0);
+    const feesPaid = toNum(
+      bucket.feesPaidUsd !== undefined ? bucket.feesPaidUsd : bucket.feesUsd,
+      0
+    );
+    const feeRebates = toNum(bucket.feeRebatesUsd, 0);
+    const netFees = toNum(
+      bucket.netFeesUsd !== undefined ? bucket.netFeesUsd : feesPaid - feeRebates,
+      0
+    );
+    const liquidityPoolFees = toNum(bucket.liquidityPoolFeesUsd, 0);
+    totalFeesUsd += feesPaid + liquidityPoolFees;
     totalRevenueUsd += toNum(bucket.revenueUsd, 0);
+    totalFeeRebatesUsd += feeRebates;
+    totalNetFeesUsd += netFees;
+    totalLiquidityPoolFeesUsd += liquidityPoolFees;
   });
 
   return {
@@ -676,6 +692,9 @@ function aggregateWallets(walletRecords = [], timeframe = "all") {
     totalVolumeUsd,
     totalFeesUsd,
     totalRevenueUsd,
+    totalFeeRebatesUsd,
+    totalNetFeesUsd,
+    totalLiquidityPoolFeesUsd,
   };
 }
 
@@ -781,6 +800,13 @@ function buildExchangeOverviewPayload({ state, transport, wallets, timeframe }) 
       totalVolumeUsd: toFixed(totalVolumeUsd, 2),
       openInterestAtEnd: toFixed(marketDailyStats.openInterestAtEnd, 2),
       totalFeesUsd: toFixed(aggregated.totalFeesUsd, 2),
+      totalTradingFeesUsd: toFixed(
+        Math.max(0, aggregated.totalFeesUsd - aggregated.totalLiquidityPoolFeesUsd),
+        2
+      ),
+      totalLiquidityPoolFeesUsd: toFixed(aggregated.totalLiquidityPoolFeesUsd, 2),
+      totalFeeRebatesUsd: toFixed(aggregated.totalFeeRebatesUsd, 2),
+      totalNetFeesUsd: toFixed(aggregated.totalNetFeesUsd, 2),
       totalRevenueCompact: formatCompact(aggregated.totalRevenueUsd),
       totalVolumeCompact: formatCompact(totalVolumeUsd),
       totalFeesCompact: formatCompact(aggregated.totalFeesUsd),
@@ -791,8 +817,15 @@ function buildExchangeOverviewPayload({ state, transport, wallets, timeframe }) 
       walletsIndexed: walletRows.length,
       marketFallbackUsed: !walletRank.length || tf === "24h",
       dailyVolumeSource: "/api/v1/info/prices:sum(volume_24h)",
-      totalFeesSource: "wallet_indexer:sum(trade.fee)",
-      totalRevenueSource: "wallet_indexer:sum(trade.fee)",
+      totalFeesSource:
+        "wallet_indexer:sum(max(trade.fee,0))+sum(liquidity_pool_fee, if_available)",
+      totalTradingFeesSource: "wallet_indexer:sum(max(trade.fee,0))",
+      totalLiquidityPoolFeesSource:
+        "wallet_indexer:sum(liquidity_pool_fee) (not currently available in Pacifica REST payloads)",
+      totalRevenueSource: "wallet_indexer:sum(max(trade.fee,0))",
+      totalFeeRebatesSource: "wallet_indexer:sum(abs(min(trade.fee,0)))",
+      totalNetFeesSource: "wallet_indexer:sum(trade.fee)",
+      liquidityPoolFeesIncluded: aggregated.totalLiquidityPoolFeesUsd > 0,
     },
   };
 }
@@ -898,6 +931,8 @@ function buildWalletProfilePayload({ wallets, wallet, timeframe }) {
           firstTrade: bucket.firstTrade || null,
           lastTrade: bucket.lastTrade || null,
           feesUsd: toFixed(toNum(bucket.feesUsd, 0), 2),
+          feeRebatesUsd: toFixed(toNum(bucket.feeRebatesUsd, 0), 2),
+          netFeesUsd: toFixed(toNum(bucket.netFeesUsd, 0), 2),
           revenueUsd: toFixed(toNum(bucket.revenueUsd, 0), 2),
           updatedAt: record.updatedAt || null,
         }

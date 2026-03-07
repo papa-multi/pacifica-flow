@@ -20,6 +20,7 @@
     "start:onchain-lite": "PORT=3400 PACIFICA_SERVICE=api PACIFICA_WS_ENABLED=false SOLANA_RPC_RATE_LIMIT_CAPACITY=3 PACIFICA_ONCHAIN_SIGNATURE_PAGE_LIMIT=20 PACIFICA_ONCHAIN_TX_CONCURRENCY=1 PACIFICA_ONCHAIN_MAX_TX_PER_CYCLE=12 node server.js",
     "audit:deposits": "node scripts/audit_deposit_wallets.js",
     "enrich:deposit-evidence": "node scripts/enrich_deposit_evidence.js",
+    "rebuild:wallet-stats": "node scripts/rebuild_wallet_stats_from_history.js",
     "test:proxies": "node scripts/test_pacifica_proxies.js"
   },
   "keywords": [

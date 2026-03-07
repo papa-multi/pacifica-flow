@@ -87,6 +87,115 @@ function buildDefiLlamaVolumeRank(rows = [], limit = 100) {
     }));
 }
 
+function formatUtcDateFromMs(ms) {
+  const n = Number(ms);
+  if (!Number.isFinite(n)) return null;
+  return new Date(n).toISOString().slice(0, 10);
+}
+
+function addUtcDays(dateStr, deltaDays) {
+  const base = Date.parse(`${String(dateStr).slice(0, 10)}T00:00:00.000Z`);
+  if (!Number.isFinite(base)) return null;
+  return formatUtcDateFromMs(base + Number(deltaDays || 0) * 24 * 60 * 60 * 1000);
+}
+
+function buildHistoricalSymbolVolumeRank({
+  dailyByDate = null,
+  startDate = null,
+  endDate = null,
+  limit = 100,
+  requireReliableDay = true,
+}) {
+  if (!dailyByDate || typeof dailyByDate !== "object") return [];
+  const safeEndDate =
+    endDate && String(endDate).trim() ? String(endDate).slice(0, 10) : null;
+  if (!safeEndDate) return [];
+  const safeStartDate =
+    startDate && String(startDate).trim() ? String(startDate).slice(0, 10) : null;
+
+  const volumeBySymbol = new Map();
+  const entries = Object.entries(dailyByDate);
+  for (const [dayRaw, dayRowRaw] of entries) {
+    const day = String(dayRaw || "").slice(0, 10);
+    if (!day) continue;
+    if (safeStartDate && day < safeStartDate) continue;
+    if (day > safeEndDate) continue;
+    const dayRow = dayRowRaw && typeof dayRowRaw === "object" ? dayRowRaw : {};
+    const failedSymbols = Number(dayRow.failedSymbols || 0);
+    if (requireReliableDay && Number.isFinite(failedSymbols) && failedSymbols > 0) continue;
+    const symbolVolumes =
+      dayRow.symbolVolumes && typeof dayRow.symbolVolumes === "object"
+        ? dayRow.symbolVolumes
+        : {};
+    Object.entries(symbolVolumes).forEach(([symbolRaw, valueRaw]) => {
+      const symbol = String(symbolRaw || "").trim();
+      if (!symbol) return;
+      const volume = toNum(valueRaw, 0);
+      if (!Number.isFinite(volume) || volume <= 0) return;
+      volumeBySymbol.set(symbol, (volumeBySymbol.get(symbol) || 0) + volume);
+    });
+  }
+
+  return Array.from(volumeBySymbol.entries())
+    .map(([symbol, volume]) => ({
+      symbol,
+      volume_usd: Number(volume.toFixed(8)),
+    }))
+    .sort((a, b) => toNum(b.volume_usd, 0) - toNum(a.volume_usd, 0))
+    .slice(0, Math.max(1, Number(limit || 100)))
+    .map((row, idx) => ({
+      rank: idx + 1,
+      symbol: row.symbol,
+      market: row.symbol,
+      volume_usd: row.volume_usd,
+      // Kept for UI backward compatibility (table renderer checks this key first).
+      volume_24h_usd: row.volume_usd,
+      volumeUsd: toFixed(row.volume_usd, 2),
+      volumeCompact: toCompact(row.volume_usd),
+      live: true,
+    }));
+}
+
+function countHistoricalDaysWithSymbolVolumes({
+  dailyByDate = null,
+  startDate = null,
+  endDate = null,
+  requireReliableDay = true,
+}) {
+  if (!dailyByDate || typeof dailyByDate !== "object") return 0;
+  const safeEndDate =
+    endDate && String(endDate).trim() ? String(endDate).slice(0, 10) : null;
+  if (!safeEndDate) return 0;
+  const safeStartDate =
+    startDate && String(startDate).trim() ? String(startDate).slice(0, 10) : null;
+  let days = 0;
+  Object.entries(dailyByDate).forEach(([dayRaw, rowRaw]) => {
+    const day = String(dayRaw || "").slice(0, 10);
+    if (!day) return;
+    if (safeStartDate && day < safeStartDate) return;
+    if (day > safeEndDate) return;
+    const row = rowRaw && typeof rowRaw === "object" ? rowRaw : {};
+    const failedSymbols = Number(row.failedSymbols || 0);
+    if (requireReliableDay && Number.isFinite(failedSymbols) && failedSymbols > 0) return;
+    const volumes =
+      row.symbolVolumes && typeof row.symbolVolumes === "object"
+        ? row.symbolVolumes
+        : null;
+    if (!volumes || Array.isArray(volumes)) return;
+    if (Object.keys(volumes).length <= 0) return;
+    days += 1;
+  });
+  return days;
+}
+
+function sumRankVolumeUsd(rows = []) {
+  return (Array.isArray(rows) ? rows : []).reduce((acc, row) => {
+    const raw =
+      row && row.volume_24h_usd !== undefined ? row.volume_24h_usd : row && row.volume_usd;
+    return acc + toNum(raw, 0);
+  }, 0);
+}
+
 function extractPayloadData(result, fallback = null) {
   if (!result || !result.payload) return fallback;
   if (Object.prototype.hasOwnProperty.call(result.payload, "data")) {
@@ -115,6 +224,65 @@ function createWalletTrackingComponent({
     lastError: null,
     lastFetchDurationMs: null,
   };
+  const walletStoreRefresh = {
+    lastAt: 0,
+    minIntervalMs: 1500,
+  };
+  const indexerStatusCache = {
+    fetchedAt: 0,
+    ttlMs: 2000,
+    value: null,
+  };
+  const defaultIndexerStatusUrl =
+    String(process.env.PORT || "") === "3200"
+      ? "http://127.0.0.1:3201/api/indexer/status"
+      : "";
+  const indexerStatusUrl = String(
+    process.env.PACIFICA_INDEXER_STATUS_PROXY_URL || defaultIndexerStatusUrl
+  ).trim();
+
+  function syncWalletStoreFromDisk() {
+    if (!walletStore || typeof walletStore.load !== "function") return;
+    const now = Date.now();
+    if (now - walletStoreRefresh.lastAt < walletStoreRefresh.minIntervalMs) return;
+    walletStore.load();
+    walletStoreRefresh.lastAt = now;
+  }
+
+  async function getFreshIndexerStatus() {
+    if (!walletIndexer || typeof walletIndexer.getStatus !== "function") return null;
+    const localStatus = walletIndexer.getStatus();
+    if (localStatus && localStatus.running) return localStatus;
+    if (!indexerStatusUrl) return localStatus;
+
+    const now = Date.now();
+    if (
+      now - Number(indexerStatusCache.fetchedAt || 0) <= Number(indexerStatusCache.ttlMs || 0) &&
+      indexerStatusCache.value
+    ) {
+      return indexerStatusCache.value;
+    }
+
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 1500);
+      const res = await fetch(indexerStatusUrl, {
+        method: "GET",
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
+      if (!res.ok) return localStatus;
+      const payload = await res.json();
+      if (payload && payload.status && typeof payload.status === "object") {
+        indexerStatusCache.fetchedAt = now;
+        indexerStatusCache.value = payload.status;
+        return payload.status;
+      }
+      return localStatus;
+    } catch (_error) {
+      return localStatus;
+    }
+  }
 
   function buildVolumeWindowInfo(truth = {}) {
     const MS_DAY = 24 * 60 * 60 * 1000;
@@ -235,6 +403,14 @@ function createWalletTrackingComponent({
         shared && Number.isFinite(Number(shared.dailyVolumeDefillamaCompat))
           ? Number(shared.dailyVolumeDefillamaCompat)
           : null,
+      dailyHistoryByDate:
+        shared &&
+        shared.history &&
+        shared.history.dailyByDate &&
+        typeof shared.history.dailyByDate === "object" &&
+        !Array.isArray(shared.history.dailyByDate)
+          ? shared.history.dailyByDate
+          : null,
     };
 
     // Source-of-truth for total volume + symbol rank is /info/prices (live + short cache).
@@ -251,6 +427,7 @@ function createWalletTrackingComponent({
         totalHistoricalVolume: sharedHistory.totalHistoricalVolume,
         dailyVolumeFromPrices24h: Number(defillamaCache.value.dailyVolume || 0),
         dailyVolumeDefillamaCompat: sharedHistory.dailyVolumeDefillamaCompat,
+        dailyHistoryByDate: sharedHistory.dailyHistoryByDate,
         stale: Boolean(defillamaCache.stale),
         lastError: defillamaCache.lastError || null,
         fetchedAt: defillamaCache.fetchedAt || null,
@@ -272,6 +449,7 @@ function createWalletTrackingComponent({
           totalHistoricalVolume: sharedHistory.totalHistoricalVolume,
           dailyVolumeFromPrices24h: sharedHistory.dailyVolumeFromPrices24h,
           dailyVolumeDefillamaCompat: sharedHistory.dailyVolumeDefillamaCompat,
+          dailyHistoryByDate: sharedHistory.dailyHistoryByDate,
           stale: true,
           lastError: "rest_client_unavailable",
           fetchedAt: Number(shared.fetchedAt || 0) || null,
@@ -289,6 +467,7 @@ function createWalletTrackingComponent({
         totalHistoricalVolume: sharedHistory.totalHistoricalVolume,
         dailyVolumeFromPrices24h: Number(defillamaCache.value.dailyVolume || 0),
         dailyVolumeDefillamaCompat: sharedHistory.dailyVolumeDefillamaCompat,
+        dailyHistoryByDate: sharedHistory.dailyHistoryByDate,
         stale: true,
         lastError: "rest_client_unavailable",
         fetchedAt: defillamaCache.fetchedAt || null,
@@ -322,6 +501,7 @@ function createWalletTrackingComponent({
         totalHistoricalVolume: sharedHistory.totalHistoricalVolume,
         dailyVolumeFromPrices24h: Number(next.dailyVolume || 0),
         dailyVolumeDefillamaCompat: sharedHistory.dailyVolumeDefillamaCompat,
+        dailyHistoryByDate: sharedHistory.dailyHistoryByDate,
         stale: false,
         lastError: null,
         fetchedAt: defillamaCache.fetchedAt,
@@ -341,6 +521,7 @@ function createWalletTrackingComponent({
           totalHistoricalVolume: sharedHistory.totalHistoricalVolume,
           dailyVolumeFromPrices24h: Number(defillamaCache.value.dailyVolume || 0),
           dailyVolumeDefillamaCompat: sharedHistory.dailyVolumeDefillamaCompat,
+          dailyHistoryByDate: sharedHistory.dailyHistoryByDate,
           stale: true,
           lastError: defillamaCache.lastError,
           fetchedAt: defillamaCache.fetchedAt || null,
@@ -361,6 +542,7 @@ function createWalletTrackingComponent({
           totalHistoricalVolume: sharedHistory.totalHistoricalVolume,
           dailyVolumeFromPrices24h: Number(shared.dailyVolume || 0),
           dailyVolumeDefillamaCompat: sharedHistory.dailyVolumeDefillamaCompat,
+          dailyHistoryByDate: sharedHistory.dailyHistoryByDate,
           stale: true,
           lastError: error.message || "defillama_fetch_failed",
           fetchedAt: Number(shared.fetchedAt || 0) || null,
@@ -442,6 +624,7 @@ function createWalletTrackingComponent({
   }
 
   async function handleRequest(_req, res, url) {
+    syncWalletStoreFromDisk();
     const dashboard = pipeline.getDashboardPayload();
     syncCurrentWallet();
 
@@ -511,17 +694,161 @@ function createWalletTrackingComponent({
           Number.isFinite(Number(truth.totalHistoricalVolume))
             ? Number(truth.totalHistoricalVolume)
             : null;
-        // Keep total volume and volume rank on the same window/source to avoid logical mismatch.
-        // Current source-of-truth rank is /info/prices volume_24h, so default window is 24h.
-        // If historical per-symbol rank becomes available, this can switch to all-time/30d windows.
+        const dailyHistoryByDate =
+          truth.dailyHistoryByDate &&
+          typeof truth.dailyHistoryByDate === "object" &&
+          !Array.isArray(truth.dailyHistoryByDate)
+            ? truth.dailyHistoryByDate
+            : null;
+        const trackingStartDate =
+          truth &&
+          truth.volumeMeta &&
+          truth.volumeMeta.trackingStartDate
+            ? String(truth.volumeMeta.trackingStartDate).slice(0, 10)
+            : null;
+        const trackedThroughDate =
+          truth &&
+          truth.volumeMeta &&
+          truth.volumeMeta.lastProcessedDate
+            ? String(truth.volumeMeta.lastProcessedDate).slice(0, 10)
+            : volumeWindow && volumeWindow.trackedThroughDate
+            ? String(volumeWindow.trackedThroughDate).slice(0, 10)
+            : null;
+        const expectedProcessedDays =
+          truth &&
+          truth.volumeMeta &&
+          Number.isFinite(Number(truth.volumeMeta.processedDays))
+            ? Number(truth.volumeMeta.processedDays)
+            : null;
+        const lookback30dStart = trackedThroughDate
+          ? addUtcDays(trackedThroughDate, -29)
+          : null;
+        const allCoveredDays = countHistoricalDaysWithSymbolVolumes({
+          dailyByDate: dailyHistoryByDate,
+          startDate: trackingStartDate,
+          endDate: trackedThroughDate,
+          requireReliableDay: true,
+        });
+        const covered30dDays = countHistoricalDaysWithSymbolVolumes({
+          dailyByDate: dailyHistoryByDate,
+          startDate: lookback30dStart,
+          endDate: trackedThroughDate,
+          requireReliableDay: true,
+        });
+        const expected30dDays = (() => {
+          if (!trackedThroughDate || !lookback30dStart) return null;
+          const startMs = Date.parse(`${lookback30dStart}T00:00:00.000Z`);
+          const endMs = Date.parse(`${trackedThroughDate}T00:00:00.000Z`);
+          if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs < startMs) return null;
+          return Math.floor((endMs - startMs) / (24 * 60 * 60 * 1000)) + 1;
+        })();
+
+        const rankAllHistoricalReliable = buildHistoricalSymbolVolumeRank({
+          dailyByDate: dailyHistoryByDate,
+          startDate: trackingStartDate,
+          endDate: trackedThroughDate,
+          limit: 20000,
+          requireReliableDay: true,
+        });
+        const rankAllHistoricalBestEffort =
+          rankAllHistoricalReliable.length > 0
+            ? rankAllHistoricalReliable
+            : buildHistoricalSymbolVolumeRank({
+                dailyByDate: dailyHistoryByDate,
+                startDate: trackingStartDate,
+                endDate: trackedThroughDate,
+                limit: 20000,
+                requireReliableDay: false,
+              });
+        const totalAllFromRankReliable = sumRankVolumeUsd(rankAllHistoricalReliable);
+        const totalAllFromRankBestEffort = sumRankVolumeUsd(rankAllHistoricalBestEffort);
+
+        const rank30dHistoricalReliable = trackedThroughDate
+          ? buildHistoricalSymbolVolumeRank({
+              dailyByDate: dailyHistoryByDate,
+              startDate: lookback30dStart,
+              endDate: trackedThroughDate,
+              limit: 20000,
+              requireReliableDay: true,
+            })
+          : [];
+        const rank30dHistoricalBestEffort =
+          rank30dHistoricalReliable.length > 0
+            ? rank30dHistoricalReliable
+            : trackedThroughDate
+            ? buildHistoricalSymbolVolumeRank({
+                dailyByDate: dailyHistoryByDate,
+                startDate: lookback30dStart,
+                endDate: trackedThroughDate,
+                limit: 20000,
+                requireReliableDay: false,
+              })
+            : [];
+        const total30dFromRankReliable = sumRankVolumeUsd(rank30dHistoricalReliable);
+        const total30dFromRankBestEffort = sumRankVolumeUsd(rank30dHistoricalBestEffort);
+        const allCoveredDaysAny = countHistoricalDaysWithSymbolVolumes({
+          dailyByDate: dailyHistoryByDate,
+          startDate: trackingStartDate,
+          endDate: trackedThroughDate,
+          requireReliableDay: false,
+        });
+        const covered30dDaysAny = countHistoricalDaysWithSymbolVolumes({
+          dailyByDate: dailyHistoryByDate,
+          startDate: lookback30dStart,
+          endDate: trackedThroughDate,
+          requireReliableDay: false,
+        });
+
+        // Keep total volume and volume rank on the exact same window/source.
         let volumeWindowUsed = "24h";
         let selectedRank = rank24h;
         let selectedTotalVolume = total24hFromRank;
+        let selectedTotalVolumeSource = "/api/v1/info/prices:sum(volume_24h)";
+        let selectedRankSource = "/api/v1/info/prices:rank_by(volume_24h)";
+        let volumeWindowQuality = "defillama_live";
         let volumeWindowFallback = false;
         if (timeframe === "all") {
-          volumeWindowFallback = true;
+          if (rankAllHistoricalReliable.length > 0) {
+            volumeWindowUsed = "all";
+            selectedRank = rankAllHistoricalReliable;
+            selectedTotalVolume = totalAllFromRankReliable;
+            selectedTotalVolumeSource = `${truth.volumeSource || "/api/v1/kline"}:historical_sum(v*c)`;
+            selectedRankSource = `${truth.volumeSource || "/api/v1/kline"}:historical_rank_by_symbol_sum(v*c)`;
+            volumeWindowQuality = "historical_reliable";
+            volumeWindowFallback =
+              expectedProcessedDays !== null ? allCoveredDays < expectedProcessedDays : false;
+          } else if (rankAllHistoricalBestEffort.length > 0) {
+            volumeWindowUsed = "all";
+            selectedRank = rankAllHistoricalBestEffort;
+            selectedTotalVolume = totalAllFromRankBestEffort;
+            selectedTotalVolumeSource = `${truth.volumeSource || "/api/v1/kline"}:historical_sum(v*c)_best_effort`;
+            selectedRankSource = `${truth.volumeSource || "/api/v1/kline"}:historical_rank_by_symbol_sum(v*c)_best_effort`;
+            volumeWindowQuality = "historical_best_effort";
+            volumeWindowFallback = false;
+          } else {
+            volumeWindowFallback = true;
+          }
         } else if (timeframe === "30d") {
-          volumeWindowFallback = true;
+          if (rank30dHistoricalReliable.length > 0) {
+            volumeWindowUsed = "30d";
+            selectedRank = rank30dHistoricalReliable;
+            selectedTotalVolume = total30dFromRankReliable;
+            selectedTotalVolumeSource = `${truth.volumeSource || "/api/v1/kline"}:30d_sum(v*c)`;
+            selectedRankSource = `${truth.volumeSource || "/api/v1/kline"}:30d_rank_by_symbol_sum(v*c)`;
+            volumeWindowQuality = "historical_reliable";
+            volumeWindowFallback =
+              expected30dDays !== null ? covered30dDays < expected30dDays : false;
+          } else if (rank30dHistoricalBestEffort.length > 0) {
+            volumeWindowUsed = "30d";
+            selectedRank = rank30dHistoricalBestEffort;
+            selectedTotalVolume = total30dFromRankBestEffort;
+            selectedTotalVolumeSource = `${truth.volumeSource || "/api/v1/kline"}:30d_sum(v*c)_best_effort`;
+            selectedRankSource = `${truth.volumeSource || "/api/v1/kline"}:30d_rank_by_symbol_sum(v*c)_best_effort`;
+            volumeWindowQuality = "historical_best_effort";
+            volumeWindowFallback = false;
+          } else {
+            volumeWindowFallback = true;
+          }
         }
 
         payload.kpis.totalVolumeUsd = toFixed(selectedTotalVolume, 2);
@@ -536,14 +863,21 @@ function createWalletTrackingComponent({
           ...(payload.source || {}),
           dailyVolumeSource: "/api/v1/info/prices:sum(volume_24h)",
           openInterestSource: "/api/v1/info/prices:sum(open_interest*mark)",
-          volumeRankSource: "/api/v1/info/prices:rank_by(volume_24h)",
-          totalVolumeSource: "/api/v1/info/prices:sum(volume_24h)",
+          volumeRankSource: selectedRankSource,
+          totalVolumeSource: selectedTotalVolumeSource,
           volumeRankWindowUsed: volumeWindowUsed,
           totalVolumeWindowUsed: volumeWindowUsed,
-          volumeRankSymbolCount: rank24h.length,
-          volumeRankTotalUsd: Number(total24hFromRank || 0),
+          volumeRankSymbolCount: selectedRank.length,
+          volumeRankTotalUsd: Number(selectedTotalVolume || 0),
           requestedTimeframe: timeframe,
+          volumeWindowQuality,
           volumeWindowFallback,
+          historicalSymbolCoverageDays: allCoveredDays,
+          historicalSymbolExpectedDays: expectedProcessedDays,
+          historicalSymbolCoverageDaysAny: allCoveredDaysAny,
+          historical30dCoverageDays: covered30dDays,
+          historical30dExpectedDays: expected30dDays,
+          historical30dCoverageDaysAny: covered30dDaysAny,
           protocolCumulativeVolumeUsd:
             historicalTotal !== null && Number.isFinite(Number(historicalTotal))
               ? Number(historicalTotal)
@@ -624,10 +958,7 @@ function createWalletTrackingComponent({
         return true;
       }
 
-      payload.indexer =
-        walletIndexer && typeof walletIndexer.getStatus === "function"
-          ? walletIndexer.getStatus()
-          : null;
+      payload.indexer = await getFreshIndexerStatus();
 
       sendJson(res, 200, payload);
       return true;
@@ -641,10 +972,7 @@ function createWalletTrackingComponent({
     if (url.pathname === "/api/indexer/status") {
       sendJson(res, 200, {
         generatedAt: Date.now(),
-        status:
-          walletIndexer && typeof walletIndexer.getStatus === "function"
-            ? walletIndexer.getStatus()
-            : null,
+        status: await getFreshIndexerStatus(),
       });
       return true;
     }

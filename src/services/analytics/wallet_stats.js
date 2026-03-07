@@ -28,6 +28,20 @@ function normalizeTradeLike(row = {}) {
     amount: row.amount !== undefined ? row.amount : "0",
     price: row.price !== undefined ? row.price : "0",
     fee: row.fee !== undefined ? row.fee : "0",
+    liquidityPoolFee:
+      row.liquidity_pool_fee !== undefined
+        ? row.liquidity_pool_fee
+        : row.liquidityPoolFee !== undefined
+        ? row.liquidityPoolFee
+        : row.lp_fee !== undefined
+        ? row.lp_fee
+        : row.lpFee !== undefined
+        ? row.lpFee
+        : row.supply_side_fee !== undefined
+        ? row.supply_side_fee
+        : row.supplySideFee !== undefined
+        ? row.supplySideFee
+        : "0",
     pnl: row.pnl !== undefined ? row.pnl : "0",
     timestamp: Number.isFinite(timestamp) ? timestamp : 0,
   };
@@ -65,7 +79,10 @@ function aggregateBucket({ trades = [], funding = [], now, sinceTs = null }) {
     : [];
 
   let volumeUsd = 0;
-  let feesUsd = 0;
+  let feesPaidUsd = 0;
+  let liquidityPoolFeesUsd = 0;
+  let feeRebatesUsd = 0;
+  let netFeesUsd = 0;
   let pnlUsd = 0;
   let wins = 0;
   let losses = 0;
@@ -79,11 +96,15 @@ function aggregateBucket({ trades = [], funding = [], now, sinceTs = null }) {
     const amount = Math.abs(toNum(row.amount, 0));
     const price = toNum(row.price, 0);
     const notional = amount * price;
-    const fee = Math.abs(toNum(row.fee, 0));
+    const feeSigned = toNum(row.fee, 0);
+    const liquidityPoolFee = Math.max(0, toNum(row.liquidityPoolFee, 0));
     const pnl = toNum(row.pnl, 0);
 
     volumeUsd += notional;
-    feesUsd += fee;
+    if (feeSigned > 0) feesPaidUsd += feeSigned;
+    else if (feeSigned < 0) feeRebatesUsd += Math.abs(feeSigned);
+    liquidityPoolFeesUsd += liquidityPoolFee;
+    netFeesUsd += feeSigned;
     pnlUsd += pnl;
 
     if (pnl > 0) wins += 1;
@@ -112,9 +133,15 @@ function aggregateBucket({ trades = [], funding = [], now, sinceTs = null }) {
     computedAt: now,
     trades: tradeCount,
     volumeUsd,
-    feesUsd,
+    // feesUsd remains "fees paid by wallet" for compatibility with existing consumers.
+    feesUsd: feesPaidUsd,
+    feesPaidUsd,
+    liquidityPoolFeesUsd,
+    feeRebatesUsd,
+    netFeesUsd,
     fundingPayoutUsd,
-    revenueUsd: feesUsd,
+    // Revenue tracks gross wallet-paid trading fees (platform-side net can be derived from netFeesUsd).
+    revenueUsd: feesPaidUsd,
     pnlUsd,
     wins,
     losses,

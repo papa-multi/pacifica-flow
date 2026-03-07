@@ -476,11 +476,10 @@ const GLOBAL_KPI_VOLUME_METHOD = (() => {
   if (raw === "prices_rolling_24h") return "prices_rolling_24h";
   return "defillama_compat";
 })();
-// Source: DefiLlama Pacifica adapter start date:
-// https://raw.githubusercontent.com/DefiLlama/dimension-adapters/master/dexs/pacifica/index.ts
-// start: '2025-06-09'
+// Historical tracking start date currently used for Pacifica volume reconstruction.
+// Can be overridden with PACIFICA_GLOBAL_KPI_DEFILLAMA_START_DATE.
 const GLOBAL_KPI_DEFILLAMA_START_DATE = String(
-  process.env.PACIFICA_GLOBAL_KPI_DEFILLAMA_START_DATE || "2025-06-09"
+  process.env.PACIFICA_GLOBAL_KPI_DEFILLAMA_START_DATE || "2025-09-09"
 )
   .trim()
   .slice(0, 10);
@@ -631,6 +630,29 @@ function extractDailyVolume(entry) {
   return toFinite(entry, 0);
 }
 
+function hasSymbolVolumes(entry) {
+  if (!entry || typeof entry !== "object") return false;
+  const volumes = entry.symbolVolumes;
+  if (!volumes || typeof volumes !== "object" || Array.isArray(volumes)) return false;
+  return Object.keys(volumes).length > 0;
+}
+
+function findNextMissingSymbolVolumeDate({ startMs, endMs, dailyByDate }) {
+  const map = dailyByDate && typeof dailyByDate === "object" ? dailyByDate : {};
+  const safeStart = Number.isFinite(Number(startMs)) ? Number(startMs) : null;
+  const safeEnd = Number.isFinite(Number(endMs)) ? Number(endMs) : null;
+  if (safeStart === null || safeEnd === null || safeEnd < safeStart) return null;
+  let cursor = safeStart;
+  while (cursor <= safeEnd) {
+    const day = formatUtcDate(cursor);
+    if (!day) break;
+    const row = map[day];
+    if (!row || !hasSymbolVolumes(row)) return day;
+    cursor += ONE_DAY_MS;
+  }
+  return null;
+}
+
 function computeDefillamaContiguousProgress({ startMs, todayMs, dailyByDate }) {
   const map = dailyByDate && typeof dailyByDate === "object" ? dailyByDate : {};
   const safeStartMs = Number.isFinite(Number(startMs))
@@ -699,6 +721,7 @@ async function computeDefiLlamaCompatDailyVolume({
 }) {
   const safeSymbols = Array.isArray(symbols) ? symbols.filter(Boolean) : [];
   let dailyVolume = 0;
+  const symbolVolumes = {};
   let okSymbols = 0;
   let failedSymbols = 0;
   let missingSymbols = 0;
@@ -733,7 +756,9 @@ async function computeDefiLlamaCompatDailyVolume({
         const c = Number(target.c);
         if (Number.isFinite(v) && Number.isFinite(c)) {
           // DeFiLlama-compatible historical daily volume (USD) by symbol/day candle.
-          dailyVolume += v * c;
+          const symbolVolume = v * c;
+          dailyVolume += symbolVolume;
+          symbolVolumes[symbol] = Number(symbolVolume.toFixed(8));
         } else {
           missingSymbols += 1;
           if (errors.length < 8) {
@@ -756,6 +781,7 @@ async function computeDefiLlamaCompatDailyVolume({
 
   return {
     dailyVolume,
+    symbolVolumes,
     symbolCount: safeSymbols.length,
     okSymbols,
     failedSymbols,
@@ -1251,7 +1277,9 @@ async function main() {
 
     if (GLOBAL_KPI_VOLUME_METHOD === "defillama_compat") {
       const configuredStartMs = parseUtcDateMs(GLOBAL_KPI_DEFILLAMA_START_DATE);
-      const startMs = Number.isFinite(configuredStartMs) ? configuredStartMs : Date.UTC(2025, 5, 9, 0, 0, 0, 0);
+      const startMs = Number.isFinite(configuredStartMs)
+        ? configuredStartMs
+        : Date.UTC(2025, 8, 9, 0, 0, 0, 0);
       const startDate = formatUtcDate(startMs);
       const previousCompatVersion = Number(
         globalKpiState &&
@@ -1397,8 +1425,26 @@ async function main() {
           cursorMs += ONE_DAY_MS;
         }
       } else {
-        // Keep current UTC day fresh while backfill is complete.
-        daysToProcessMs.push(todayStartMs);
+        // Backfill complete: if old rows are missing symbol-level volumes, repair those first.
+        const nextMissingSymbolDate = findNextMissingSymbolVolumeDate({
+          startMs,
+          endMs: todayStartMs,
+          dailyByDate,
+        });
+        if (nextMissingSymbolDate) {
+          let cursorMs = parseUtcDateMs(nextMissingSymbolDate);
+          while (
+            Number.isFinite(cursorMs) &&
+            cursorMs <= todayStartMs &&
+            daysToProcessMs.length < GLOBAL_KPI_BACKFILL_DAYS_PER_RUN
+          ) {
+            daysToProcessMs.push(cursorMs);
+            cursorMs += ONE_DAY_MS;
+          }
+        } else {
+          // Keep current UTC day fresh while backfill is complete.
+          daysToProcessMs.push(todayStartMs);
+        }
       }
 
       const processedDates = [];
@@ -1428,23 +1474,48 @@ async function main() {
           Number(compat.symbolCount || 0) > 0
             ? Number(compat.failedSymbols || 0) / Number(compat.symbolCount || 1)
             : 0;
-        if (
-          Number(compat.failedSymbols || 0) > 0 &&
-          (Number(compat.okSymbols || 0) === 0 || failedRatio > 0.25)
-        ) {
-          throw new Error(
-            `defillama_compat day=${dayDate} degraded: failed_symbols=${compat.failedSymbols} ok_symbols=${compat.okSymbols} symbol_count=${compat.symbolCount}`
-          );
-        }
-
         if (GLOBAL_KPI_STRICT_DAILY && Number(compat.failedSymbols || 0) > 0) {
           throw new Error(
             `defillama_compat day=${dayDate} incomplete: failed_symbols=${compat.failedSymbols}`
           );
         }
 
+        if (
+          Number(compat.failedSymbols || 0) > 0 &&
+          (Number(compat.okSymbols || 0) === 0 || failedRatio > 0.25)
+        ) {
+          // In non-strict mode we keep moving forward with explicit quality markers.
+          // This prevents full KPI starvation when a subset of symbols/proxies fail.
+          console.warn(
+            `[global-kpi] defillama_compat day=${dayDate} degraded: failed_symbols=${compat.failedSymbols} ok_symbols=${compat.okSymbols} symbol_count=${compat.symbolCount} strict=false`
+          );
+          if (Number(compat.okSymbols || 0) === 0) {
+            const existing = dailyByDate[dayDate];
+            if (existing && typeof existing === "object") {
+              processedDates.push(dayDate);
+              continue;
+            }
+          }
+        }
+
+        const normalizedSymbolVolumes = {};
+        if (
+          compat.symbolVolumes &&
+          typeof compat.symbolVolumes === "object" &&
+          !Array.isArray(compat.symbolVolumes)
+        ) {
+          Object.entries(compat.symbolVolumes).forEach(([symbolRaw, volumeRaw]) => {
+            const symbol = String(symbolRaw || "").trim();
+            if (!symbol) return;
+            const volume = Number(volumeRaw);
+            if (!Number.isFinite(volume) || volume <= 0) return;
+            normalizedSymbolVolumes[symbol] = Number(volume.toFixed(8));
+          });
+        }
+
         dailyByDate[dayDate] = {
           dailyVolume: Number(compat.dailyVolume || 0),
+          symbolVolumes: normalizedSymbolVolumes,
           symbolCount: Number(compat.symbolCount || 0),
           okSymbols: Number(compat.okSymbols || 0),
           failedSymbols: Number(compat.failedSymbols || 0),
