@@ -16,6 +16,16 @@ function toFixed(value, digits = 2) {
   return num.toFixed(digits);
 }
 
+function toCompact(value) {
+  const num = toNum(value, 0);
+  const abs = Math.abs(num);
+  if (abs >= 1e12) return `${toFixed(num / 1e12, 2)}T`;
+  if (abs >= 1e9) return `${toFixed(num / 1e9, 2)}B`;
+  if (abs >= 1e6) return `${toFixed(num / 1e6, 2)}M`;
+  if (abs >= 1e3) return `${toFixed(num / 1e3, 2)}K`;
+  return toFixed(num, 2);
+}
+
 function computeDefiLlamaV2FromPrices(rows = []) {
   return (Array.isArray(rows) ? rows : []).reduce(
     (acc, item) => {
@@ -197,72 +207,94 @@ function createWalletTrackingComponent({
 
   async function getDefiLlamaPricesTruth() {
     const now = Date.now();
-    if (typeof globalKpiProvider === "function") {
-      const shared = globalKpiProvider();
-      if (
+    const shared =
+      typeof globalKpiProvider === "function" ? globalKpiProvider() : null;
+    const sharedHasPrices =
+      shared &&
+      typeof shared === "object" &&
+      Number(shared.fetchedAt || 0) > 0 &&
+      Array.isArray(shared.prices);
+    const sharedHistory = {
+      volumeMethod:
+        (shared && shared.volumeMethod) || "prices_rolling_24h",
+      volumeSource:
+        (shared && shared.volumeSource) || "/api/v1/info/prices:sum(volume_24h)",
+      volumeMeta: (shared && shared.volumeMeta) || null,
+      totalHistoricalVolume:
         shared &&
-        typeof shared === "object" &&
-        Number(shared.fetchedAt || 0) > 0 &&
-        Array.isArray(shared.prices)
-      ) {
-        return {
-          prices: shared.prices,
-          dailyVolume: Number(shared.dailyVolume || 0),
-          openInterestAtEnd: Number(shared.openInterestAtEnd || 0),
-          volumeMethod: shared.volumeMethod || "prices_rolling_24h",
-          volumeSource: shared.volumeSource || "/api/v1/info/prices:sum(volume_24h)",
-          volumeMeta: shared.volumeMeta || null,
-          totalHistoricalVolume:
-            shared.totalHistoricalVolume !== null &&
-            shared.totalHistoricalVolume !== undefined &&
-            Number.isFinite(Number(shared.totalHistoricalVolume))
-              ? Number(shared.totalHistoricalVolume)
-              : null,
-          dailyVolumeFromPrices24h: Number.isFinite(Number(shared.dailyVolumeFromPrices24h))
-            ? Number(shared.dailyVolumeFromPrices24h)
-            : null,
-          dailyVolumeDefillamaCompat: Number.isFinite(Number(shared.dailyVolumeDefillamaCompat))
-            ? Number(shared.dailyVolumeDefillamaCompat)
-            : null,
-          stale: false,
-          lastError: null,
-          fetchedAt: Number(shared.fetchedAt || 0),
-          fetchDurationMs: Number(shared.fetchDurationMs || 0),
-          cacheHit: true,
-          source: "global_kpi_worker",
-        };
-      }
-    }
+        shared.totalHistoricalVolume !== null &&
+        shared.totalHistoricalVolume !== undefined &&
+        Number.isFinite(Number(shared.totalHistoricalVolume))
+          ? Number(shared.totalHistoricalVolume)
+          : null,
+      dailyVolumeFromPrices24h:
+        shared && Number.isFinite(Number(shared.dailyVolumeFromPrices24h))
+          ? Number(shared.dailyVolumeFromPrices24h)
+          : null,
+      dailyVolumeDefillamaCompat:
+        shared && Number.isFinite(Number(shared.dailyVolumeDefillamaCompat))
+          ? Number(shared.dailyVolumeDefillamaCompat)
+          : null,
+    };
 
+    // Source-of-truth for total volume + symbol rank is /info/prices (live + short cache).
+    // Global KPI contributes only historical metadata (tracking progress/cumulative totals).
     if (
       Number(defillamaCache.ttlMs || 0) > 0 &&
       now - Number(defillamaCache.fetchedAt || 0) <= defillamaCache.ttlMs
     ) {
       return {
         ...defillamaCache.value,
-        volumeMethod: "prices_rolling_24h",
-        volumeSource: "/api/v1/info/prices:sum(volume_24h)",
-        volumeMeta: null,
-        totalHistoricalVolume: null,
+        volumeMethod: sharedHistory.volumeMethod,
+        volumeSource: sharedHistory.volumeSource,
+        volumeMeta: sharedHistory.volumeMeta,
+        totalHistoricalVolume: sharedHistory.totalHistoricalVolume,
+        dailyVolumeFromPrices24h: Number(defillamaCache.value.dailyVolume || 0),
+        dailyVolumeDefillamaCompat: sharedHistory.dailyVolumeDefillamaCompat,
         stale: Boolean(defillamaCache.stale),
         lastError: defillamaCache.lastError || null,
         fetchedAt: defillamaCache.fetchedAt || null,
         fetchDurationMs: defillamaCache.lastFetchDurationMs,
         cacheHit: true,
+        source: "local_cache",
       };
     }
+
     if (!restClient || typeof restClient.get !== "function") {
+      if (sharedHasPrices) {
+        return {
+          prices: shared.prices,
+          dailyVolume: Number(shared.dailyVolume || 0),
+          openInterestAtEnd: Number(shared.openInterestAtEnd || 0),
+          volumeMethod: sharedHistory.volumeMethod,
+          volumeSource: sharedHistory.volumeSource,
+          volumeMeta: sharedHistory.volumeMeta,
+          totalHistoricalVolume: sharedHistory.totalHistoricalVolume,
+          dailyVolumeFromPrices24h: sharedHistory.dailyVolumeFromPrices24h,
+          dailyVolumeDefillamaCompat: sharedHistory.dailyVolumeDefillamaCompat,
+          stale: true,
+          lastError: "rest_client_unavailable",
+          fetchedAt: Number(shared.fetchedAt || 0) || null,
+          fetchDurationMs: Number(shared.fetchDurationMs || 0),
+          cacheHit: true,
+          source: "global_kpi_worker_fallback",
+        };
+      }
+
       return {
         ...defillamaCache.value,
-        volumeMethod: "prices_rolling_24h",
-        volumeSource: "/api/v1/info/prices:sum(volume_24h)",
-        volumeMeta: null,
-        totalHistoricalVolume: null,
+        volumeMethod: sharedHistory.volumeMethod,
+        volumeSource: sharedHistory.volumeSource,
+        volumeMeta: sharedHistory.volumeMeta,
+        totalHistoricalVolume: sharedHistory.totalHistoricalVolume,
+        dailyVolumeFromPrices24h: Number(defillamaCache.value.dailyVolume || 0),
+        dailyVolumeDefillamaCompat: sharedHistory.dailyVolumeDefillamaCompat,
         stale: true,
         lastError: "rest_client_unavailable",
         fetchedAt: defillamaCache.fetchedAt || null,
         fetchDurationMs: defillamaCache.lastFetchDurationMs,
         cacheHit: true,
+        source: "local_cache_fallback",
       };
     }
 
@@ -284,10 +316,12 @@ function createWalletTrackingComponent({
       defillamaCache.lastFetchDurationMs = fetchDurationMs;
       return {
         ...next,
-        volumeMethod: "prices_rolling_24h",
-        volumeSource: "/api/v1/info/prices:sum(volume_24h)",
-        volumeMeta: null,
-        totalHistoricalVolume: null,
+        volumeMethod: sharedHistory.volumeMethod,
+        volumeSource: sharedHistory.volumeSource,
+        volumeMeta: sharedHistory.volumeMeta,
+        totalHistoricalVolume: sharedHistory.totalHistoricalVolume,
+        dailyVolumeFromPrices24h: Number(next.dailyVolume || 0),
+        dailyVolumeDefillamaCompat: sharedHistory.dailyVolumeDefillamaCompat,
         stale: false,
         lastError: null,
         fetchedAt: defillamaCache.fetchedAt,
@@ -296,24 +330,46 @@ function createWalletTrackingComponent({
         source: "local_fetch",
       };
     } catch (error) {
-      // Never fall back to wallet-derived volume/rank for this KPI.
-      // If live fetch fails, use last known DefiLlama snapshot if available.
       if (Number(defillamaCache.fetchedAt || 0) > 0) {
         defillamaCache.stale = true;
         defillamaCache.lastError = error.message || "defillama_fetch_failed";
         return {
           ...defillamaCache.value,
-          volumeMethod: "prices_rolling_24h",
-          volumeSource: "/api/v1/info/prices:sum(volume_24h)",
-          volumeMeta: null,
-          totalHistoricalVolume: null,
+          volumeMethod: sharedHistory.volumeMethod,
+          volumeSource: sharedHistory.volumeSource,
+          volumeMeta: sharedHistory.volumeMeta,
+          totalHistoricalVolume: sharedHistory.totalHistoricalVolume,
+          dailyVolumeFromPrices24h: Number(defillamaCache.value.dailyVolume || 0),
+          dailyVolumeDefillamaCompat: sharedHistory.dailyVolumeDefillamaCompat,
           stale: true,
           lastError: defillamaCache.lastError,
           fetchedAt: defillamaCache.fetchedAt || null,
           fetchDurationMs: defillamaCache.lastFetchDurationMs,
           cacheHit: true,
+          source: "local_cache_fallback",
         };
       }
+
+      if (sharedHasPrices) {
+        return {
+          prices: shared.prices,
+          dailyVolume: Number(shared.dailyVolume || 0),
+          openInterestAtEnd: Number(shared.openInterestAtEnd || 0),
+          volumeMethod: sharedHistory.volumeMethod,
+          volumeSource: sharedHistory.volumeSource,
+          volumeMeta: sharedHistory.volumeMeta,
+          totalHistoricalVolume: sharedHistory.totalHistoricalVolume,
+          dailyVolumeFromPrices24h: Number(shared.dailyVolume || 0),
+          dailyVolumeDefillamaCompat: sharedHistory.dailyVolumeDefillamaCompat,
+          stale: true,
+          lastError: error.message || "defillama_fetch_failed",
+          fetchedAt: Number(shared.fetchedAt || 0) || null,
+          fetchDurationMs: Number(shared.fetchDurationMs || 0),
+          cacheHit: true,
+          source: "global_kpi_worker_fallback",
+        };
+      }
+
       throw error;
     }
   }
@@ -421,11 +477,18 @@ function createWalletTrackingComponent({
     }
 
     if (url.pathname === "/api/exchange/overview") {
+      const timeframeRaw = String(url.searchParams.get("timeframe") || "all")
+        .toLowerCase()
+        .trim();
+      const timeframe =
+        timeframeRaw === "24h" || timeframeRaw === "30d" || timeframeRaw === "all"
+          ? timeframeRaw
+          : "all";
       const payload = buildExchangeOverviewPayload({
         state: pipeline.getState(),
         transport: pipeline.getTransportState(),
         wallets: walletStore ? walletStore.list() : [],
-        timeframe: url.searchParams.get("timeframe"),
+        timeframe,
       });
 
       // Source of truth: use Pacifica /info/prices DefiLlama-style formula for volume/OI.
@@ -434,23 +497,57 @@ function createWalletTrackingComponent({
       try {
         const truth = await getDefiLlamaPricesTruth();
         const volumeWindow = buildVolumeWindowInfo(truth);
+        const rank24h = buildDefiLlamaVolumeRank(
+          truth.prices,
+          Array.isArray(truth.prices) ? truth.prices.length : 0
+        );
+        const total24hFromRank = rank24h.reduce(
+          (acc, row) => acc + toNum(row && row.volume_24h_usd !== undefined ? row.volume_24h_usd : 0),
+          0
+        );
         const historicalTotal =
           truth.totalHistoricalVolume !== null &&
           truth.totalHistoricalVolume !== undefined &&
           Number.isFinite(Number(truth.totalHistoricalVolume))
             ? Number(truth.totalHistoricalVolume)
             : null;
-        payload.kpis.totalVolumeUsd = toFixed(
-          historicalTotal !== null ? historicalTotal : truth.dailyVolume,
+        // Keep total volume and volume rank on the same window/source to avoid logical mismatch.
+        // Current source-of-truth rank is /info/prices volume_24h, so default window is 24h.
+        // If historical per-symbol rank becomes available, this can switch to all-time/30d windows.
+        let volumeWindowUsed = "24h";
+        let selectedRank = rank24h;
+        let selectedTotalVolume = total24hFromRank;
+        let volumeWindowFallback = false;
+        if (timeframe === "all") {
+          volumeWindowFallback = true;
+        } else if (timeframe === "30d") {
+          volumeWindowFallback = true;
+        }
+
+        payload.kpis.totalVolumeUsd = toFixed(selectedTotalVolume, 2);
+        payload.kpis.totalVolumeCompact = toCompact(payload.kpis.totalVolumeUsd);
+        payload.kpis.protocolCumulativeVolumeUsd = toFixed(
+          historicalTotal !== null ? historicalTotal : 0,
           2
         );
         payload.kpis.openInterestAtEnd = toFixed(truth.openInterestAtEnd, 2);
-        payload.volumeRank = buildDefiLlamaVolumeRank(truth.prices, 100);
+        payload.volumeRank = selectedRank;
         payload.source = {
           ...(payload.source || {}),
           dailyVolumeSource: "/api/v1/info/prices:sum(volume_24h)",
           openInterestSource: "/api/v1/info/prices:sum(open_interest*mark)",
           volumeRankSource: "/api/v1/info/prices:rank_by(volume_24h)",
+          totalVolumeSource: "/api/v1/info/prices:sum(volume_24h)",
+          volumeRankWindowUsed: volumeWindowUsed,
+          totalVolumeWindowUsed: volumeWindowUsed,
+          volumeRankSymbolCount: rank24h.length,
+          volumeRankTotalUsd: Number(total24hFromRank || 0),
+          requestedTimeframe: timeframe,
+          volumeWindowFallback,
+          protocolCumulativeVolumeUsd:
+            historicalTotal !== null && Number.isFinite(Number(historicalTotal))
+              ? Number(historicalTotal)
+              : null,
           symbolNormalization: "use_api_symbol_as_is",
           totalVolumeSourceOfTruth: "defillama_adapter_logic",
           defillamaSource: truth.source || "local_fetch",

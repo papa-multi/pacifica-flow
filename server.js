@@ -301,6 +301,34 @@ const INDEXER_SCAN_RAMP_STEP_MS = Math.max(
   5000,
   Number(process.env.PACIFICA_INDEXER_SCAN_RAMP_STEP_MS || 60000)
 );
+const INDEXER_CLIENT_429_COOLDOWN_BASE_MS = Math.max(
+  1000,
+  Number(process.env.PACIFICA_INDEXER_CLIENT_429_COOLDOWN_BASE_MS || 2000)
+);
+const INDEXER_CLIENT_429_COOLDOWN_MAX_MS = Math.max(
+  INDEXER_CLIENT_429_COOLDOWN_BASE_MS,
+  Number(process.env.PACIFICA_INDEXER_CLIENT_429_COOLDOWN_MAX_MS || 120000)
+);
+const INDEXER_CLIENT_SERVER_ERROR_COOLDOWN_BASE_MS = Math.max(
+  250,
+  Number(process.env.PACIFICA_INDEXER_CLIENT_SERVER_ERROR_COOLDOWN_BASE_MS || 1000)
+);
+const INDEXER_CLIENT_SERVER_ERROR_COOLDOWN_MAX_MS = Math.max(
+  INDEXER_CLIENT_SERVER_ERROR_COOLDOWN_BASE_MS,
+  Number(process.env.PACIFICA_INDEXER_CLIENT_SERVER_ERROR_COOLDOWN_MAX_MS || 30000)
+);
+const INDEXER_CLIENT_TIMEOUT_COOLDOWN_BASE_MS = Math.max(
+  250,
+  Number(process.env.PACIFICA_INDEXER_CLIENT_TIMEOUT_COOLDOWN_BASE_MS || 1500)
+);
+const INDEXER_CLIENT_TIMEOUT_COOLDOWN_MAX_MS = Math.max(
+  INDEXER_CLIENT_TIMEOUT_COOLDOWN_BASE_MS,
+  Number(process.env.PACIFICA_INDEXER_CLIENT_TIMEOUT_COOLDOWN_MAX_MS || 45000)
+);
+const INDEXER_CLIENT_DEFAULT_COOLDOWN_MS = Math.max(
+  100,
+  Number(process.env.PACIFICA_INDEXER_CLIENT_DEFAULT_COOLDOWN_MS || 1000)
+);
 const INDEXER_DISCOVERY_ONLY = (() => {
   if (Object.prototype.hasOwnProperty.call(process.env, "PACIFICA_INDEXER_DISCOVERY_ONLY")) {
     return String(process.env.PACIFICA_INDEXER_DISCOVERY_ONLY || "").toLowerCase() === "true";
@@ -461,7 +489,7 @@ const GLOBAL_KPI_BACKFILL_DAYS_PER_RUN = Math.max(
   Math.min(120, Number(process.env.PACIFICA_GLOBAL_KPI_BACKFILL_DAYS_PER_RUN || 5))
 );
 const GLOBAL_KPI_STRICT_DAILY =
-  String(process.env.PACIFICA_GLOBAL_KPI_STRICT_DAILY || "true").toLowerCase() !== "false";
+  String(process.env.PACIFICA_GLOBAL_KPI_STRICT_DAILY || "false").toLowerCase() !== "false";
 const GLOBAL_KPI_SYMBOL_CONCURRENCY = Math.max(
   1,
   Math.min(32, Number(process.env.PACIFICA_GLOBAL_KPI_SYMBOL_CONCURRENCY || 4))
@@ -477,6 +505,7 @@ const GLOBAL_KPI_REFRESH_MS = Math.max(
 const GLOBAL_KPI_PATH = process.env.PACIFICA_GLOBAL_KPI_PATH
   ? path.resolve(process.env.PACIFICA_GLOBAL_KPI_PATH)
   : path.join(PIPELINE_DATA_DIR, "global_kpi.json");
+const GLOBAL_KPI_DEFILLAMA_COMPAT_VERSION = 7;
 
 const PUBLIC_DIR = path.join(__dirname, "public");
 
@@ -642,17 +671,23 @@ function computeDefillamaContiguousProgress({ startMs, todayMs, dailyByDate }) {
   };
 }
 
-async function fetchPacificaSymbols(restClient) {
+async function fetchPacificaMarkets(restClient) {
   const infoRes = await restClient.get("/info", { cost: 1 });
   const payload = infoRes && infoRes.payload ? infoRes.payload : {};
   const rows = Array.isArray(payload.data) ? payload.data : [];
-  return Array.from(
-    new Set(
-      rows
-        .map((row) => String((row && row.symbol) || "").trim())
-        .filter(Boolean)
-    )
-  );
+  const out = [];
+  const seen = new Set();
+  for (const row of rows) {
+    const symbol = String((row && row.symbol) || "").trim();
+    if (!symbol || seen.has(symbol)) continue;
+    seen.add(symbol);
+    const createdAtRaw = row && row.created_at !== undefined ? Number(row.created_at) : null;
+    out.push({
+      symbol,
+      createdAtMs: Number.isFinite(createdAtRaw) ? createdAtRaw : null,
+    });
+  }
+  return out;
 }
 
 async function computeDefiLlamaCompatDailyVolume({
@@ -666,6 +701,7 @@ async function computeDefiLlamaCompatDailyVolume({
   let dailyVolume = 0;
   let okSymbols = 0;
   let failedSymbols = 0;
+  let missingSymbols = 0;
   const errors = [];
   const concurrency = Math.max(1, Math.min(64, Number(symbolConcurrency || 1)));
   let cursor = 0;
@@ -684,17 +720,26 @@ async function computeDefiLlamaCompatDailyVolume({
         });
         const payload = res && res.payload ? res.payload : {};
         const rows = Array.isArray(payload.data) ? payload.data : [];
-        const target =
-          rows.find((row) => Number((row && row.t) || 0) === Number(startOfDayMs)) ||
-          rows[0] ||
-          null;
-        if (!target) continue;
+        const target = rows.find((row) => Number((row && row.t) || 0) === Number(startOfDayMs)) || null;
+        if (!target) {
+          missingSymbols += 1;
+          if (errors.length < 8) {
+            errors.push(`${symbol}:missing_exact_day_candle`);
+          }
+          continue;
+        }
 
         const v = Number(target.v);
         const c = Number(target.c);
         if (Number.isFinite(v) && Number.isFinite(c)) {
-          // DeFiLlama adapter comment: Pacifica candle volume includes taker+maker.
-          dailyVolume += (v * c) / 2;
+          // DeFiLlama-compatible historical daily volume (USD) by symbol/day candle.
+          dailyVolume += v * c;
+        } else {
+          missingSymbols += 1;
+          if (errors.length < 8) {
+            errors.push(`${symbol}:invalid_v_or_c`);
+          }
+          continue;
         }
         okSymbols += 1;
       } catch (error) {
@@ -714,6 +759,7 @@ async function computeDefiLlamaCompatDailyVolume({
     symbolCount: safeSymbols.length,
     okSymbols,
     failedSymbols,
+    missingSymbols,
     errors,
   };
 }
@@ -1207,6 +1253,23 @@ async function main() {
       const configuredStartMs = parseUtcDateMs(GLOBAL_KPI_DEFILLAMA_START_DATE);
       const startMs = Number.isFinite(configuredStartMs) ? configuredStartMs : Date.UTC(2025, 5, 9, 0, 0, 0, 0);
       const startDate = formatUtcDate(startMs);
+      const previousCompatVersion = Number(
+        globalKpiState &&
+          globalKpiState.volumeMeta &&
+          Number(globalKpiState.volumeMeta.compatVersion || 0)
+      );
+      const previousStartDate = String(
+        (globalKpiState &&
+          globalKpiState.volumeMeta &&
+          globalKpiState.volumeMeta.trackingStartDate) ||
+          (globalKpiState && globalKpiState.history && globalKpiState.history.startDate) ||
+          ""
+      )
+        .trim()
+        .slice(0, 10);
+      const resetForCompatUpgrade = previousCompatVersion < GLOBAL_KPI_DEFILLAMA_COMPAT_VERSION;
+      const resetForStartDateChange =
+        Boolean(previousStartDate) && previousStartDate !== startDate;
       const prevHistory =
         globalKpiState &&
         globalKpiState.history &&
@@ -1214,14 +1277,50 @@ async function main() {
         !Array.isArray(globalKpiState.history)
           ? globalKpiState.history
           : {};
-      const dailyByDate =
+      const canScaleLegacyCompatHistory =
+        resetForCompatUpgrade &&
+        !resetForStartDateChange &&
+        previousCompatVersion === 6 &&
+        GLOBAL_KPI_DEFILLAMA_COMPAT_VERSION === 7 &&
+        prevHistory.dailyByDate &&
+        typeof prevHistory.dailyByDate === "object" &&
+        !Array.isArray(prevHistory.dailyByDate);
+      if (resetForCompatUpgrade && !canScaleLegacyCompatHistory) {
+        console.warn(
+          `[global-kpi] resetting history for compat_version_upgrade old=${Number.isFinite(previousCompatVersion) ? previousCompatVersion : 0} new=${GLOBAL_KPI_DEFILLAMA_COMPAT_VERSION}`
+        );
+      }
+      if (resetForStartDateChange) {
+        console.warn(
+          `[global-kpi] resetting history for start_date_change old=${previousStartDate} new=${startDate}`
+        );
+      }
+      let dailyByDate = {};
+      if (
+        !resetForCompatUpgrade &&
+        !resetForStartDateChange &&
         prevHistory.dailyByDate &&
         typeof prevHistory.dailyByDate === "object" &&
         !Array.isArray(prevHistory.dailyByDate)
-          ? { ...prevHistory.dailyByDate }
-          : {};
+      ) {
+        dailyByDate = { ...prevHistory.dailyByDate };
+      } else if (canScaleLegacyCompatHistory) {
+        for (const [dayKey, value] of Object.entries(prevHistory.dailyByDate)) {
+          const row = value && typeof value === "object" ? value : {};
+          const scaledVolume = Number(row.dailyVolume) * 2;
+          dailyByDate[dayKey] = {
+            ...row,
+            dailyVolume: Number.isFinite(scaledVolume) ? scaledVolume : 0,
+            migratedFromCompatVersion: previousCompatVersion,
+            migratedAt: Date.now(),
+          };
+        }
+        console.warn(
+          `[global-kpi] migrated history for compat_version_upgrade old=${previousCompatVersion} new=${GLOBAL_KPI_DEFILLAMA_COMPAT_VERSION} transform=sum(v*c)`
+        );
+      }
 
-      const symbols = await fetchPacificaSymbols(globalKpiRestClient);
+      const markets = await fetchPacificaMarkets(globalKpiRestClient);
       let progress = computeDefillamaContiguousProgress({
         startMs,
         todayMs: todayStartMs,
@@ -1237,7 +1336,7 @@ async function main() {
           latestDayDate: todayUtcDate,
           latestDayStartMs: todayStartMs,
           latestDayStartIso: new Date(todayStartMs).toISOString(),
-          symbolCount: Number(symbols.length || 0),
+          symbolCount: Number(markets.length || 0),
           lastProcessedDate: progressState.lastProcessedDate,
           nextUnprocessedDate: progressState.nextUnprocessedDate,
           remainingDaysToToday: progressState.remainingDays,
@@ -1248,6 +1347,7 @@ async function main() {
           processedDates: Array.isArray(processedDatesState) ? processedDatesState : [],
           strictDaily: GLOBAL_KPI_STRICT_DAILY,
           backfillDaysPerRun: GLOBAL_KPI_BACKFILL_DAYS_PER_RUN,
+          compatVersion: GLOBAL_KPI_DEFILLAMA_COMPAT_VERSION,
         };
         const nextHistoryState = {
           startDate,
@@ -1259,13 +1359,14 @@ async function main() {
           totalDaysToToday: progressState.totalDays,
           backfillComplete: progressState.backfillComplete,
           cumulativeVolume: Number(progressState.cumulativeVolume || 0),
+          compatVersion: GLOBAL_KPI_DEFILLAMA_COMPAT_VERSION,
           dailyByDate,
           lastRunAt: Date.now(),
         };
 
         globalKpiState = {
           source: "/api/v1/info/prices",
-          volumeSource: "/api/v1/kline?interval=1d&start_time=<utc_day_start>:sum((v*c)/2)",
+          volumeSource: "/api/v1/kline?interval=1d&start_time=<utc_day_start>:sum(v*c)",
           volumeMethod: "defillama_compat",
           volumeMeta: nextVolumeMeta,
           fetchedAt: Date.now(),
@@ -1276,7 +1377,7 @@ async function main() {
           dailyVolumeDefillamaCompat: currentDailyCompat,
           openInterestAtEnd: Number(totalsFromPrices.openInterestAtEnd || 0),
           prices: rows,
-          volumeRank: buildDefiLlamaVolumeRank(rows, 100),
+          volumeRank: buildDefiLlamaVolumeRank(rows, Array.isArray(rows) ? rows.length : 0),
           history: nextHistoryState,
           updatedAt: Date.now(),
         };
@@ -1303,13 +1404,38 @@ async function main() {
       const processedDates = [];
       for (const dayMs of daysToProcessMs) {
         const dayDate = formatUtcDate(dayMs);
+        const dayEndMs = dayMs + ONE_DAY_MS - 1;
+        const daySymbols = markets
+          .filter((market) => {
+            const listedAt = Number(market && market.createdAtMs);
+            if (!Number.isFinite(listedAt)) return true;
+            return listedAt <= dayEndMs;
+          })
+          .map((market) => market.symbol)
+          .filter(Boolean);
         const compat = await computeDefiLlamaCompatDailyVolume({
           restClient: globalKpiRestClient,
-          symbols,
+          symbols: daySymbols,
           startOfDayMs: dayMs,
           symbolConcurrency: GLOBAL_KPI_SYMBOL_CONCURRENCY,
           logger: console,
         });
+
+        // Guard against writing bad day snapshots when transport is degraded.
+        // Missing symbols are expected for days with no trades/listings, but failed symbols
+        // indicate request-level errors (timeouts/429/proxy failures).
+        const failedRatio =
+          Number(compat.symbolCount || 0) > 0
+            ? Number(compat.failedSymbols || 0) / Number(compat.symbolCount || 1)
+            : 0;
+        if (
+          Number(compat.failedSymbols || 0) > 0 &&
+          (Number(compat.okSymbols || 0) === 0 || failedRatio > 0.25)
+        ) {
+          throw new Error(
+            `defillama_compat day=${dayDate} degraded: failed_symbols=${compat.failedSymbols} ok_symbols=${compat.okSymbols} symbol_count=${compat.symbolCount}`
+          );
+        }
 
         if (GLOBAL_KPI_STRICT_DAILY && Number(compat.failedSymbols || 0) > 0) {
           throw new Error(
@@ -1322,6 +1448,7 @@ async function main() {
           symbolCount: Number(compat.symbolCount || 0),
           okSymbols: Number(compat.okSymbols || 0),
           failedSymbols: Number(compat.failedSymbols || 0),
+          missingSymbols: Number(compat.missingSymbols || 0),
           sampleErrors: Array.isArray(compat.errors) ? compat.errors : [],
           updatedAt: Date.now(),
         };
@@ -1356,12 +1483,12 @@ async function main() {
       volumeMethod = latestState.volumeMethod || "defillama_compat";
       volumeSource =
         latestState.volumeSource ||
-        "/api/v1/kline?interval=1d&start_time=<utc_day_start>:sum((v*c)/2)";
+        "/api/v1/kline?interval=1d&start_time=<utc_day_start>:sum(v*c)";
       volumeMeta = latestState.volumeMeta || null;
       historyState = latestState.history || null;
     }
 
-    const ranked = buildDefiLlamaVolumeRank(rows, 100);
+    const ranked = buildDefiLlamaVolumeRank(rows, Array.isArray(rows) ? rows.length : 0);
     globalKpiState = {
       source: "/api/v1/info/prices",
       volumeSource,
@@ -1498,10 +1625,15 @@ async function main() {
       : null;
 
   const walletIndexer = INDEXER_ENABLED
-    ? new ExchangeWalletIndexer({
+      ? new ExchangeWalletIndexer({
         restClient: indexerRoundRobinRestClient || restClient,
         restClients: indexerRestClients,
         restClientIds: indexerRestClientIds,
+        restClientEntries: indexerRestClientEntries.map((entry) => ({
+          id: entry.id,
+          client: entry.client,
+          proxyUrl: entry.proxyUrl || null,
+        })),
         walletStore,
         walletSource,
         onchainDiscovery,
@@ -1527,6 +1659,13 @@ async function main() {
         backlogRefillBatch: INDEXER_BACKLOG_REFILL_BATCH,
         scanRampQuietMs: INDEXER_SCAN_RAMP_QUIET_MS,
         scanRampStepMs: INDEXER_SCAN_RAMP_STEP_MS,
+        client429CooldownBaseMs: INDEXER_CLIENT_429_COOLDOWN_BASE_MS,
+        client429CooldownMaxMs: INDEXER_CLIENT_429_COOLDOWN_MAX_MS,
+        clientServerErrorCooldownBaseMs: INDEXER_CLIENT_SERVER_ERROR_COOLDOWN_BASE_MS,
+        clientServerErrorCooldownMaxMs: INDEXER_CLIENT_SERVER_ERROR_COOLDOWN_MAX_MS,
+        clientTimeoutCooldownBaseMs: INDEXER_CLIENT_TIMEOUT_COOLDOWN_BASE_MS,
+        clientTimeoutCooldownMaxMs: INDEXER_CLIENT_TIMEOUT_COOLDOWN_MAX_MS,
+        clientDefaultCooldownMs: INDEXER_CLIENT_DEFAULT_COOLDOWN_MS,
         discoveryOnly: INDEXER_DISCOVERY_ONLY,
         onchainPagesPerDiscoveryCycle: ONCHAIN_SCAN_PAGES_PER_CYCLE,
         onchainPagesMaxPerCycle: ONCHAIN_SCAN_PAGES_MAX,
@@ -1688,6 +1827,9 @@ async function main() {
       );
       console.log(
         `[pacifica-flow] indexer_cache_entries_per_endpoint=${INDEXER_CACHE_ENTRIES_PER_ENDPOINT} scan_ramp_quiet_ms=${INDEXER_SCAN_RAMP_QUIET_MS} scan_ramp_step_ms=${INDEXER_SCAN_RAMP_STEP_MS}`
+      );
+      console.log(
+        `[pacifica-flow] indexer_client_cooldown 429_base_ms=${INDEXER_CLIENT_429_COOLDOWN_BASE_MS} 429_max_ms=${INDEXER_CLIENT_429_COOLDOWN_MAX_MS} err_base_ms=${INDEXER_CLIENT_SERVER_ERROR_COOLDOWN_BASE_MS} err_max_ms=${INDEXER_CLIENT_SERVER_ERROR_COOLDOWN_MAX_MS} timeout_base_ms=${INDEXER_CLIENT_TIMEOUT_COOLDOWN_BASE_MS} timeout_max_ms=${INDEXER_CLIENT_TIMEOUT_COOLDOWN_MAX_MS} default_ms=${INDEXER_CLIENT_DEFAULT_COOLDOWN_MS}`
       );
       console.log(
         `[pacifica-flow] snapshots=${SNAPSHOT_ENABLED ? "enabled" : "disabled"} refresh_ms=${SNAPSHOT_REFRESH_MS}`
