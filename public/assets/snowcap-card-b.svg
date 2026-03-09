@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 140" preserveAspectRatio="none">
+  <defs>
+    <linearGradient id="snowMainB" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" />
+      <stop offset=".5" stop-color="#eef7fc" />
+      <stop offset="1" stop-color="#d7e8f3" />
+    </linearGradient>
+    <linearGradient id="snowContactB" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#b7cee1" stop-opacity=".42" />
+      <stop offset="1" stop-color="#b7cee1" stop-opacity="0" />
+    </linearGradient>
+  </defs>
+
+  <path
+    fill="url(#snowMainB)"
+    d="M0 0h1000v58c-26-2-41 8-67 8-25 0-39-14-63-15-28-1-42 16-64 27-22 11-40 10-59-4-20-14-26-42-49-51-28-11-52 6-72 23-21 17-36 34-64 32-30-2-44-25-71-34-27-9-50 1-70 20-19 18-34 37-62 40-29 4-44-16-66-28-22-12-46-13-69-2-20 9-33 27-56 29-25 2-40-17-62-25-22-9-43-4-66 4V0z"
+  />
+  <path
+    fill="#f8fdff"
+    opacity=".5"
+    d="M0 0h1000v43c-25-3-41 8-66 8-23 0-36-10-57-11-25-2-40 10-60 19-22 11-38 10-57-2-19-12-27-32-47-40-24-9-44 4-62 18-20 15-35 28-59 27-25-1-37-20-59-27-23-7-43 1-61 16-17 15-31 31-54 34-25 3-37-13-56-23-20-11-41-12-61-3-18 8-31 23-50 24-20 1-32-13-50-19-19-6-37-3-58 3V0z"
+  />
+  <rect x="0" y="64" width="1000" height="8" fill="url(#snowContactB)" opacity=".6" />
+
+  <g fill="#f4fbff" opacity=".68">
+    <ellipse cx="124" cy="26" rx="16" ry="5" />
+    <ellipse cx="336" cy="22" rx="18" ry="5" />
+    <ellipse cx="548" cy="29" rx="19" ry="5" />
+    <ellipse cx="818" cy="24" rx="17" ry="5" />
+  </g>
+
+  <g fill="#ebf6fd" opacity=".85">
+    <path d="M322 74c-3 0-6 4-6 8 0 5 3 9 6 13 3-4 6-8 6-13 0-4-3-8-6-8z" />
+    <path d="M764 78c-4 0-7 4-7 9 0 6 3 11 7 15 4-4 7-9 7-15 0-5-3-9-7-9z" />
+  </g>
+</svg>
