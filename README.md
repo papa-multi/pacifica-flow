@@ -296,7 +296,15 @@ Useful operational endpoints:
 - `GET /api/indexer/onchain/wallets?confirmed=1&confidenceMin=0.8&page=1&pageSize=50`
 - `GET /api/indexer/onchain/deposit_wallets?page=1&pageSize=200`
 - `GET /api/indexer/onchain/deposit_wallet_evidence?wallet=<ADDRESS>&page=1&pageSize=100`
-- `GET /api/live-trades` (live trades/positions/wallet-performance payload for `/live-trade/`)
+- `GET /api/live-trades` (live trades/positions/wallet-performance payload for `/live-trade/`; full dataset by default, optional query windowing)
+  - query params (all optional, for segmented fetch without truncating source data):
+    - `public_offset`, `public_limit`
+    - `wallet_offset`, `wallet_limit`
+    - `position_offset`, `position_limit`
+    - `account_trade_offset`, `account_trade_limit`
+  - response summary includes both returned counts and total counts, plus `*Windowed`, `*HasMore`, `*Offset`, `*Limit`
+  - no default silent caps on `publicTrades` / `walletPerformance` in this endpoint
+  - `PACIFICA_MAX_PUBLIC_TRADES_PER_SYMBOL=0` means uncapped in-memory retention (default); set a positive value only if you explicitly want a retention cap
 - `GET /api/defillama/v2` (returns `{ dailyVolume, openInterestAtEnd }` from `/api/v1/info/prices`)
 
 Exchange overview volume source of truth:

@@ -18,6 +18,17 @@ function deriveLi(payload) {
 }
 
 function createLiveTradesHostComponent({ wsClient, pipeline, account, logger = console }) {
+  const detailSymbolMaxRaw = Number(process.env.PACIFICA_LIVE_DETAIL_SYMBOL_MAX || 6);
+  const detailSymbolMax =
+    Number.isFinite(detailSymbolMaxRaw) && detailSymbolMaxRaw > 0
+      ? Math.max(1, Math.floor(detailSymbolMaxRaw))
+      : 6;
+  const tradeSymbolMaxRaw = Number(process.env.PACIFICA_LIVE_TRADES_SYMBOL_MAX || 0);
+  const tradeSymbolMax =
+    Number.isFinite(tradeSymbolMaxRaw) && tradeSymbolMaxRaw > 0
+      ? Math.max(1, Math.floor(tradeSymbolMaxRaw))
+      : Infinity;
+
   const state = {
     account: account || null,
     focusSymbols: [],
@@ -71,9 +82,17 @@ function createLiveTradesHostComponent({ wsClient, pipeline, account, logger = c
   function subscribeMarketChannels() {
     subscribe({ source: "prices" });
 
-    state.focusSymbols.slice(0, 6).forEach((symbol) => {
-      subscribe({ source: "bbo", symbol });
+    const tradeSymbols = Number.isFinite(tradeSymbolMax)
+      ? state.focusSymbols.slice(0, tradeSymbolMax)
+      : state.focusSymbols;
+    const detailSymbols = state.focusSymbols.slice(0, detailSymbolMax);
+
+    tradeSymbols.forEach((symbol) => {
       subscribe({ source: "trades", symbol });
+    });
+
+    detailSymbols.forEach((symbol) => {
+      subscribe({ source: "bbo", symbol });
       subscribe({ source: "candle", symbol, interval: "1m" });
       subscribe({ source: "mark_price_candle", symbol, interval: "1m" });
       subscribe({ source: "book", symbol, agg_level: 1 });
@@ -153,6 +172,17 @@ function createLiveTradesHostComponent({ wsClient, pipeline, account, logger = c
 
     switch (payload.channel) {
       case "prices":
+        if (!state.focusSymbols.length && Array.isArray(payload.data) && payload.data.length) {
+          const symbols = payload.data
+            .map((row) => String((row && (row.symbol || row.s)) || "").toUpperCase())
+            .filter(Boolean);
+          if (symbols.length) {
+            state.focusSymbols = Array.from(new Set(symbols));
+            if (wsClient.getState().status === "open") {
+              syncSubscriptions();
+            }
+          }
+        }
         ingestWsEvent("ws.prices", payload);
         break;
       case "account_info":
@@ -229,7 +259,7 @@ function createLiveTradesHostComponent({ wsClient, pipeline, account, logger = c
           .map((symbol) => String(symbol || "").toUpperCase())
           .filter(Boolean)
       )
-    ).slice(0, 6);
+    );
 
     if (state.started) syncSubscriptions();
   }

@@ -1,10 +1,17 @@
 const state = {
   view: "exchange",
   timeframe: "all",
+  analyticsTab: "oi",
   exchange: null,
+  dashboard: null,
+  tokenAnalytics: null,
+  tokenSymbol: "",
   volumeSeries: null,
   volumeRankPage: 1,
   volumeRankPageSize: 10,
+  volumeFilter: "",
+  volumeSort: "volume",
+  volumeRankFilteredTotal: 0,
   wallets: null,
   walletProfile: null,
   walletSearch: "",
@@ -57,6 +64,27 @@ const chartDateFormatters = {
   }),
 };
 
+const TOKEN_DEFAULT_METRIC = "oi";
+const TOKEN_METRIC_ROUTE_TO_TAB = {
+  oi: "oi",
+  "open-interest": "oi",
+  open_interest: "oi",
+  funding: "funding",
+  liquidations: "liquidations",
+  netflow: "netflow",
+  "wallet-activity": "wallet_activity",
+  wallet_activity: "wallet_activity",
+  volume: "volume",
+};
+const TOKEN_TAB_TO_ROUTE_METRIC = {
+  oi: "oi",
+  funding: "funding",
+  liquidations: "liquidations",
+  netflow: "netflow",
+  wallet_activity: "wallet-activity",
+  volume: "volume",
+};
+
 function toNum(value, fallback = 0) {
   const num = Number(value);
   return Number.isFinite(num) ? num : fallback;
@@ -94,10 +122,31 @@ function fmtMs(value) {
   return `${(num / 1000).toFixed(2)}s`;
 }
 
+function fmtDurationMs(value) {
+  const num = toNum(value, NaN);
+  if (!Number.isFinite(num) || num < 0) return "-";
+  if (num < 1000) return `${Math.round(num)}ms`;
+  if (num < 60000) return `${Math.round(num / 1000)}s`;
+  if (num < 3600000) return `${Math.round(num / 60000)}m`;
+  if (num < 86400000) return `${(num / 3600000).toFixed(1)}h`;
+  return `${(num / 86400000).toFixed(1)}d`;
+}
+
 function fmtTime(ts) {
   const num = Number(ts);
   if (!Number.isFinite(num) || num <= 0) return "-";
   return new Date(num).toLocaleString();
+}
+
+function fmtAgo(ts) {
+  const num = Number(ts);
+  if (!Number.isFinite(num) || num <= 0) return "-";
+  const diff = Math.max(0, Date.now() - num);
+  if (diff < 1000) return "just now";
+  if (diff < 60000) return `${Math.round(diff / 1000)}s ago`;
+  if (diff < 3600000) return `${Math.round(diff / 60000)}m ago`;
+  if (diff < 86400000) return `${Math.round(diff / 3600000)}h ago`;
+  return `${Math.round(diff / 86400000)}d ago`;
 }
 
 function escapeHtml(value) {
@@ -131,6 +180,52 @@ function formatTickerPercent(value) {
   const num = toNum(value, NaN);
   if (!Number.isFinite(num)) return "N/A";
   return `${num > 0 ? "+" : ""}${num.toFixed(2)}%`;
+}
+
+function normalizeTokenSymbol(value) {
+  return String(value || "")
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9/_-]/g, "");
+}
+
+function normalizeAnalyticsTab(value) {
+  const raw = String(value || TOKEN_DEFAULT_METRIC)
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "_")
+    .replace(/-/g, "_");
+  if (raw === "open_interest") return "oi";
+  return TOKEN_METRIC_ROUTE_TO_TAB[raw] || TOKEN_DEFAULT_METRIC;
+}
+
+function analyticsTabToRouteMetric(tab) {
+  const normalized = normalizeAnalyticsTab(tab);
+  return TOKEN_TAB_TO_ROUTE_METRIC[normalized] || TOKEN_TAB_TO_ROUTE_METRIC[TOKEN_DEFAULT_METRIC];
+}
+
+function analyticsRouteMetricToTab(metric) {
+  if (!metric) return TOKEN_DEFAULT_METRIC;
+  const raw = String(metric).trim().toLowerCase();
+  return normalizeAnalyticsTab(TOKEN_METRIC_ROUTE_TO_TAB[raw] || raw);
+}
+
+function getTokenRoutePath(symbol = state.tokenSymbol, metric = state.analyticsTab) {
+  const normalizedSymbol = normalizeTokenSymbol(symbol);
+  if (!normalizedSymbol) return "/";
+  const normalizedMetric = normalizeAnalyticsTab(metric);
+  const metricSlug = analyticsTabToRouteMetric(normalizedMetric);
+  const base = `/exchange/${encodeURIComponent(normalizedSymbol)}`;
+  return normalizedMetric === TOKEN_DEFAULT_METRIC ? base : `${base}/${metricSlug}`;
+}
+
+function parseTokenRoute(pathname = "/") {
+  const match = String(pathname || "").match(/^\/exchange\/([^/]+)(?:\/([^/]+))?\/?$/i);
+  if (!match) return null;
+  const symbol = normalizeTokenSymbol(decodeURIComponent(match[1] || ""));
+  const metric = analyticsRouteMetricToTab(match[2] || TOKEN_DEFAULT_METRIC);
+  if (!symbol) return null;
+  return { symbol, metric };
 }
 
 function buildTickerItemMarkup(item = {}) {
@@ -304,10 +399,16 @@ function formatChartCurrency(value) {
 }
 
 function formatMetricAxis(value) {
+  const unit = getAnalyticsPresentation().unit;
+  if (unit === "pct") return `${toFiniteNumber(value, 0).toFixed(3)}%`;
+  if (unit === "count") return fmt(value, 0);
   return formatChartCurrency(value);
 }
 
 function formatMetricTooltip(value) {
+  const unit = getAnalyticsPresentation().unit;
+  if (unit === "pct") return `${toFiniteNumber(value, 0).toFixed(4)}%`;
+  if (unit === "count") return fmt(value, 0);
   return formatChartCurrency(value);
 }
 
@@ -316,6 +417,100 @@ function getSeriesValue(item) {
   if (Number.isFinite(item.value)) return item.value;
   if (Number.isFinite(item.volume)) return item.volume;
   return 0;
+}
+
+function getSnapshotLimitForSeries() {
+  if (activeSeries === "daily") return 20;
+  if (activeSeries === "weekly") return 32;
+  return 48;
+}
+
+function getAnalyticsPresentation(tab = state.analyticsTab) {
+  const normalizedTab = normalizeAnalyticsTab(tab);
+  const map = {
+    volume: {
+      title: "Trading Volume",
+      note: "Token-scoped notional volume trend.",
+      unit: "usd",
+      chartMode: "bar",
+      legend: [
+        { key: "volume", label: "Volume", tone: "volume" },
+      ],
+    },
+    oi: {
+      title: "Open Interest",
+      note: "Open interest trend for the selected token.",
+      unit: "usd",
+      chartMode: "line_area",
+      legend: [
+        { key: "oi", label: "Open Interest", tone: "oi" },
+      ],
+    },
+    funding: {
+      title: "Funding",
+      note: "Funding trend with explicit zero baseline.",
+      unit: "pct",
+      chartMode: "line_zero",
+      legend: [
+        { key: "positive", label: "Positive Funding", tone: "positive" },
+        { key: "negative", label: "Negative Funding", tone: "negative" },
+      ],
+    },
+    liquidations: {
+      title: "Liquidations",
+      note: "Long vs short liquidation pressure by time bucket.",
+      unit: "usd",
+      chartMode: "stacked_split",
+      legend: [
+        { key: "long", label: "Long Pressure", tone: "negative" },
+        { key: "short", label: "Short Pressure", tone: "positive" },
+      ],
+    },
+    netflow: {
+      title: "Netflow",
+      note: "Signed flow split around a zero baseline.",
+      unit: "usd",
+      chartMode: "diverging",
+      legend: [
+        { key: "inflow", label: "Positive Netflow", tone: "positive" },
+        { key: "outflow", label: "Negative Netflow", tone: "negative" },
+      ],
+    },
+    wallet_activity: {
+      title: "Wallet Activity",
+      note: "Event activity lane for token-related flow.",
+      unit: "count",
+      chartMode: "event_lane",
+      legend: [
+        { key: "events", label: "Wallet Events", tone: "event" },
+      ],
+    },
+  };
+  return map[normalizedTab] || map[TOKEN_DEFAULT_METRIC];
+}
+
+function buildSymbolSnapshotSeries(mapper, options = {}) {
+  const prices = Array.isArray(state.exchange?.source?.prices) ? state.exchange.source.prices : [];
+  const useAbsSort = Boolean(options.absSort);
+  const limit = Math.max(1, Number(options.limit || getSnapshotLimitForSeries()));
+  return prices
+    .map((row) => {
+      const symbol = String(row?.symbol || "").trim();
+      if (!symbol) return null;
+      const value = toFiniteNumber(mapper(row), Number.NaN);
+      if (!Number.isFinite(value)) return null;
+      return {
+        label: symbol,
+        value,
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => {
+      const av = useAbsSort ? Math.abs(a.value) : a.value;
+      const bv = useAbsSort ? Math.abs(b.value) : b.value;
+      return bv - av;
+    })
+    .slice(0, limit);
 }
 
 function buildChartData(series) {
@@ -446,7 +641,7 @@ function getScaleConfig(data, options = {}) {
   };
 }
 
-function renderCumulativeLine(layer, data, scaleConfig, pointsContainer) {
+function renderCumulativeLine(layer, data, scaleConfig, pointsContainer, options = {}) {
   if (!layer || !Array.isArray(data) || !data.length) return [];
   const maxDots = 48;
   const bounds = layer.getBoundingClientRect();
@@ -474,14 +669,17 @@ function renderCumulativeLine(layer, data, scaleConfig, pointsContainer) {
   const lastPoint = points[points.length - 1];
   const areaPathData = `${linePathData} L ${lastPoint.x.toFixed(3)} ${plotHeight.toFixed(3)} L ${firstPoint.x.toFixed(3)} ${plotHeight.toFixed(3)} Z`;
 
-  const areaPath = document.createElementNS("http://www.w3.org/2000/svg", "path");
-  areaPath.setAttribute("d", areaPathData);
-  areaPath.classList.add("chart-area-minimal");
-  svg.appendChild(areaPath);
+  if (options.showArea !== false) {
+    const areaPath = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    areaPath.setAttribute("d", areaPathData);
+    areaPath.classList.add("chart-area-minimal");
+    svg.appendChild(areaPath);
+  }
 
   const linePath = document.createElementNS("http://www.w3.org/2000/svg", "path");
   linePath.setAttribute("d", linePathData);
   linePath.classList.add("chart-line-minimal");
+  if (options.lineClass) linePath.classList.add(options.lineClass);
   svg.appendChild(linePath);
   layer.appendChild(svg);
 
@@ -567,7 +765,9 @@ function renderDateBand(data) {
   const total = data.length;
   const trackWidth = track.clientWidth || chartDateBand.clientWidth || 0;
   const ticks = buildDateBandTicks(data, trackWidth);
-  const minDistancePx = activeSeries === "monthly" ? 70 : activeChartType === "line" ? 92 : 84;
+  const chartMode = String(el("volumeChart")?.dataset?.chartType || "");
+  const isLineMode = chartMode.startsWith("line");
+  const minDistancePx = activeSeries === "monthly" ? 70 : isLineMode ? 92 : 84;
   let lastRight = -Infinity;
   let lastLabel = "";
 
@@ -598,12 +798,19 @@ function renderDateBand(data) {
   });
 }
 
-function renderVolumeChart(container, series) {
+function renderVolumeChart(container, series, presentation = null) {
   if (!container) return;
   container.innerHTML = "";
   container.dataset.series = activeSeries;
-  container.dataset.chartType = activeChartType;
-  const useLine = activeChartType === "line";
+  const requestedMode = presentation?.chartMode || "bar";
+  const chartMode =
+    state.analyticsTab === "volume" && activeChartType === "line" ? "line" : requestedMode;
+  container.dataset.chartType = chartMode;
+
+  const useLine = chartMode === "line" || chartMode === "line_area" || chartMode === "line_zero";
+  const useStacked = chartMode === "stacked_split";
+  const useDiverging = chartMode === "diverging";
+  const useEventLane = chartMode === "event_lane";
 
   if (!Array.isArray(series) || !series.length) {
     container.innerHTML = "<div class='muted'>No data yet.</div>";
@@ -612,20 +819,31 @@ function renderVolumeChart(container, series) {
   }
 
   const chartWidth = Math.max(320, (container.clientWidth || 720) - 62);
-  const barAggregation = useLine
-    ? { items: series, binned: false, binSize: 1 }
-    : aggregateBarSeriesByWidth(series, chartWidth);
+  const shouldAggregate = !(useLine || useStacked || useDiverging || useEventLane);
+  const barAggregation = shouldAggregate
+    ? aggregateBarSeriesByWidth(series, chartWidth)
+    : { items: series, binned: false, binSize: 1 };
   const data = barAggregation.items;
+  const baseline = useLine && chartMode !== "line_zero" ? "auto" : "zero";
   const scaleConfig = getScaleConfig(data, {
-    baseline: useLine ? "auto" : "zero",
+    baseline,
   });
   const chartHeight = container.clientHeight || 280;
   const maxBarHeight = Math.max(chartHeight - 108, 124);
+  const zeroRatio = scaleConfig?.normalize ? scaleConfig.normalize(0) : 0;
+  const maxValue = data.reduce(
+    (max, item) => Math.max(max, Math.abs(toFiniteNumber(item?.value, 0))),
+    0
+  );
 
   const axis = document.createElement("div");
   axis.className = "chart-axis";
   const bars = document.createElement("div");
   bars.className = "chart-bars";
+  if (useEventLane) bars.classList.add("event-lane");
+  if (useStacked) bars.classList.add("stacked-mode");
+  if (useDiverging) bars.classList.add("diverging-mode");
+  if (useLine && chartMode === "line_zero") bars.classList.add("line-zero-mode");
   bars.style.gridTemplateColumns = `repeat(${data.length}, minmax(0, 1fr))`;
 
   const slotWidth = chartWidth / Math.max(data.length, 1);
@@ -655,12 +873,23 @@ function renderVolumeChart(container, series) {
   container.appendChild(axis);
   container.appendChild(bars);
 
+  if ((useLine && chartMode === "line_zero") || useDiverging) {
+    const zeroLine = document.createElement("div");
+    zeroLine.className = "chart-zero-line";
+    zeroLine.style.bottom = `${zeroRatio * 100}%`;
+    bars.appendChild(zeroLine);
+  }
+
   let hoverPoints = [];
   if (useLine) {
     const lineLayer = document.createElement("div");
     lineLayer.className = "chart-line-layer";
+    if (chartMode === "line_zero") lineLayer.classList.add("line-with-zero");
     bars.appendChild(lineLayer);
-    hoverPoints = renderCumulativeLine(lineLayer, data, scaleConfig, bars);
+    hoverPoints = renderCumulativeLine(lineLayer, data, scaleConfig, bars, {
+      showArea: chartMode !== "line_zero",
+      lineClass: chartMode === "line_zero" ? "chart-line-zero" : chartMode === "line_area" ? "chart-line-oi" : "",
+    });
   } else {
     hoverPoints = data.map((item, index) => ({
       xPct: data.length === 1 ? 50 : (index / (data.length - 1)) * 100,
@@ -675,19 +904,86 @@ function renderVolumeChart(container, series) {
     wrap.className = "volume-bar";
     const bar = document.createElement("div");
     bar.className = "bar";
-    const ratio = scaleConfig.normalize ? scaleConfig.normalize(valueNum) : 0;
-    const height = valueNum > 0 ? Math.max(Math.round(ratio * maxBarHeight), 2) : 0;
-    bar.style.height = `${height}px`;
-    const labelText = formatChartLabel(item, "tooltip");
-    const tooltip = document.createElement("div");
-    tooltip.className = "bar-tooltip";
-    tooltip.textContent = `${labelText} · ${formatMetricTooltip(valueNum)}`;
-    bar.appendChild(tooltip);
-    wrap.appendChild(bar);
+    const labelText = formatChartLabel(item, "tooltip") || item?.label || "-";
+
+    if (useEventLane) {
+      wrap.classList.add("event-lane-cell");
+      const eventDot = document.createElement("div");
+      eventDot.className = "wallet-event-dot";
+      const maxDot = Math.max(1, maxValue);
+      const intensity = clamp(Math.abs(valueNum) / maxDot, 0, 1);
+      const sizePx = clamp(6 + intensity * 10, 6, 16);
+      const opacity = clamp(0.42 + intensity * 0.48, 0.42, 0.92);
+      eventDot.style.setProperty("--event-size", `${sizePx}px`);
+      eventDot.style.setProperty("--event-opacity", `${opacity}`);
+      const tooltip = document.createElement("div");
+      tooltip.className = "bar-tooltip";
+      tooltip.textContent = `${labelText} · ${fmt(valueNum, 0)} trades`;
+      eventDot.appendChild(tooltip);
+      bar.classList.add("event-lane-bar");
+      bar.appendChild(eventDot);
+      wrap.appendChild(bar);
+    } else if (useStacked) {
+      wrap.classList.add("volume-bar-stacked");
+      const ratio = maxValue > 0 ? Math.abs(valueNum) / maxValue : 0;
+      const height = valueNum > 0 ? Math.max(Math.round(ratio * maxBarHeight), 2) : 0;
+      bar.classList.add("stacked");
+      bar.style.height = `${height}px`;
+      const longValue = Math.max(0, toFiniteNumber(item?.longValue, 0));
+      const shortValue = Math.max(0, toFiniteNumber(item?.shortValue, 0));
+      const splitTotal = Math.max(longValue + shortValue, 1);
+      const longHeight = Math.round((height * longValue) / splitTotal);
+      const shortHeight = Math.max(0, height - longHeight);
+
+      const segShort = document.createElement("span");
+      segShort.className = "stack-seg short";
+      segShort.style.height = `${shortHeight}px`;
+      bar.appendChild(segShort);
+
+      const segLong = document.createElement("span");
+      segLong.className = "stack-seg long";
+      segLong.style.height = `${longHeight}px`;
+      bar.appendChild(segLong);
+
+      const tooltip = document.createElement("div");
+      tooltip.className = "bar-tooltip";
+      tooltip.textContent = `${labelText} · long ${formatMetricTooltip(longValue)} · short ${formatMetricTooltip(
+        shortValue
+      )}`;
+      bar.appendChild(tooltip);
+      wrap.appendChild(bar);
+    } else if (useDiverging) {
+      wrap.classList.add("volume-bar-diverging");
+      bar.classList.add("diverging");
+      const ratio = scaleConfig.normalize ? scaleConfig.normalize(valueNum) : 0;
+      const deltaRatio = Math.abs(ratio - zeroRatio);
+      const height = Math.max(Math.round(deltaRatio * maxBarHeight), valueNum === 0 ? 0 : 2);
+      const zeroBottomPx = Math.round(zeroRatio * maxBarHeight);
+      const segment = document.createElement("span");
+      segment.className = `diverge-seg ${valueNum >= 0 ? "positive" : "negative"}`;
+      segment.style.height = `${height}px`;
+      segment.style.bottom = valueNum >= 0 ? `${zeroBottomPx}px` : `${Math.max(zeroBottomPx - height, 0)}px`;
+      bar.appendChild(segment);
+      const tooltip = document.createElement("div");
+      tooltip.className = "bar-tooltip";
+      tooltip.textContent = `${labelText} · ${formatMetricTooltip(valueNum)}`;
+      bar.appendChild(tooltip);
+      wrap.appendChild(bar);
+    } else {
+      const ratio = scaleConfig.normalize ? scaleConfig.normalize(valueNum) : 0;
+      const height = valueNum > 0 ? Math.max(Math.round(ratio * maxBarHeight), 2) : 0;
+      bar.style.height = `${height}px`;
+      const tooltip = document.createElement("div");
+      tooltip.className = "bar-tooltip";
+      tooltip.textContent = `${labelText} · ${formatMetricTooltip(valueNum)}`;
+      bar.appendChild(tooltip);
+      wrap.appendChild(bar);
+    }
 
     const label = document.createElement("div");
     label.className = `bar-label${shouldShowAxisLabel(index, data.length) ? "" : " dim"}`;
-    label.textContent = shouldShowAxisLabel(index, data.length) ? formatChartLabel(item, "axis") : "";
+    label.textContent =
+      shouldShowAxisLabel(index, data.length) && !useEventLane ? formatChartLabel(item, "axis") : "";
     wrap.appendChild(label);
     bars.appendChild(wrap);
   });
@@ -696,10 +992,103 @@ function renderVolumeChart(container, series) {
   renderDateBand(data);
 }
 
-function getActiveSeries() {
+function getVolumeSeriesForWindow() {
   const metricSet = state.volumeSeries && state.volumeSeries.volume ? state.volumeSeries.volume : null;
   if (!metricSet) return [];
   return Array.isArray(metricSet[activeSeries]) ? metricSet[activeSeries] : [];
+}
+
+function getActiveSeries() {
+  const tab = normalizeAnalyticsTab(state.analyticsTab || TOKEN_DEFAULT_METRIC);
+  if (state.view === "token") {
+    return getTokenActiveSeries(tab);
+  }
+  if (tab === "volume") return getVolumeSeriesForWindow();
+  const limit = getSnapshotLimitForSeries();
+
+  if (tab === "oi") {
+    return buildSymbolSnapshotSeries(
+      (row) => toFiniteNumber(row?.open_interest, 0) * toFiniteNumber(row?.mark, 0),
+      { limit }
+    );
+  }
+  if (tab === "funding") {
+    return buildSymbolSnapshotSeries(
+      (row) => toFiniteNumber(row?.funding, 0) * 100,
+      { absSort: true, limit }
+    );
+  }
+  if (tab === "liquidations") {
+    const prices = Array.isArray(state.exchange?.source?.prices) ? state.exchange.source.prices : [];
+    return prices
+      .map((row) => {
+        const symbol = String(row?.symbol || "").trim();
+        if (!symbol) return null;
+        const funding = toFiniteNumber(row?.funding, 0);
+        const openInterest = toFiniteNumber(row?.open_interest, 0);
+        const mark = toFiniteNumber(row?.mark, 0);
+        const pressure = Math.abs(funding) * openInterest * mark;
+        if (!Number.isFinite(pressure)) return null;
+        const longValue = funding >= 0 ? pressure : 0;
+        const shortValue = funding < 0 ? pressure : 0;
+        return {
+          label: symbol,
+          value: pressure,
+          longValue,
+          shortValue,
+          funding,
+        };
+      })
+      .filter(Boolean)
+      .sort((a, b) => Math.abs(toFiniteNumber(b.value, 0)) - Math.abs(toFiniteNumber(a.value, 0)))
+      .slice(0, limit);
+  }
+  if (tab === "netflow") {
+    return buildSymbolSnapshotSeries(
+      (row) => {
+        const mark = toFiniteNumber(row?.mark, 0);
+        const y = toFiniteNumber(row?.yesterday_price, mark);
+        const oi = toFiniteNumber(row?.open_interest, 0);
+        return (mark - y) * oi;
+      },
+      { absSort: true, limit }
+    );
+  }
+  if (tab === "wallet_activity") {
+    const rows = Array.isArray(state.wallets?.rows) ? state.wallets.rows : [];
+    const now = Date.now();
+    const horizonMs =
+      activeSeries === "daily"
+        ? 24 * 60 * 60 * 1000
+        : activeSeries === "weekly"
+          ? 7 * 24 * 60 * 60 * 1000
+          : 30 * 24 * 60 * 60 * 1000;
+    const mapped = rows
+      .map((row) => {
+        const wallet = String(row?.wallet || "");
+        const shortWallet = wallet ? `${wallet.slice(0, 4)}…${wallet.slice(-4)}` : "unknown";
+        const rawLastTrade = row?.lastTrade !== undefined ? row.lastTrade : row?.last_trade;
+        let lastTradeTs = toFiniteNumber(rawLastTrade, NaN);
+        if (!Number.isFinite(lastTradeTs) && typeof rawLastTrade === "string") {
+          const parsed = Date.parse(rawLastTrade);
+          if (Number.isFinite(parsed)) lastTradeTs = parsed;
+        }
+        return {
+          label: shortWallet,
+          value: toFiniteNumber(row?.trades, 0),
+          timestamp: Number.isFinite(lastTradeTs) && lastTradeTs > 0 ? lastTradeTs : null,
+        };
+      })
+      .filter((row) => row.timestamp !== null)
+      .sort((a, b) => toFiniteNumber(a.timestamp, 0) - toFiniteNumber(b.timestamp, 0));
+    const windowed = mapped.filter((row) => {
+      const ts = toFiniteNumber(row.timestamp, 0);
+      return ts >= now - horizonMs && ts <= now + 60000;
+    });
+    const selected = windowed.length >= 6 ? windowed : mapped;
+    return selected.slice(-Math.max(10, limit));
+  }
+  return getVolumeSeriesForWindow();
 }
 
 function syncChartWindow(series) {
@@ -748,7 +1137,7 @@ function renderNavigatorArea(series) {
   navigatorBars.innerHTML = "";
   if (!Array.isArray(series) || !series.length) return;
 
-  const values = series.map((item) => Math.max(0, getSeriesValue(item)));
+  const values = series.map((item) => Math.abs(getSeriesValue(item)));
   const max = Math.max(...values, 1);
   const bounds = navigatorBars.getBoundingClientRect();
   const plotWidth = Math.max(1, Math.round(navigatorBars.clientWidth || bounds.width || 0));
@@ -1040,36 +1429,70 @@ function handleNavigatorPointerUp(event) {
 }
 
 function syncCumulativeControl() {
-  const cumulativeActive = activeChartType === "line";
+  const isVolumeTab = state.analyticsTab === "volume";
+  const cumulativeActive = isVolumeTab && activeChartType === "line";
   const buttons = [
     ["seriesDaily", "daily"],
     ["seriesWeekly", "weekly"],
     ["seriesMonthly", "monthly"],
   ];
+  const toggleGroup = document.querySelector(".chart-toggle-group");
+  if (toggleGroup) {
+    toggleGroup.style.display = "inline-flex";
+  }
   buttons.forEach(([id, key]) => {
     const btn = el(id);
     if (!btn) return;
     const isActive = !cumulativeActive && key === activeSeries;
     btn.classList.toggle("active", isActive);
     btn.setAttribute("aria-pressed", isActive ? "true" : "false");
+    btn.disabled = false;
   });
   const cumulativeBtn = el("chartCumulative");
   if (cumulativeBtn) {
-    cumulativeBtn.hidden = false;
-    cumulativeBtn.classList.toggle("active", cumulativeActive);
-    cumulativeBtn.setAttribute("aria-pressed", cumulativeActive ? "true" : "false");
+    cumulativeBtn.hidden = !isVolumeTab;
+    cumulativeBtn.classList.toggle("active", isVolumeTab && cumulativeActive);
+    cumulativeBtn.setAttribute("aria-pressed", isVolumeTab && cumulativeActive ? "true" : "false");
+    cumulativeBtn.disabled = !isVolumeTab;
   }
 }
 
+function renderAnalyticsLegend(presentation = null) {
+  const host = el("analytics-legend");
+  if (!host) return;
+  const legendItems = Array.isArray(presentation?.legend) ? presentation.legend : [];
+  if (!legendItems.length) {
+    host.innerHTML = "";
+    host.hidden = true;
+    return;
+  }
+  host.hidden = false;
+  host.innerHTML = legendItems
+    .map(
+      (item) =>
+        `<span class="legend-item ${escapeHtml(item?.tone || "default")}"><i></i>${escapeHtml(
+          item?.label || "-"
+        )}</span>`
+    )
+    .join("");
+}
+
 function renderActiveSeries() {
+  if (state.view !== "token") return;
   const container = el("volumeChart");
   if (!container) return;
   const allSeries = getActiveSeries();
+  const presentation = getAnalyticsPresentation();
+  setText("chartTitle", presentation.title);
+  setText("analytics-note", presentation.note);
+  renderAnalyticsLegend(presentation);
+
   syncChartWindow(allSeries);
   const prepared = buildChartData(allSeries);
   const visiblePrepared = getVisibleSeries(prepared);
-  const chartData = activeChartType === "line" ? buildCumulativeSeries(visiblePrepared) : visiblePrepared;
-  renderVolumeChart(container, chartData);
+  const useCumulative = state.analyticsTab === "volume" && activeChartType === "line";
+  const chartData = useCumulative ? buildCumulativeSeries(visiblePrepared) : visiblePrepared;
+  renderVolumeChart(container, chartData, presentation);
   renderNavigator(allSeries);
   syncCumulativeControl();
 }
@@ -1154,24 +1577,90 @@ async function postJson(url, payload = {}) {
 }
 
 function renderStatusBars() {
-  const ex = state.exchange;
+  const ex = state.exchange || {};
   const indexer = ex?.indexer || null;
   const progress = getIndexerBreakdown(indexer);
-  const indexed = progress.indexed || Number(indexer?.indexedWallets ?? ex?.source?.walletsIndexed ?? 0);
-  const known = progress.known || Number(indexer?.knownWallets ?? indexed);
-  setText("status-sync", `Sync: ${fmtTime(ex?.sync?.lastBootstrapAt)}`);
-  setText("status-live", `WS: ${ex?.sync?.wsStatus || "-"}`);
-  setText(
-    "status-wallet",
-    `Wallets: ${fmt(progress.discovered, 0)} discovered | ${fmt(progress.liveTracking, 0)} live`
+  const wsStatus = ex?.sync?.wsStatus || "unknown";
+  const generatedAt = Number(ex?.generatedAt || 0);
+  const liveGroup = Number(indexer?.liveGroupSize ?? progress.liveTracking ?? 0);
+  const staleWallets = Number(indexer?.liveStaleWallets ?? 0);
+  const staleRatio = liveGroup > 0 ? staleWallets / liveGroup : 0;
+  const successfulScans = Number(indexer?.successfulScans ?? 0);
+  const failedScans = Number(indexer?.failedScans ?? 0);
+  const scanAttempts = successfulScans + failedScans;
+  const refreshSuccessPct = scanAttempts > 0 ? (successfulScans / scanAttempts) * 100 : 0;
+  const avgAgeMs = Number(indexer?.liveAverageAgeMs ?? 0);
+  const scanIntervalMs = Math.max(1000, Number(indexer?.scanIntervalMs ?? 5000));
+  const selectedPerScan = Math.max(
+    0,
+    Number(indexer?.liveRefreshSnapshot?.selected ?? indexer?.liveWalletsPerScan ?? 0)
   );
-  setText(
-    "status-progress",
-    `Backfill: ${fmt(progress.completePct, 2)}% (pending ${progress.pendingBackfill}, backfilling ${progress.backfilling}, failed ${progress.failedBackfill})`
-  );
-  setText("status-updated", `Updated: ${fmtTime(ex?.generatedAt)}`);
+  const refreshedPerMinute = selectedPerScan * (60000 / scanIntervalMs);
+  const refreshed5m = liveGroup > 0 ? Math.min(liveGroup, Math.round(refreshedPerMinute * 5)) : 0;
+  const refreshed15m = liveGroup > 0 ? Math.min(liveGroup, Math.round(refreshedPerMinute * 15)) : 0;
+  const queuePressure = Number(indexer?.priorityQueueSize ?? 0) + Number(indexer?.liveQueueSize ?? 0);
+  const topError = Array.isArray(indexer?.topErrorReasons) && indexer.topErrorReasons.length
+    ? indexer.topErrorReasons[0]
+    : null;
+  const activeEgress = Number(indexer?.restClients?.count ?? 0);
+  const alertCount =
+    Number(staleRatio > 0.35) +
+    Number(refreshSuccessPct < 70) +
+    Number(queuePressure > 2000) +
+    Number(progress.failedBackfill > 0) +
+    Number(Boolean(indexer?.lastError));
 
-  setText("exchange-live-label", ex?.sync?.wsStatus === "open" ? "LIVE" : "SYNCING");
+  setText("exchange-live-label", wsStatus === "open" ? "LIVE" : "SYNCING");
+  setText("status-refresh-age", `Data age: ${fmtAgo(generatedAt)}`);
+  setText("status-latency", `Latency: ${fmtDurationMs(avgAgeMs)}`);
+  setText("status-alerts", `Alerts: ${fmt(alertCount, 0)}`);
+
+  setText(
+    "ops-freshness-state",
+    staleRatio > 0.45 ? "degraded" : staleRatio > 0.2 ? "warming" : "healthy"
+  );
+  setText("ops-refreshed-5m", fmt(refreshed5m, 0));
+  setText("ops-refreshed-15m", fmt(refreshed15m, 0));
+  setText("ops-live-group", fmt(liveGroup, 0));
+  setText("ops-stale-wallets", fmt(staleWallets, 0));
+
+  setText("ops-health-state", refreshSuccessPct >= 85 ? "stable" : refreshSuccessPct >= 70 ? "warning" : "critical");
+  setText("ops-refresh-success", `${fmt(refreshSuccessPct, 2)}%`);
+  setText("ops-queue-pressure", fmt(queuePressure, 0));
+  setText("ops-active-egress", fmt(activeEgress, 0));
+  setText("ops-top-error", topError ? `${topError.reason} (${fmt(topError.count, 0)})` : "none");
+
+  const liveQueue = Number(indexer?.liveQueueSize ?? 0);
+  const backfillQueue = Number(indexer?.priorityQueueSize ?? 0);
+  const liveQueueTarget = Math.max(liveGroup || 1, 1500);
+  const backfillQueueTarget = Math.max(Number(indexer?.backlogMode?.thresholdWallets ?? 2000), 2000);
+  const liveFill = clamp((liveQueue / liveQueueTarget) * 100, 0, 100);
+  const backfillFill = clamp((backfillQueue / backfillQueueTarget) * 100, 0, 100);
+
+  const liveQueueFillNode = el("ops-live-queue-fill");
+  if (liveQueueFillNode) liveQueueFillNode.style.width = `${liveFill}%`;
+  const backfillQueueFillNode = el("ops-backfill-queue-fill");
+  if (backfillQueueFillNode) backfillQueueFillNode.style.width = `${backfillFill}%`;
+  setText("ops-live-queue-label", `${fmt(liveQueue, 0)} / ${fmt(liveQueueTarget, 0)}`);
+  setText("ops-backfill-queue-label", `${fmt(backfillQueue, 0)} / ${fmt(backfillQueueTarget, 0)}`);
+  setText("ops-queue-mode", indexer?.backlogMode?.active ? "backlog mode" : "normal");
+
+  const anomalies = [];
+  if (staleRatio > 0.35) anomalies.push(`Stale ratio elevated (${fmt(staleRatio * 100, 1)}%).`);
+  if (refreshSuccessPct < 75) anomalies.push(`Refresh success low (${fmt(refreshSuccessPct, 1)}%).`);
+  if (backfillQueue > backfillQueueTarget * 0.6) anomalies.push(`Backfill queue pressure high (${fmt(backfillQueue, 0)}).`);
+  if (topError?.count > 0) anomalies.push(`Top error: ${topError.reason} (${fmt(topError.count, 0)}).`);
+
+  const anomalyList = el("ops-anomaly-list");
+  if (anomalyList) {
+    anomalyList.innerHTML = anomalies.length
+      ? anomalies
+          .slice(0, 5)
+          .map((item) => `<li><span class="anomaly-time">now</span><span class="anomaly-msg">${escapeHtml(item)}</span></li>`)
+          .join("")
+      : "<li><span class='anomaly-time'>now</span><span class='anomaly-msg'>No active anomalies.</span></li>";
+  }
+  setText("ops-anomaly-count", fmt(anomalies.length, 0));
 }
 
 function renderIndexerProgressPanel() {
@@ -1214,15 +1703,1057 @@ function renderIndexerProgressPanel() {
   );
 }
 
+function buildVolumeSymbolCandidates(symbol) {
+  const raw = String(symbol || "").trim().toUpperCase();
+  if (!raw) return [];
+  const compact = raw.replace(/[^A-Z0-9]/g, "");
+  const noPerp = compact.replace(/PERP$/, "");
+  const noUsd = noPerp.replace(/USDT$/, "").replace(/USD$/, "");
+  return Array.from(new Set([raw, compact, noPerp, noUsd].filter(Boolean)));
+}
+
+function buildPriceSymbolLookup(rows = []) {
+  const lookup = new Map();
+  (Array.isArray(rows) ? rows : []).forEach((row) => {
+    const symbol = String(row?.symbol || "").trim().toUpperCase();
+    if (!symbol) return;
+    buildVolumeSymbolCandidates(symbol).forEach((candidate) => {
+      if (!lookup.has(candidate)) lookup.set(candidate, row);
+    });
+  });
+  return lookup;
+}
+
+function resolvePriceRowForSymbol(symbol, lookup) {
+  if (!lookup || typeof lookup.get !== "function") return null;
+  const candidates = buildVolumeSymbolCandidates(symbol);
+  for (const candidate of candidates) {
+    if (lookup.has(candidate)) return lookup.get(candidate);
+  }
+  return null;
+}
+
+function buildPerpPairLabel(symbol) {
+  const raw = String(symbol || "").trim().toUpperCase();
+  if (!raw) return "-";
+  if (raw.includes("/")) return raw;
+  if (raw.endsWith("-PERP") || raw.endsWith("_PERP")) {
+    return `${raw.replace(/[-_]PERP$/, "")}/PERP`;
+  }
+  if (raw.endsWith("PERP")) return `${raw.replace(/PERP$/, "")}/PERP`;
+  return `${raw}/PERP`;
+}
+
+function getTidalMovement(deltaPct) {
+  if (deltaPct > 0.35) return "up";
+  if (deltaPct < -0.35) return "down";
+  return "flat";
+}
+
+function getTidalTier(rank) {
+  if (rank <= 3) return { key: "surface-crest", label: "Surface Crest" };
+  if (rank <= 10) return { key: "mid-current", label: "Mid Current" };
+  return { key: "deep-flow", label: "Deep Flow" };
+}
+
+function startOfUtcDay(ts) {
+  const d = new Date(ts);
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+}
+
+function startOfUtcWeek(ts) {
+  const d = new Date(startOfUtcDay(ts));
+  const weekday = (d.getUTCDay() + 6) % 7;
+  d.setUTCDate(d.getUTCDate() - weekday);
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+}
+
+function startOfUtcMonth(ts) {
+  const d = new Date(ts);
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1);
+}
+
+function bucketStartForSeries(ts, seriesKey = activeSeries) {
+  if (!Number.isFinite(ts)) return null;
+  if (seriesKey === "daily") return startOfUtcDay(ts);
+  if (seriesKey === "weekly") return startOfUtcWeek(ts);
+  return startOfUtcMonth(ts);
+}
+
+function getSeriesLookbackMs(seriesKey = activeSeries) {
+  const day = 24 * 60 * 60 * 1000;
+  if (seriesKey === "daily") return 180 * day;
+  if (seriesKey === "weekly") return 370 * day;
+  return 3 * 365 * day;
+}
+
+function getExchangePriceRows() {
+  return Array.isArray(state.exchange?.source?.prices) ? state.exchange.source.prices : [];
+}
+
+function getDashboardPriceRows() {
+  return Array.isArray(state.dashboard?.market?.prices) ? state.dashboard.market.prices : [];
+}
+
+function resolveCanonicalTokenSymbol(rawSymbol) {
+  const normalized = normalizeTokenSymbol(rawSymbol);
+  if (!normalized) return "";
+  const exchangeLookup = buildPriceSymbolLookup(getExchangePriceRows());
+  const exchangeRow = resolvePriceRowForSymbol(normalized, exchangeLookup);
+  if (exchangeRow?.symbol) return normalizeTokenSymbol(exchangeRow.symbol);
+  const dashboardLookup = buildPriceSymbolLookup(getDashboardPriceRows());
+  const dashboardRow = resolvePriceRowForSymbol(normalized, dashboardLookup);
+  if (dashboardRow?.symbol) return normalizeTokenSymbol(dashboardRow.symbol);
+  return normalized;
+}
+
+function isKnownTokenSymbol(rawSymbol) {
+  const normalized = normalizeTokenSymbol(rawSymbol);
+  if (!normalized) return false;
+  const exchangeLookup = buildPriceSymbolLookup(getExchangePriceRows());
+  if (resolvePriceRowForSymbol(normalized, exchangeLookup)) return true;
+  const dashboardLookup = buildPriceSymbolLookup(getDashboardPriceRows());
+  if (resolvePriceRowForSymbol(normalized, dashboardLookup)) return true;
+  return false;
+}
+
+function getDefaultTokenSymbol() {
+  const ranked = Array.isArray(state.exchange?.volumeRank) ? state.exchange.volumeRank : [];
+  if (ranked.length) {
+    const candidate = resolveCanonicalTokenSymbol(ranked[0]?.symbol);
+    if (candidate) return candidate;
+  }
+  const exchangePrices = getExchangePriceRows();
+  if (exchangePrices.length) {
+    const candidate = resolveCanonicalTokenSymbol(exchangePrices[0]?.symbol);
+    if (candidate) return candidate;
+  }
+  const dashboardPrices = getDashboardPriceRows();
+  if (dashboardPrices.length) {
+    const candidate = resolveCanonicalTokenSymbol(dashboardPrices[0]?.symbol);
+    if (candidate) return candidate;
+  }
+  return "";
+}
+
+function ensureTokenSymbol() {
+  const current = resolveCanonicalTokenSymbol(state.tokenSymbol);
+  const hasUniverse = getExchangePriceRows().length > 0 || getDashboardPriceRows().length > 0;
+  if (current && (!hasUniverse || isKnownTokenSymbol(current))) {
+    state.tokenSymbol = current;
+    return current;
+  }
+  const fallback = getDefaultTokenSymbol();
+  if (fallback) {
+    state.tokenSymbol = fallback;
+    return fallback;
+  }
+  state.tokenSymbol = "";
+  return "";
+}
+
+function getTokenAnalyticsSnapshot(rawSymbol = state.tokenSymbol) {
+  const analytics = state.tokenAnalytics;
+  if (!analytics || typeof analytics !== "object") return null;
+  const requested = resolveCanonicalTokenSymbol(rawSymbol);
+  const snapshotSymbol = resolveCanonicalTokenSymbol(analytics.symbol || "");
+  if (!requested || !snapshotSymbol || requested !== snapshotSymbol) return null;
+  const timeframe = String(analytics.timeframe || "").toLowerCase();
+  const currentTf = String(state.timeframe || "").toLowerCase();
+  if (timeframe && currentTf && timeframe !== currentTf) return null;
+  return analytics;
+}
+
+function getTokenDataContext(rawSymbol = state.tokenSymbol) {
+  const symbol = resolveCanonicalTokenSymbol(rawSymbol);
+  const dashboardMarket = state.dashboard?.market || {};
+  const exchangePrices = getExchangePriceRows();
+  const dashboardPrices = getDashboardPriceRows();
+  const mergedPrices = [...exchangePrices, ...dashboardPrices];
+  const priceLookup = buildPriceSymbolLookup(mergedPrices);
+  const priceRow = resolvePriceRowForSymbol(symbol, priceLookup);
+  const markCandles =
+    (dashboardMarket.markCandlesBySymbol &&
+      dashboardMarket.markCandlesBySymbol[symbol] &&
+      Array.isArray(dashboardMarket.markCandlesBySymbol[symbol].rows)
+      ? dashboardMarket.markCandlesBySymbol[symbol].rows
+      : []) ||
+    [];
+  const candles =
+    (dashboardMarket.candlesBySymbol &&
+      dashboardMarket.candlesBySymbol[symbol] &&
+      Array.isArray(dashboardMarket.candlesBySymbol[symbol].rows)
+      ? dashboardMarket.candlesBySymbol[symbol].rows
+      : []) ||
+    [];
+  const fundingRows =
+    (dashboardMarket.fundingBySymbol &&
+      dashboardMarket.fundingBySymbol[symbol] &&
+      Array.isArray(dashboardMarket.fundingBySymbol[symbol].rows)
+      ? dashboardMarket.fundingBySymbol[symbol].rows
+      : []) ||
+    [];
+  const publicTrades =
+    (dashboardMarket.publicTradesBySymbol && Array.isArray(dashboardMarket.publicTradesBySymbol[symbol])
+      ? dashboardMarket.publicTradesBySymbol[symbol]
+      : []) || [];
+
+  return {
+    symbol,
+    priceRow: priceRow || null,
+    candles: candles.slice(),
+    markCandles: markCandles.slice(),
+    fundingRows: fundingRows.slice(),
+    publicTrades: publicTrades.slice(),
+  };
+}
+
+function sortByTimestampAsc(rows = [], tsKey = "timestamp") {
+  return [...rows].sort((a, b) => toNum(a?.[tsKey], 0) - toNum(b?.[tsKey], 0));
+}
+
+function aggregateBucketed(rows = [], seriesKey = activeSeries, options = {}) {
+  const lookbackMs = Number(options.lookbackMs || getSeriesLookbackMs(seriesKey));
+  const now = Date.now();
+  const map = new Map();
+  rows.forEach((row) => {
+    const ts = toNum(row?.timestamp, NaN);
+    if (!Number.isFinite(ts)) return;
+    if (lookbackMs > 0 && ts < now - lookbackMs) return;
+    const bucketStart = bucketStartForSeries(ts, seriesKey);
+    if (!Number.isFinite(bucketStart)) return;
+    let bucket = map.get(bucketStart);
+    if (!bucket) {
+      bucket = { timestamp: bucketStart, value: 0, count: 0, longValue: 0, shortValue: 0 };
+      map.set(bucketStart, bucket);
+    }
+    bucket.value += toNum(row?.value, 0);
+    bucket.longValue += toNum(row?.longValue, 0);
+    bucket.shortValue += toNum(row?.shortValue, 0);
+    bucket.count += 1;
+  });
+  return Array.from(map.values())
+    .sort((a, b) => a.timestamp - b.timestamp)
+    .map((bucket) => {
+      const next = { ...bucket };
+      if (options.average && bucket.count > 0) {
+        next.value = bucket.value / bucket.count;
+      }
+      return next;
+    });
+}
+
+function buildTokenVolumeSeries(tokenContext, seriesKey = activeSeries) {
+  const candles = tokenContext.markCandles.length ? tokenContext.markCandles : tokenContext.candles;
+  if (!candles.length) return [];
+  const points = sortByTimestampAsc(candles, "t").map((row) => {
+    const close = toNum(row?.c, 0);
+    const volume = toNum(row?.v, 0);
+    return {
+      timestamp: toNum(row?.t, NaN),
+      value: close * volume,
+    };
+  });
+  return aggregateBucketed(points, seriesKey, { average: false });
+}
+
+function buildTokenOiSeries(tokenContext, seriesKey = activeSeries) {
+  const candles = tokenContext.markCandles.length ? tokenContext.markCandles : tokenContext.candles;
+  const markNow = toNum(tokenContext.priceRow?.mark, NaN);
+  const openInterest = toNum(tokenContext.priceRow?.open_interest, NaN);
+  const oiUsdNow = Number.isFinite(markNow) && Number.isFinite(openInterest) ? markNow * openInterest : NaN;
+  if (!candles.length || !Number.isFinite(oiUsdNow) || oiUsdNow <= 0) {
+    if (Number.isFinite(oiUsdNow) && oiUsdNow > 0) {
+      return [{ timestamp: startOfUtcDay(Date.now()), value: oiUsdNow }];
+    }
+    return [];
+  }
+  const latestClose = toNum(candles[candles.length - 1]?.c, markNow || 1);
+  const points = sortByTimestampAsc(candles, "t").map((row) => {
+    const close = toNum(row?.c, latestClose);
+    const scale = latestClose > 0 ? close / latestClose : 1;
+    return {
+      timestamp: toNum(row?.t, NaN),
+      value: Math.max(0, oiUsdNow * scale),
+    };
+  });
+  return aggregateBucketed(points, seriesKey, { average: true });
+}
+
+function buildTokenFundingSeries(tokenContext, seriesKey = activeSeries) {
+  const points = sortByTimestampAsc(tokenContext.fundingRows, "createdAt").map((row) => ({
+    timestamp: toNum(row?.createdAt, NaN),
+    value: toNum(row?.fundingRate, 0) * 100,
+  }));
+  if (!points.length && tokenContext.priceRow) {
+    const fallback = toNum(tokenContext.priceRow?.funding, NaN);
+    if (Number.isFinite(fallback)) {
+      return [{ timestamp: startOfUtcDay(Date.now()), value: fallback * 100 }];
+    }
+  }
+  return aggregateBucketed(points, seriesKey, { average: true });
+}
+
+function normalizeTokenTradeSide(side) {
+  return String(side || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, "_");
+}
+
+function isLiquidationCauseToken(cause) {
+  const normalized = String(cause || "").toLowerCase();
+  return normalized.includes("liq") || normalized.includes("liquid");
+}
+
+function getTokenNetflowSign(side) {
+  const normalized = normalizeTokenTradeSide(side);
+  if (
+    normalized === "buy" ||
+    normalized === "b" ||
+    normalized === "open_long" ||
+    normalized === "close_short"
+  ) {
+    return 1;
+  }
+  if (
+    normalized === "sell" ||
+    normalized === "s" ||
+    normalized === "open_short" ||
+    normalized === "close_long"
+  ) {
+    return -1;
+  }
+  return 0;
+}
+
+function getTokenLiquidationBucket(side) {
+  const normalized = normalizeTokenTradeSide(side);
+  if (
+    normalized === "sell" ||
+    normalized === "s" ||
+    normalized === "close_long" ||
+    normalized === "open_short"
+  ) {
+    return "long";
+  }
+  if (
+    normalized === "buy" ||
+    normalized === "b" ||
+    normalized === "close_short" ||
+    normalized === "open_long"
+  ) {
+    return "short";
+  }
+  return "unknown";
+}
+
+function buildTokenLiquidationSeries(tokenContext, seriesKey = activeSeries) {
+  const points = sortByTimestampAsc(tokenContext.publicTrades, "timestamp")
+    .filter((row) => isLiquidationCauseToken(row?.cause))
+    .map((row) => {
+    const ts = toNum(row?.timestamp, NaN);
+    const notional = Math.abs(toNum(row?.price, 0) * toNum(row?.amount, 0));
+    const bucket = getTokenLiquidationBucket(row?.side);
+    const longValue = bucket === "long" ? notional : 0;
+    const shortValue = bucket === "short" ? notional : 0;
+    const inferredLong =
+      bucket === "unknown" ? (getTokenNetflowSign(row?.side) < 0 ? notional : 0) : longValue;
+    const inferredShort =
+      bucket === "unknown" ? (getTokenNetflowSign(row?.side) >= 0 ? notional : 0) : shortValue;
+    return {
+      timestamp: ts,
+      value: inferredLong + inferredShort,
+      longValue: inferredLong,
+      shortValue: inferredShort,
+    };
+  });
+  return aggregateBucketed(points, seriesKey, { average: false });
+}
+
+function buildTokenNetflowSeries(tokenContext, seriesKey = activeSeries) {
+  const points = sortByTimestampAsc(tokenContext.publicTrades, "timestamp").map((row) => {
+    const notional = Math.abs(toNum(row?.price, 0) * toNum(row?.amount, 0));
+    const signed = getTokenNetflowSign(row?.side) * notional;
+    return {
+      timestamp: toNum(row?.timestamp, NaN),
+      value: signed,
+    };
+  });
+  return aggregateBucketed(points, seriesKey, { average: false });
+}
+
+function buildTokenWalletActivitySeries(tokenContext, seriesKey = activeSeries) {
+  const points = sortByTimestampAsc(tokenContext.publicTrades, "timestamp").map((row) => ({
+    timestamp: toNum(row?.timestamp, NaN),
+    value: 1,
+  }));
+  return aggregateBucketed(points, seriesKey, { average: false });
+}
+
+function buildSeriesFromTokenAnalytics(tokenAnalytics, metric, seriesKey = activeSeries) {
+  if (!tokenAnalytics || !tokenAnalytics.series || typeof tokenAnalytics.series !== "object") return [];
+  const rows = Array.isArray(tokenAnalytics.series[metric]) ? tokenAnalytics.series[metric] : [];
+  if (!rows.length) return [];
+  const points = rows
+    .map((row) => ({
+      timestamp: toNum(row?.timestamp, NaN),
+      value: toNum(row?.value, 0),
+      longValue: toNum(row?.longValue, 0),
+      shortValue: toNum(row?.shortValue, 0),
+    }))
+    .filter((row) => Number.isFinite(row.timestamp));
+  if (!points.length) return [];
+  const averageMetrics = new Set(["oi", "funding"]);
+  return aggregateBucketed(points, seriesKey, {
+    average: averageMetrics.has(metric),
+  });
+}
+
+function getTokenActiveSeries(tab = state.analyticsTab) {
+  const symbol = ensureTokenSymbol();
+  if (!symbol) return [];
+  const tokenAnalytics = getTokenAnalyticsSnapshot(symbol);
+  const tokenContext = getTokenDataContext(symbol);
+  const metric = normalizeAnalyticsTab(tab);
+  if (tokenAnalytics) {
+    const fromGateway = buildSeriesFromTokenAnalytics(tokenAnalytics, metric, activeSeries);
+    if (fromGateway.length) return fromGateway;
+  }
+  if (metric === "volume") return buildTokenVolumeSeries(tokenContext, activeSeries);
+  if (metric === "oi") return buildTokenOiSeries(tokenContext, activeSeries);
+  if (metric === "funding") return buildTokenFundingSeries(tokenContext, activeSeries);
+  if (metric === "liquidations") return buildTokenLiquidationSeries(tokenContext, activeSeries);
+  if (metric === "netflow") return buildTokenNetflowSeries(tokenContext, activeSeries);
+  if (metric === "wallet_activity") return buildTokenWalletActivitySeries(tokenContext, activeSeries);
+  return [];
+}
+
+function signedUsdCompact(value) {
+  const num = toNum(value, 0);
+  const sign = num >= 0 ? "+" : "-";
+  return `${sign}$${fmtCompact(Math.abs(num))}`;
+}
+
+function percentageDelta(fromValue, toValue) {
+  const from = toNum(fromValue, NaN);
+  const to = toNum(toValue, NaN);
+  if (!Number.isFinite(from) || !Number.isFinite(to) || from === 0) return NaN;
+  return ((to - from) / Math.abs(from)) * 100;
+}
+
+function detectTrendLabel(delta, tolerance = 0.00001) {
+  const value = toNum(delta, 0);
+  if (value > tolerance) return "uptrend";
+  if (value < -tolerance) return "downtrend";
+  return "flat";
+}
+
+function classifyFundingRegime(fundingPct) {
+  const value = toNum(fundingPct, 0);
+  if (value >= 0.01) return "long crowded";
+  if (value <= -0.01) return "short crowded";
+  return "neutral";
+}
+
+function sumSeriesValue(rows = [], key = "value") {
+  return (Array.isArray(rows) ? rows : []).reduce((sum, row) => sum + toNum(row?.[key], 0), 0);
+}
+
+function getTokenMetricNarrative(metric, symbol) {
+  const map = {
+    oi: `Market structure and positioning depth for ${symbol}.`,
+    funding: `Directional crowding signal for ${symbol} with explicit baseline context.`,
+    liquidations: `Stress map showing liquidation pressure and spike windows for ${symbol}.`,
+    netflow: `Directional capital pressure for ${symbol} via signed flow across intervals.`,
+    wallet_activity: `Behavioral intelligence stream of token-linked activity for ${symbol}.`,
+    volume: `Per-token notional turnover and dominance rhythm for ${symbol}.`,
+  };
+  return map[metric] || `Per-token analytics intelligence for ${symbol}.`;
+}
+
+function formatTokenAnalyticsSource(tokenAnalytics, metric) {
+  const source = tokenAnalytics?.meta?.source || {};
+  const warnings = Array.isArray(source.warnings) ? source.warnings : [];
+  const warningCount = warnings.length;
+  const withWarnings = (label) => (warningCount > 0 ? `${label} · ${warningCount} warning${warningCount > 1 ? "s" : ""}` : label);
+  if (metric === "funding") return withWarnings(source.funding || "dashboard_fallback");
+  if (metric === "liquidations" || metric === "netflow" || metric === "wallet_activity" || metric === "volume") {
+    return withWarnings(source.trades || "dashboard_fallback");
+  }
+  if (metric === "oi") return withWarnings(source.price || "dashboard_fallback");
+  return withWarnings(source.price || source.trades || source.funding || "dashboard_fallback");
+}
+
+function getMetricModeLabel(metric, tokenAnalytics = null) {
+  const mode = tokenAnalytics?.meta?.mode || {};
+  if (metric === "oi") return mode.oi || "snapshot_only";
+  if (metric === "funding") return mode.funding || "funding_history";
+  if (metric === "liquidations") return mode.liquidations || "cause_filtered";
+  if (metric === "netflow") return mode.netflow || "side_mapped";
+  if (metric === "wallet_activity") return "event_activity";
+  return "series";
+}
+
+function buildMetricTableRows(metric, series = [], tokenAnalytics = null) {
+  const recent = (Array.isArray(series) ? series : []).slice(-12);
+  if (metric === "oi") {
+    return recent.map((row, index) => {
+      const prev = index > 0 ? recent[index - 1] : null;
+      const delta = prev ? toNum(row.value, 0) - toNum(prev.value, 0) : 0;
+      return [
+        formatChartLabel(row, "axis") || fmtTime(row.timestamp),
+        `$${fmtCompact(toNum(row.value, 0))}`,
+        signedUsdCompact(delta),
+      ];
+    });
+  }
+  if (metric === "funding") {
+    return recent.map((row) => {
+      const rate = toNum(row.value, 0);
+      return [
+        formatChartLabel(row, "axis") || fmtTime(row.timestamp),
+        `${fmtSigned(rate, 4)}%`,
+        classifyFundingRegime(rate),
+      ];
+    });
+  }
+  if (metric === "liquidations") {
+    return recent.map((row) => {
+      const total = toNum(row.value, 0);
+      const longValue = toNum(row.longValue, 0);
+      const shortValue = toNum(row.shortValue, 0);
+      const bias = longValue > shortValue ? "long stress" : shortValue > longValue ? "short stress" : "balanced";
+      return [
+        formatChartLabel(row, "axis") || fmtTime(row.timestamp),
+        `$${fmtCompact(total)}`,
+        `$${fmtCompact(longValue)}`,
+        `$${fmtCompact(shortValue)}`,
+        bias,
+      ];
+    });
+  }
+  if (metric === "netflow") {
+    let running = 0;
+    return recent.map((row) => {
+      const value = toNum(row.value, 0);
+      running += value;
+      return [
+        formatChartLabel(row, "axis") || fmtTime(row.timestamp),
+        signedUsdCompact(value),
+        signedUsdCompact(running),
+        value >= 0 ? "inflow" : "outflow",
+      ];
+    });
+  }
+  if (metric === "wallet_activity") {
+    const events = Array.isArray(tokenAnalytics?.events) ? tokenAnalytics.events.slice(0, 12) : [];
+    if (events.length) {
+      return events.map((event) => [
+        fmtTime(event.timestamp),
+        String(event.side || "-").replace(/_/g, " "),
+        String(event.cause || "normal").replace(/_/g, " "),
+        `$${fmtCompact(toNum(event.notionalUsd, 0))}`,
+      ]);
+    }
+    return recent.map((row) => [
+      formatChartLabel(row, "axis") || fmtTime(row.timestamp),
+      fmt(toNum(row.value, 0), 0),
+      toNum(row.value, 0) >= 8 ? "burst" : "normal",
+      fmtAgo(row.timestamp),
+    ]);
+  }
+  return recent.map((row) => [
+    formatChartLabel(row, "axis") || fmtTime(row.timestamp),
+    `$${fmtCompact(toNum(row.value, 0))}`,
+  ]);
+}
+
+function buildTokenInsightModel(symbol, metric, series = [], tokenAnalytics = null) {
+  const rows = buildMetricTableRows(metric, series, tokenAnalytics);
+  const modeLabel = getMetricModeLabel(metric, tokenAnalytics);
+  const meta = `${rows.length} intervals · ${modeLabel}`;
+  if (metric === "oi") {
+    return {
+      title: "OI Structure Breakdown",
+      meta,
+      columns: ["Interval", "OI", "Delta"],
+      rows,
+    };
+  }
+  if (metric === "funding") {
+    return {
+      title: "Funding Regime Breakdown",
+      meta,
+      columns: ["Interval", "Funding", "Regime"],
+      rows,
+    };
+  }
+  if (metric === "liquidations") {
+    return {
+      title: "Liquidation Stress Breakdown",
+      meta,
+      columns: ["Interval", "Total", "Long", "Short", "Bias"],
+      rows,
+    };
+  }
+  if (metric === "netflow") {
+    return {
+      title: "Directional Flow Breakdown",
+      meta,
+      columns: ["Interval", "Netflow", "Cumulative", "Direction"],
+      rows,
+    };
+  }
+  if (metric === "wallet_activity") {
+    return {
+      title: "Wallet Intelligence Feed",
+      meta: Array.isArray(tokenAnalytics?.events) && tokenAnalytics.events.length
+        ? `${tokenAnalytics.events.length} recent events · ${modeLabel}`
+        : meta,
+      columns: ["Time", "Side", "Cause", "Notional"],
+      rows,
+    };
+  }
+  return {
+    title: "Volume Dominance Breakdown",
+    meta,
+    columns: ["Interval", "Volume"],
+    rows,
+  };
+}
+
+function buildMetricHighlightChips(metric, series = [], tokenAnalytics = null) {
+  const chips = [];
+  const values = (Array.isArray(series) ? series : []).map((row) => toNum(row.value, 0));
+  const last = values.length ? values[values.length - 1] : 0;
+  const first = values.length ? values[0] : 0;
+  const delta = last - first;
+
+  if (metric === "oi") {
+    const high = values.length ? Math.max(...values) : 0;
+    const low = values.length ? Math.min(...values) : 0;
+    const uniqueSamples = new Set(values.map((value) => Number(value).toFixed(6))).size;
+    chips.push(`trend ${detectTrendLabel(delta)}`);
+    chips.push(`range $${fmtCompact(low)} -> $${fmtCompact(high)}`);
+    chips.push(Math.abs(percentageDelta(first, last)) >= 5 ? "expansion regime" : "stable structure");
+    if (uniqueSamples <= 1) chips.push("snapshot-only OI (history unavailable)");
+    return chips;
+  }
+  if (metric === "funding") {
+    chips.push(classifyFundingRegime(last));
+    const positives = values.filter((v) => v > 0).length;
+    const negatives = values.filter((v) => v < 0).length;
+    chips.push(`positive ${positives} / negative ${negatives}`);
+    chips.push(Math.abs(last) >= 0.01 ? "crowded direction" : "balanced carry");
+    return chips;
+  }
+  if (metric === "liquidations") {
+    const longTotal = sumSeriesValue(series, "longValue");
+    const shortTotal = sumSeriesValue(series, "shortValue");
+    const total = longTotal + shortTotal;
+    chips.push(`total $${fmtCompact(total)}`);
+    chips.push(longTotal > shortTotal ? "long liquidation bias" : shortTotal > longTotal ? "short liquidation bias" : "balanced pressure");
+    const peak = values.length ? Math.max(...values) : 0;
+    chips.push(`peak spike $${fmtCompact(peak)}`);
+    return chips;
+  }
+  if (metric === "netflow") {
+    const cumulative = values.reduce((sum, value) => sum + value, 0);
+    chips.push(cumulative >= 0 ? "net inflow regime" : "net outflow regime");
+    chips.push(`cumulative ${signedUsdCompact(cumulative)}`);
+    chips.push(Math.abs(delta) >= Math.max(1, Math.abs(first) * 0.25) ? "directional swing" : "range flow");
+    return chips;
+  }
+  if (metric === "wallet_activity") {
+    const maxBucket = values.length ? Math.max(...values) : 0;
+    const totalEvents = values.reduce((sum, value) => sum + value, 0);
+    const freshTracked = toNum(state.exchange?.indexer?.liveGroupSize, 0);
+    const staleTracked = toNum(state.exchange?.indexer?.liveStaleWallets, 0);
+    chips.push(`events ${fmt(totalEvents, 0)} / max burst ${fmt(maxBucket, 0)}`);
+    chips.push(`tracked wallets ${fmt(freshTracked, 0)} live`);
+    chips.push(`stale wallets ${fmt(staleTracked, 0)}`);
+    const warnings = Array.isArray(tokenAnalytics?.meta?.source?.warnings) ? tokenAnalytics.meta.source.warnings : [];
+    if (warnings.some((warning) => String(warning).includes("truncated"))) {
+      chips.push("history truncated by page cap");
+    }
+    return chips;
+  }
+  chips.push(`latest $${fmtCompact(last)}`);
+  chips.push(`change ${signedUsdCompact(delta)}`);
+  chips.push(`samples ${values.length}`);
+  return chips;
+}
+
+function buildTokenKpiRows(symbol, metric = state.analyticsTab) {
+  const normalizedMetric = normalizeAnalyticsTab(metric);
+  const tokenAnalytics = getTokenAnalyticsSnapshot(symbol);
+  const series = getTokenActiveSeries(normalizedMetric);
+  const values = series.map((row) => toNum(row.value, 0));
+  const lastValue = values.length ? values[values.length - 1] : 0;
+  const firstValue = values.length ? values[0] : 0;
+  const valueDelta = lastValue - firstValue;
+
+  const tokenContext = getTokenDataContext(symbol);
+  const mark = toNum(tokenContext.priceRow?.mark, 0);
+  const openInterest = toNum(tokenContext.priceRow?.open_interest, 0);
+  const oiUsd = mark * openInterest;
+  const volume24h = toNum(tokenContext.priceRow?.volume_24h, 0);
+  const fundingPct = toNum(tokenContext.priceRow?.funding, 0) * 100;
+
+  const k = tokenAnalytics?.kpis || {};
+  const currentOi = toNum(k.currentOiUsd, oiUsd);
+  const currentVolume24h = toNum(k.volume24hUsd, volume24h);
+  const currentFundingPct = toNum(k.fundingPctCurrent, fundingPct);
+
+  const lastTsCandidates = [
+    k.lastTradeAt,
+    k.lastFundingAt,
+    tokenAnalytics?.freshness?.updatedAt,
+    tokenAnalytics?.generatedAt,
+    ...series.map((row) => row.timestamp),
+  ]
+    .map((value) => Number(value))
+    .filter((value) => Number.isFinite(value) && value > 0);
+  const lastTs = lastTsCandidates.length ? Math.max(...lastTsCandidates) : Date.now();
+
+  let rows = [];
+  if (normalizedMetric === "oi") {
+    const high = values.length ? Math.max(...values) : currentOi;
+    const low = values.length ? Math.min(...values) : currentOi;
+    const deltaPct = percentageDelta(firstValue || currentOi, lastValue || currentOi);
+    rows = [
+      { key: "Current OI", value: `$${fmtCompact(currentOi)}` },
+      { key: "OI Change", value: Number.isFinite(deltaPct) ? `${fmtSigned(deltaPct, 2)}%` : signedUsdCompact(valueDelta) },
+      { key: "Local High", value: `$${fmtCompact(high)}` },
+      { key: "Local Low", value: `$${fmtCompact(low)}` },
+      { key: "Trend", value: detectTrendLabel(valueDelta) },
+    ];
+  } else if (normalizedMetric === "funding") {
+    const avg = values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : currentFundingPct;
+    const maxPos = values.filter((value) => value > 0);
+    const maxNeg = values.filter((value) => value < 0);
+    const cumulative = values.reduce((sum, value) => sum + value, 0);
+    rows = [
+      { key: "Current Funding", value: `${fmtSigned(currentFundingPct, 4)}%` },
+      { key: "Average Funding", value: `${fmtSigned(avg, 4)}%` },
+      { key: "Highest Positive", value: `${fmtSigned(maxPos.length ? Math.max(...maxPos) : 0, 4)}%` },
+      { key: "Lowest Negative", value: `${fmtSigned(maxNeg.length ? Math.min(...maxNeg) : 0, 4)}%` },
+      { key: "Cumulative Funding", value: `${fmtSigned(cumulative, 4)}%` },
+    ];
+  } else if (normalizedMetric === "liquidations") {
+    const longTotal = sumSeriesValue(series, "longValue");
+    const shortTotal = sumSeriesValue(series, "shortValue");
+    const total = longTotal + shortTotal;
+    const peak = values.length ? Math.max(...values) : 0;
+    const imbalance = total > 0 ? ((longTotal - shortTotal) / total) * 100 : 0;
+    rows = [
+      { key: "Total Liquidations", value: `$${fmtCompact(total)}` },
+      { key: "Long Liquidations", value: `$${fmtCompact(longTotal)}` },
+      { key: "Short Liquidations", value: `$${fmtCompact(shortTotal)}` },
+      { key: "Biggest Spike", value: `$${fmtCompact(peak)}` },
+      { key: "Imbalance", value: `${fmtSigned(imbalance, 2)}%` },
+    ];
+  } else if (normalizedMetric === "netflow") {
+    const cumulative = values.reduce((sum, value) => sum + value, 0);
+    const strongestIn = values.length ? Math.max(...values) : 0;
+    const strongestOut = values.length ? Math.min(...values) : 0;
+    rows = [
+      { key: "Current Netflow", value: signedUsdCompact(lastValue) },
+      { key: "Cumulative Netflow", value: signedUsdCompact(cumulative) },
+      { key: "Strongest Inflow", value: signedUsdCompact(strongestIn) },
+      { key: "Strongest Outflow", value: signedUsdCompact(strongestOut) },
+      { key: "Direction", value: cumulative >= 0 ? "inflow" : "outflow" },
+    ];
+  } else if (normalizedMetric === "wallet_activity") {
+    const totalEvents = values.reduce((sum, value) => sum + value, 0);
+    const activeBuckets = values.filter((value) => value > 0).length;
+    const maxBurst = values.length ? Math.max(...values) : 0;
+    const liveTracked = toNum(state.exchange?.indexer?.liveGroupSize, 0);
+    const staleTracked = toNum(state.exchange?.indexer?.liveStaleWallets, 0);
+    rows = [
+      { key: "Active Intervals", value: fmt(activeBuckets, 0) },
+      { key: "Activity Events", value: fmt(totalEvents, 0) },
+      { key: "Peak Burst", value: fmt(maxBurst, 0) },
+      { key: "Live Tracked Wallets", value: fmt(liveTracked, 0) },
+      { key: "Stale Tracked Wallets", value: fmt(staleTracked, 0) },
+    ];
+  } else {
+    const high = values.length ? Math.max(...values) : currentVolume24h;
+    const low = values.length ? Math.min(...values) : currentVolume24h;
+    rows = [
+      { key: "24h Volume", value: `$${fmtCompact(currentVolume24h)}` },
+      { key: "Volume Delta", value: signedUsdCompact(valueDelta) },
+      { key: "Local High", value: `$${fmtCompact(high)}` },
+      { key: "Local Low", value: `$${fmtCompact(low)}` },
+      { key: "Samples", value: fmt(values.length, 0) },
+    ];
+  }
+
+  return {
+    rows,
+    lastTs,
+    source: formatTokenAnalyticsSource(tokenAnalytics, normalizedMetric),
+    subtitle: getTokenMetricNarrative(normalizedMetric, symbol),
+    insight: buildTokenInsightModel(symbol, normalizedMetric, series, tokenAnalytics),
+    chips: buildMetricHighlightChips(normalizedMetric, series, tokenAnalytics),
+  };
+}
+
+function renderTokenInsights(kpiModel) {
+  const titleNode = el("token-insight-title");
+  const metaNode = el("token-insight-meta");
+  const chipsNode = el("token-highlight-chips");
+  const headNode = el("token-breakdown-head");
+  const bodyNode = el("token-breakdown-body");
+
+  const insight = kpiModel?.insight || {};
+  if (titleNode) titleNode.textContent = insight.title || "Metric Insights";
+  if (metaNode) metaNode.textContent = insight.meta || "-";
+
+  if (chipsNode) {
+    const chips = Array.isArray(kpiModel?.chips) ? kpiModel.chips : [];
+    chipsNode.innerHTML = chips.length
+      ? chips
+          .map((chip) => `<span class="token-chip">${escapeHtml(chip)}</span>`)
+          .join("")
+      : "<span class='muted'>No highlights yet.</span>";
+  }
+
+  if (headNode) {
+    const columns = Array.isArray(insight.columns) ? insight.columns : [];
+    headNode.innerHTML = columns.length
+      ? `<tr>${columns.map((column) => `<th>${escapeHtml(column)}</th>`).join("")}</tr>`
+      : "";
+  }
+
+  if (bodyNode) {
+    const rows = Array.isArray(insight.rows) ? insight.rows : [];
+    const columnCount = Math.max(1, Array.isArray(insight.columns) ? insight.columns.length : 1);
+    bodyNode.innerHTML = rows.length
+      ? rows
+          .map((row) => `<tr>${row.map((cell) => `<td>${escapeHtml(cell)}</td>`).join("")}</tr>`)
+          .join("")
+      : `<tr><td colspan='${columnCount}' class='muted'>No interval data available for this metric yet.</td></tr>`;
+  }
+}
+
+function syncAnalyticsTabs() {
+  const current = normalizeAnalyticsTab(state.analyticsTab);
+  document.querySelectorAll("#analytics-tabs .analytics-tab").forEach((node) => {
+    node.classList.toggle("active", normalizeAnalyticsTab(node.dataset.analyticsTab) === current);
+  });
+}
+
+function renderTokenView() {
+  const symbol = ensureTokenSymbol();
+  const normalizedMetric = normalizeAnalyticsTab(state.analyticsTab);
+  state.analyticsTab = normalizedMetric;
+  syncAnalyticsTabs();
+
+  if (!symbol) {
+    setText("token-page-title", "Token Analytics");
+    setText("token-page-subtitle", "No token available from current Pacifica payload.");
+    setText("token-symbol-pill", "Symbol -");
+    setText("token-exchange-pill", "Pacifica");
+    setText("token-timeframe-pill", `TF ${String(state.timeframe || "all").toUpperCase()}`);
+    setText("token-live-pill", "SYNCING");
+    setText("token-freshness-pill", "updated -");
+    setText("token-source-pill", "source -");
+    const host = el("token-kpis");
+    if (host) host.innerHTML = "<div class='muted'>No token analytics data available yet.</div>";
+    renderTokenInsights(null);
+    return;
+  }
+
+  const metricName = getAnalyticsPresentation(normalizedMetric).title;
+  const kpi = buildTokenKpiRows(symbol, normalizedMetric);
+  setText("token-page-title", `${symbol} Analytics`);
+  setText(
+    "token-page-subtitle",
+    `${kpi.subtitle || `${metricName} intelligence for ${symbol} on Pacifica.`}`
+  );
+  setText("token-symbol-pill", `Symbol ${symbol}`);
+  setText("token-exchange-pill", "Pacifica");
+  setText("token-timeframe-pill", `TF ${String(state.timeframe || "all").toUpperCase()}`);
+  setText("token-live-pill", state.exchange?.sync?.wsStatus === "open" ? "LIVE" : "SYNCING");
+  setText(
+    "token-freshness-pill",
+    `updated ${fmtAgo(kpi.lastTs || state.exchange?.generatedAt || state.dashboard?.generatedAt || Date.now())}`
+  );
+  setText("token-source-pill", `source ${kpi.source || "-"}`);
+
+  const host = el("token-kpis");
+  if (host) {
+    host.innerHTML = kpi.rows
+      .map(
+        (row) => `<article class="kpi-card">
+            <div class="kpi-title">${escapeHtml(row.key)}</div>
+            <div class="kpi-value">${escapeHtml(row.value)}</div>
+            ${row.meta ? `<div class="kpi-meta">${escapeHtml(row.meta)}</div>` : ""}
+          </article>`
+      )
+      .join("");
+  }
+  renderTokenInsights(kpi);
+}
+
+function renderExchangeTokenPreview(rows = []) {
+  const host = el("exchange-token-preview-body");
+  if (!host) return;
+  const items = (Array.isArray(rows) ? rows : []).slice(0, 8);
+  if (!items.length) {
+    host.innerHTML = "<div class='muted'>No symbols available.</div>";
+    return;
+  }
+  host.innerHTML = items
+    .map((row, index) => {
+      const symbol = escapeHtml(row?.symbol || "-");
+      const volume = `$${fmtCompact(toNum(row?.volume, 0))}`;
+      const share = `${fmt(toNum(row?.sharePct, 0), 2)}% share`;
+      const delta = fmtSigned(toNum(row?.deltaPct, 0), 2);
+      return `<button class="token-preview-card" type="button" data-token-symbol="${symbol}">
+        <span class="token-preview-rank">#${String(index + 1).padStart(2, "0")}</span>
+        <strong>${symbol}</strong>
+        <span class="token-preview-volume">${volume}</span>
+        <span class="token-preview-meta">${share} · ${delta}%</span>
+      </button>`;
+    })
+    .join("");
+}
+
+function syncRouteFromState(options = {}) {
+  if (typeof window === "undefined" || !window.history) return;
+  const replace = Boolean(options.replace);
+  let nextPath = "/";
+  if (state.view === "token") {
+    const symbol = ensureTokenSymbol();
+    nextPath = symbol ? getTokenRoutePath(symbol, state.analyticsTab) : "/";
+  } else if (state.view === "wallets") {
+    nextPath = "/wallets";
+  }
+  if (window.location.pathname === nextPath) return;
+  if (replace) {
+    window.history.replaceState({ view: state.view }, "", nextPath);
+  } else {
+    window.history.pushState({ view: state.view }, "", nextPath);
+  }
+}
+
+function applyRouteFromLocation(options = {}) {
+  const replace = Boolean(options.replace);
+  const pathname = typeof window !== "undefined" ? window.location.pathname : "/";
+  const tokenRoute = parseTokenRoute(pathname);
+  if (tokenRoute) {
+    state.tokenSymbol = resolveCanonicalTokenSymbol(tokenRoute.symbol) || tokenRoute.symbol;
+    state.analyticsTab = normalizeAnalyticsTab(tokenRoute.metric);
+    applyView("token", { skipRoute: true });
+    renderTokenView();
+    if (replace) syncRouteFromState({ replace: true });
+    return;
+  }
+
+  if (pathname === "/wallets") {
+    applyView("wallets", { skipRoute: true });
+    if (replace) syncRouteFromState({ replace: true });
+    return;
+  }
+
+  applyView("exchange", { skipRoute: true });
+  if (replace && pathname !== "/") {
+    syncRouteFromState({ replace: true });
+  }
+}
+
+function openTokenAnalytics(symbol, metric = state.analyticsTab, options = {}) {
+  const nextSymbol = resolveCanonicalTokenSymbol(symbol) || ensureTokenSymbol();
+  if (!nextSymbol) return false;
+  state.tokenSymbol = nextSymbol;
+  state.analyticsTab = normalizeAnalyticsTab(metric);
+  applyView("token", { skipRoute: true });
+  state.tokenAnalytics = null;
+  renderTokenView();
+  renderActiveSeries();
+  refreshTokenAnalytics({ force: false })
+    .then(() => {
+      if (state.view !== "token") return;
+      renderTokenView();
+      renderActiveSeries();
+      syncRouteFromState({ replace: true });
+    })
+    .catch(() => null);
+  if (!options.skipRoute) syncRouteFromState({ replace: Boolean(options.replaceRoute) });
+  return true;
+}
+
+function buildTidalSparklineHeights(row, maxVolume, maxAbsDelta) {
+  const bars = 10;
+  const symbol = String(row?.symbol || "");
+  const seed = symbol.split("").reduce((acc, ch) => (acc * 31 + ch.charCodeAt(0)) % 9973, 17);
+  const phase = (seed % 23) / 7;
+  const volRatio = maxVolume > 0 ? clamp(toNum(row?.volume, 0) / maxVolume, 0, 1) : 0;
+  const deltaRatio =
+    maxAbsDelta > 0 ? clamp(Math.abs(toNum(row?.deltaPct, 0)) / maxAbsDelta, 0, 1) : 0;
+  const movement = row?.movement || "flat";
+
+  return Array.from({ length: bars }, (_, index) => {
+    const wave =
+      0.58 +
+      Math.sin(index * 0.88 + phase) * 0.22 +
+      Math.cos(index * 0.51 + phase * 1.7) * 0.08;
+    const trend =
+      movement === "up"
+        ? index * 1.55
+        : movement === "down"
+          ? (bars - index - 1) * 1.45
+          : (index % 2 === 0 ? 1.2 : -0.9);
+    const jitter = ((seed + index * 19) % 9) - 4;
+    const baseline = 20 + volRatio * 44;
+    const height = baseline * wave + trend + deltaRatio * 16 + jitter;
+    return clamp(height, 16, 94);
+  });
+}
+
+function buildTidalReasonChips(row, isMomentumLeader) {
+  const chips = [];
+  if (toNum(row?.sharePct, 0) >= 12 || toNum(row?.volumeRank, 99) <= 3) chips.push("dominant volume");
+  if (toNum(row?.deltaPct, 0) >= 1.5) chips.push("rising fast");
+  if (isMomentumLeader) chips.push("momentum leader");
+  if (!chips.length) {
+    chips.push(row?.movement === "down" ? "mean reversion" : "steady flow");
+  }
+  return chips.slice(0, 3);
+}
+
 function renderExchange() {
   const payload = state.exchange || {};
   const kpis = payload.kpis || {};
+  const indexer = payload.indexer || {};
+  const progress = getIndexerBreakdown(indexer);
+  const successfulScans = Number(indexer?.successfulScans ?? 0);
+  const failedScans = Number(indexer?.failedScans ?? 0);
+  const scanAttempts = successfulScans + failedScans;
+  const refreshSuccessPct = scanAttempts > 0 ? (successfulScans / scanAttempts) * 100 : 0;
+  const liveGroup = Number(indexer?.liveGroupSize ?? progress.liveTracking ?? 0);
+  const staleWallets = Number(indexer?.liveStaleWallets ?? 0);
+  const scanIntervalMs = Math.max(1000, Number(indexer?.scanIntervalMs ?? 5000));
+  const selectedPerScan = Math.max(
+    0,
+    Number(indexer?.liveRefreshSnapshot?.selected ?? indexer?.liveWalletsPerScan ?? 0)
+  );
+  const refreshedPerMinute = selectedPerScan * (60000 / scanIntervalMs);
+  const refreshed5m = liveGroup > 0 ? Math.min(liveGroup, Math.round(refreshedPerMinute * 5)) : 0;
+  const refreshed15m = liveGroup > 0 ? Math.min(liveGroup, Math.round(refreshedPerMinute * 15)) : 0;
 
   const kpiRows = [
     { key: "Total Accounts", value: fmt(kpis.totalAccounts || 0, 0) },
     { key: "Total Trades", value: fmt(kpis.totalTrades || 0, 0) },
     { key: "Total Volume", value: `$${fmtCompact(kpis.totalVolumeUsd)}` },
     { key: "Total Fees", value: `$${fmt(kpis.totalFeesUsd, 2)}` },
+    { key: "Open Interest", value: `$${fmtCompact(kpis.openInterestAtEnd)}` },
+    { key: "Refresh Success", value: `${fmt(refreshSuccessPct, 2)}%` },
+    { key: "Wallets Refreshed 5m", value: fmt(refreshed5m, 0) },
+    { key: "Wallets Refreshed 15m", value: fmt(refreshed15m, 0), meta: `stale ${fmt(staleWallets, 0)} / ${fmt(liveGroup, 0)}` },
   ];
 
   const kpiContainer = el("exchange-kpis");
@@ -1240,25 +2771,193 @@ function renderExchange() {
 
   renderMarketsTicker(payload);
 
+  const volumeMethod = payload?.source?.totalVolumeMethod || "n/a";
+  const rankSource = payload?.source?.volumeRankSource || "n/a";
+  setText("kpi-context-label", `Source: ${volumeMethod} · rank: ${rankSource} · updated ${fmtAgo(payload.generatedAt)}`);
+
   const body = el("volume-rank-body");
   const allRows = Array.isArray(payload.volumeRank) ? payload.volumeRank : [];
-  const totalRows = allRows.length;
+  const priceRows = Array.isArray(payload?.source?.prices) ? payload.source.prices : [];
+  const priceLookup = buildPriceSymbolLookup(priceRows);
+  const totalVolumeUniverse = allRows.reduce((sum, row) => {
+    const volume = toNum(
+      row?.volume_24h_usd !== undefined ? row.volume_24h_usd : row?.volume_usd !== undefined ? row.volume_usd : row?.volumeUsd,
+      0
+    );
+    return sum + volume;
+  }, 0);
+  const normalizedRows = allRows.map((row, index) => {
+    const symbol = String(row?.symbol || row?.market || "").trim().toUpperCase();
+    const volume = toNum(
+      row?.volume_24h_usd !== undefined ? row.volume_24h_usd : row?.volume_usd !== undefined ? row.volume_usd : row?.volumeUsd,
+      0
+    );
+    const volumeRank = Math.max(1, Number(row?.rank || index + 1));
+    const priceRow = resolvePriceRowForSymbol(symbol, priceLookup);
+    const mark = toNum(priceRow?.mark, NaN);
+    const yesterday = toNum(
+      priceRow?.yesterday_price !== undefined ? priceRow?.yesterday_price : priceRow?.yesterdayPrice,
+      NaN
+    );
+    const deltaFromPrice =
+      Number.isFinite(mark) && Number.isFinite(yesterday) && yesterday !== 0
+        ? ((mark - yesterday) / yesterday) * 100
+        : NaN;
+    const deltaPct = Number.isFinite(deltaFromPrice)
+      ? deltaFromPrice
+      : toNum(
+          row?.change_24h_pct !== undefined ? row.change_24h_pct : row?.change24hPct,
+          0
+        );
+    let openInterestUsd = toNum(row?.open_interest_usd, NaN);
+    if (!Number.isFinite(openInterestUsd) && priceRow) {
+      const oi = toNum(priceRow?.open_interest, 0);
+      openInterestUsd = Number.isFinite(mark) ? oi * mark : 0;
+    }
+    const sharePct = totalVolumeUniverse > 0 ? (volume / totalVolumeUniverse) * 100 : 0;
+    const movement = getTidalMovement(deltaPct);
+    return {
+      symbol,
+      symbolKey: buildVolumeSymbolCandidates(symbol).join("|"),
+      pairLabel: buildPerpPairLabel(symbol),
+      volume,
+      sharePct,
+      deltaPct,
+      movement,
+      volumeRank,
+      openInterestUsd: Number.isFinite(openInterestUsd) ? openInterestUsd : 0,
+      momentumScore: 0,
+      sparkline: [],
+      reasonChips: [],
+    };
+  });
+  const maxVolume = normalizedRows.reduce((max, row) => Math.max(max, toNum(row?.volume, 0)), 0);
+  const maxAbsDelta = normalizedRows.reduce(
+    (max, row) => Math.max(max, Math.abs(toNum(row?.deltaPct, 0))),
+    0
+  );
+  normalizedRows.forEach((row) => {
+    row.momentumScore =
+      toNum(row.deltaPct, 0) * Math.sqrt(Math.max(toNum(row.sharePct, 0), 0) + 1) +
+      Math.log10(Math.max(toNum(row.volume, 0), 1)) * 0.6;
+    row.sparkline = buildTidalSparklineHeights(row, maxVolume, maxAbsDelta);
+  });
+  const momentumLeaderCount = Math.min(5, normalizedRows.length);
+  const momentumLeaderKeys = new Set(
+    normalizedRows
+      .slice()
+      .sort((a, b) => toNum(b.momentumScore, 0) - toNum(a.momentumScore, 0))
+      .slice(0, momentumLeaderCount)
+      .map((row) => row.symbolKey)
+  );
+  normalizedRows.forEach((row) => {
+    row.reasonChips = buildTidalReasonChips(row, momentumLeaderKeys.has(row.symbolKey));
+  });
+
+  const filterNeedle = String(state.volumeFilter || "").trim().toUpperCase();
+  let rankedRows = normalizedRows.filter((row) => {
+    if (!filterNeedle) return true;
+    return (
+      String(row?.symbol || "").toUpperCase().includes(filterNeedle) ||
+      String(row?.pairLabel || "").toUpperCase().includes(filterNeedle)
+    );
+  });
+
+  if (state.volumeSort === "share") {
+    rankedRows = rankedRows.sort((a, b) => {
+      const av = toNum(a?.sharePct, 0);
+      const bv = toNum(b?.sharePct, 0);
+      if (bv === av) return toNum(b?.volume, 0) - toNum(a?.volume, 0);
+      return bv - av;
+    });
+  } else if (state.volumeSort === "momentum") {
+    rankedRows = rankedRows.sort((a, b) => {
+      const av = toNum(a?.momentumScore, 0);
+      const bv = toNum(b?.momentumScore, 0);
+      if (bv === av) return toNum(b?.volume, 0) - toNum(a?.volume, 0);
+      return bv - av;
+    });
+  } else {
+    rankedRows = rankedRows.sort((a, b) => {
+      const av = toNum(a?.volume, 0);
+      const bv = toNum(b?.volume, 0);
+      return bv - av;
+    });
+  }
+
+  const totalRows = rankedRows.length;
+  state.volumeRankFilteredTotal = totalRows;
+  renderExchangeTokenPreview(rankedRows);
   const pageSize = Math.max(1, Number(state.volumeRankPageSize || 10));
   const totalPages = Math.max(1, Math.ceil(totalRows / pageSize));
   state.volumeRankPage = Math.max(1, Math.min(totalPages, Number(state.volumeRankPage || 1)));
   const pageStart = (state.volumeRankPage - 1) * pageSize;
-  const pageRows = allRows.slice(pageStart, pageStart + pageSize);
+  const pageRows = rankedRows.slice(pageStart, pageStart + pageSize);
+  const rankSourceLabel = String(payload?.source?.volumeRankSource || "n/a")
+    .replace(/^\/api\//, "")
+    .split(":")[0];
+  const rankWindowLabel = String(payload?.source?.volumeRankWindowUsed || state.timeframe || "24h").toUpperCase();
+  setText("tidal-last-updated", `updated ${fmtAgo(payload.generatedAt)}`);
+  setText("tidal-source-tag", `source ${rankWindowLabel} · ${rankSourceLabel || "n/a"}`);
+  document.querySelectorAll("#volume-sort-toggle .sort-mode-btn").forEach((btn) => {
+    btn.classList.toggle("active", btn.dataset.sortMode === state.volumeSort);
+  });
 
   if (body) {
-    body.innerHTML = pageRows
-      .map(
-        (row) => `<tr>
-          <td><span class="rank-pill">#${row.rank}</span></td>
-          <td><strong>${row.symbol}</strong></td>
-          <td>$${fmtCompact(row.volume_24h_usd !== undefined ? row.volume_24h_usd : row.volumeUsd)}</td>
-        </tr>`
-      )
-      .join("");
+    body.innerHTML = pageRows.length
+      ? pageRows
+          .map((row, index) => {
+            const rank = pageStart + index + 1;
+            const tier = getTidalTier(rank);
+            const volume = toNum(row?.volume, 0);
+            const share = toNum(row?.sharePct, 0);
+            const delta = toNum(row?.deltaPct, 0);
+            const dominance = maxVolume > 0 ? clamp((volume / maxVolume) * 100, 7, 100) : 0;
+            const deltaClass = delta >= 0 ? "up" : "down";
+            const movementIcon = row?.movement === "up" ? "▲" : row?.movement === "down" ? "▼" : "•";
+            const reasonMarkup = (Array.isArray(row?.reasonChips) ? row.reasonChips : [])
+              .map((chip) => `<span class="tidal-reason-chip">${escapeHtml(chip)}</span>`)
+              .join("");
+            const sparklineMarkup = (Array.isArray(row?.sparkline) ? row.sparkline : [])
+              .map((point) => `<span style="--spark-h:${toNum(point, 20).toFixed(2)}%"></span>`)
+              .join("");
+            return `<article class="tidal-row tier-${tier.key} movement-${row?.movement || "flat"}${
+              rank <= 3 ? " is-prestige" : ""
+            }" style="--tidal-dominance:${dominance.toFixed(2)}%" data-token-symbol="${escapeHtml(
+              row?.symbol || ""
+            )}" role="button" tabindex="0" aria-label="Open ${escapeHtml(
+              row?.symbol || "token"
+            )} analytics">
+              <div class="tidal-row-fill"></div>
+              <div class="tidal-row-grid">
+                <div class="tidal-rank-slot">
+                  <span class="tidal-rank-pill">#${String(rank).padStart(2, "0")}</span>
+                  <span class="tidal-tier-chip">${tier.label}</span>
+                </div>
+                <div class="tidal-symbol-slot">
+                  <div class="tidal-symbol-line">
+                    <strong>${escapeHtml(row?.symbol || "-")}</strong>
+                    <span class="tidal-pair-label">${escapeHtml(row?.pairLabel || "-")}</span>
+                  </div>
+                  <div class="tidal-detail-line">
+                    <span class="tidal-movement-chip ${row?.movement || "flat"}">${movementIcon} ${fmtSigned(
+              delta,
+              2
+            )}%</span>
+                    <span class="tidal-sparkline" aria-hidden="true">${sparklineMarkup}</span>
+                    <span class="tidal-reason-strip">${reasonMarkup}</span>
+                  </div>
+                </div>
+                <div class="tidal-metrics-slot">
+                  <strong class="tidal-volume-value">$${fmtCompact(volume)}</strong>
+                  <span class="tidal-share-value">${fmt(share, 2)}% share</span>
+                  <span class="tidal-delta-value ${deltaClass}">${fmtSigned(delta, 2)}%</span>
+                </div>
+              </div>
+            </article>`;
+          })
+          .join("")
+      : "<div class='tidal-empty muted'>No symbols match the current filter.</div>";
   }
 
   setText("volume-total-label", `${fmt(totalRows, 0)} symbols`);
@@ -1267,6 +2966,36 @@ function renderExchange() {
   const volumeNext = el("volume-next-btn");
   if (volumePrev) volumePrev.disabled = state.volumeRankPage <= 1;
   if (volumeNext) volumeNext.disabled = state.volumeRankPage >= totalPages;
+}
+
+async function runTerminalSearch() {
+  const input = el("terminal-search-input");
+  const raw = input ? String(input.value || "").trim() : "";
+  if (!raw) return;
+
+  const looksLikeWallet = raw.length >= 32;
+  if (looksLikeWallet) {
+    applyView("wallets");
+    state.walletSearch = raw;
+    state.walletPage = 1;
+    const walletSearchInput = el("wallet-search");
+    if (walletSearchInput) walletSearchInput.value = raw;
+    await refreshWallets();
+    return;
+  }
+
+  const normalized = raw.toUpperCase();
+  const rankRows = Array.isArray(state.exchange?.volumeRank) ? state.exchange.volumeRank : [];
+  const hasMatch = rankRows.some((row) => String(row?.symbol || "").toUpperCase() === normalized);
+  if (hasMatch) {
+    openTokenAnalytics(normalized);
+    return;
+  }
+
+  const resolved = resolveCanonicalTokenSymbol(normalized);
+  if (resolved && isKnownTokenSymbol(resolved)) {
+    openTokenAnalytics(resolved);
+  }
 }
 
 function renderWallets() {
@@ -1353,15 +3082,32 @@ function renderWalletProfile() {
   }
 }
 
-function applyView(nextView) {
+function applyView(nextView, options = {}) {
+  const skipRoute = Boolean(options.skipRoute);
+  const replaceRoute = Boolean(options.replaceRoute);
   state.view = nextView;
+
+  if (nextView === "token") {
+    ensureTokenSymbol();
+    state.analyticsTab = normalizeAnalyticsTab(state.analyticsTab);
+  }
 
   document.querySelectorAll(".tab-btn").forEach((btn) => {
     btn.classList.toggle("active", btn.dataset.view === nextView);
   });
 
   el("exchange-view")?.classList.toggle("active", nextView === "exchange");
+  el("token-view")?.classList.toggle("active", nextView === "token");
   el("wallets-view")?.classList.toggle("active", nextView === "wallets");
+
+  if (nextView === "token") {
+    renderTokenView();
+    renderActiveSeries();
+  }
+
+  if (!skipRoute) {
+    syncRouteFromState({ replace: replaceRoute });
+  }
 }
 
 async function refreshExchange() {
@@ -1383,6 +3129,47 @@ async function refreshExchange() {
   renderStatusBars();
   renderExchange();
   renderIndexerProgressPanel();
+  if (state.view === "token") {
+    await refreshTokenAnalytics().catch(() => null);
+    renderTokenView();
+    renderActiveSeries();
+    syncRouteFromState({ replace: true });
+  }
+}
+
+async function refreshDashboard() {
+  const data = await fetchJson("/api/dashboard");
+  state.dashboard = data;
+  if (state.view === "token") {
+    renderTokenView();
+    renderActiveSeries();
+    syncRouteFromState({ replace: true });
+  }
+}
+
+async function refreshTokenAnalytics(options = {}) {
+  const force = Boolean(options.force);
+  const symbol = ensureTokenSymbol();
+  if (!symbol) {
+    state.tokenAnalytics = null;
+    return null;
+  }
+  const existing = getTokenAnalyticsSnapshot(symbol);
+  const existingAgeMs = Date.now() - Number(existing?.generatedAt || 0);
+  if (!force && existing && existingAgeMs >= 0 && existingAgeMs < 10000) {
+    return existing;
+  }
+  const params = new URLSearchParams({
+    symbol,
+    timeframe: String(state.timeframe || "all"),
+  });
+  if (force) params.set("force", "1");
+  const payload = await fetchJson(`/api/token-analytics?${params.toString()}`);
+  if (payload && payload.ok !== false) {
+    state.tokenAnalytics = payload;
+    return payload;
+  }
+  return null;
 }
 
 async function refreshVolumeSeries() {
@@ -1424,7 +3211,7 @@ async function inspectWallet(wallet) {
 }
 
 async function refreshAll() {
-  await Promise.allSettled([refreshExchange(), refreshWallets(), refreshVolumeSeries()]);
+  await Promise.allSettled([refreshExchange(), refreshWallets(), refreshVolumeSeries(), refreshDashboard()]);
   if (state.selectedWallet) {
     await inspectWallet(state.selectedWallet).catch(() => null);
   }
@@ -1459,6 +3246,36 @@ function bindEvents() {
       state.walletPage = 1;
       await refreshAll();
     });
+  });
+
+  document.querySelectorAll(".analytics-tab").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      state.analyticsTab = normalizeAnalyticsTab(btn.dataset.analyticsTab || TOKEN_DEFAULT_METRIC);
+      if (state.view !== "token") {
+        applyView("token", { skipRoute: true });
+      }
+      syncAnalyticsTabs();
+      renderTokenView();
+      renderActiveSeries();
+      refreshTokenAnalytics({ force: false })
+        .then(() => {
+          if (state.view !== "token") return;
+          renderTokenView();
+          renderActiveSeries();
+        })
+        .catch(() => null);
+      syncRouteFromState();
+    });
+  });
+
+  el("terminal-search-btn")?.addEventListener("click", async () => {
+    await runTerminalSearch();
+  });
+
+  el("terminal-search-input")?.addEventListener("keydown", async (event) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    await runTerminalSearch();
   });
 
   el("apply-account-btn")?.addEventListener("click", async () => {
@@ -1533,13 +3350,57 @@ function bindEvents() {
     await inspectWallet(wallet);
   });
 
+  el("volume-filter")?.addEventListener("input", (event) => {
+    state.volumeFilter = String(event.target.value || "");
+    state.volumeRankPage = 1;
+    renderExchange();
+  });
+
+  const openTokenFromEvent = (event) => {
+    const target = event.target instanceof HTMLElement ? event.target : null;
+    if (!target) return false;
+    const row = target.closest("[data-token-symbol]");
+    if (!row) return false;
+    const symbol = row.getAttribute("data-token-symbol");
+    if (!symbol) return false;
+    openTokenAnalytics(symbol);
+    return true;
+  };
+
+  el("volume-rank-body")?.addEventListener("click", (event) => {
+    openTokenFromEvent(event);
+  });
+
+  el("volume-rank-body")?.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    if (!openTokenFromEvent(event)) return;
+    event.preventDefault();
+  });
+
+  el("exchange-token-preview-body")?.addEventListener("click", (event) => {
+    openTokenFromEvent(event);
+  });
+
+  document.querySelectorAll("#volume-sort-toggle .sort-mode-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const nextSort = String(btn.dataset.sortMode || "volume");
+      if (!nextSort || state.volumeSort === nextSort) return;
+      state.volumeSort = nextSort;
+      state.volumeRankPage = 1;
+      renderExchange();
+    });
+  });
+
   el("volume-prev-btn")?.addEventListener("click", () => {
     state.volumeRankPage = Math.max(1, state.volumeRankPage - 1);
     renderExchange();
   });
 
   el("volume-next-btn")?.addEventListener("click", () => {
-    const totalRows = Array.isArray(state.exchange?.volumeRank) ? state.exchange.volumeRank.length : 0;
+    const totalRows = Math.max(
+      0,
+      Number(state.volumeRankFilteredTotal || (Array.isArray(state.exchange?.volumeRank) ? state.exchange.volumeRank.length : 0))
+    );
     const totalPages = Math.max(1, Math.ceil(totalRows / Math.max(1, state.volumeRankPageSize)));
     state.volumeRankPage = Math.min(totalPages, state.volumeRankPage + 1);
     renderExchange();
@@ -1601,6 +3462,13 @@ function bindEvents() {
     window.visualViewport.addEventListener("resize", queueChartViewportResize, { passive: true });
     window.visualViewport.addEventListener("scroll", queueChartViewportResize, { passive: true });
   }
+  window.addEventListener("popstate", () => {
+    applyRouteFromLocation({ replace: false });
+    if (state.view === "token") {
+      renderTokenView();
+      renderActiveSeries();
+    }
+  });
   initChartResizeObserver();
 }
 
@@ -1654,15 +3522,25 @@ function initBackgroundMotion() {
 async function init() {
   bindEvents();
   initBackgroundMotion();
+  applyRouteFromLocation({ replace: true });
   await loadInitialWallet();
-  await postJson("/api/indexer/discover", {}).catch(() => null);
   await refreshAll();
+  if (state.view === "token") {
+    ensureTokenSymbol();
+    await refreshTokenAnalytics().catch(() => null);
+    syncAnalyticsTabs();
+    renderTokenView();
+    renderActiveSeries();
+  }
   setInterval(() => {
     refreshExchange().catch(() => null);
   }, 8000);
   setInterval(() => {
     refreshWallets().catch(() => null);
   }, 12000);
+  setInterval(() => {
+    refreshDashboard().catch(() => null);
+  }, 10000);
   setInterval(() => {
     refreshVolumeSeries().catch(() => null);
   }, 30000);

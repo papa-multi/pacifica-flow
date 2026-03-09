@@ -204,6 +204,177 @@ function extractPayloadData(result, fallback = null) {
   return result.payload;
 }
 
+function normalizeTokenSymbol(value) {
+  return String(value || "")
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9/_-]/g, "");
+}
+
+function buildTokenSymbolCandidates(symbol) {
+  const normalized = normalizeTokenSymbol(symbol);
+  if (!normalized) return [];
+  const compact = normalized.replace(/[^A-Z0-9]/g, "");
+  const noPerp = compact.replace(/PERP$/, "");
+  const noUsd = noPerp.replace(/USDT$/, "").replace(/USD$/, "");
+  return Array.from(new Set([normalized, compact, noPerp, noUsd].filter(Boolean)));
+}
+
+function findPriceRowForSymbol(rows = [], symbol) {
+  const byCandidate = new Map();
+  (Array.isArray(rows) ? rows : []).forEach((row) => {
+    const rowSymbol = normalizeTokenSymbol(row && row.symbol);
+    if (!rowSymbol) return;
+    buildTokenSymbolCandidates(rowSymbol).forEach((candidate) => {
+      if (!byCandidate.has(candidate)) byCandidate.set(candidate, row);
+    });
+  });
+  const candidates = buildTokenSymbolCandidates(symbol);
+  for (const candidate of candidates) {
+    if (byCandidate.has(candidate)) return byCandidate.get(candidate);
+  }
+  return null;
+}
+
+function toTradeTimestampMs(row = {}) {
+  const candidates = [
+    row.timestamp,
+    row.t,
+    row.createdAt,
+    row.created_at,
+    row.updatedAt,
+    row.updated_at,
+  ];
+  for (const candidate of candidates) {
+    const ts = Number(candidate);
+    if (!Number.isFinite(ts) || ts <= 0) continue;
+    // Normalize second-based timestamps to ms.
+    return ts < 1e12 ? ts * 1000 : ts;
+  }
+  return NaN;
+}
+
+function normalizeTradeSide(side) {
+  return String(side || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, "_");
+}
+
+function toNotionalUsd(row = {}) {
+  const rawNotional = row.notional !== undefined ? row.notional : row.notional_usd;
+  const asNumber = Number(rawNotional);
+  if (Number.isFinite(asNumber) && asNumber > 0) return Math.abs(asNumber);
+  const amount = Number(row.amount !== undefined ? row.amount : row.a);
+  const price = Number(row.price !== undefined ? row.price : row.p);
+  if (!Number.isFinite(amount) || !Number.isFinite(price)) return 0;
+  return Math.abs(amount * price);
+}
+
+function normalizePublicTradeRow(row = {}) {
+  return {
+    historyId: row.history_id || row.historyId || row.h || null,
+    symbol: normalizeTokenSymbol(row.symbol || row.s || ""),
+    side: normalizeTradeSide(row.side || row.d || ""),
+    cause: String(row.cause || row.tc || "").toLowerCase(),
+    amount: Number(row.amount !== undefined ? row.amount : row.a),
+    price: Number(row.price !== undefined ? row.price : row.p),
+    timestamp: toTradeTimestampMs(row),
+    notionalUsd: toNotionalUsd(row),
+  };
+}
+
+function normalizeFundingHistoryRow(row = {}) {
+  const createdAtRaw =
+    row.created_at !== undefined ? row.created_at : row.createdAt !== undefined ? row.createdAt : row.t;
+  const createdAt = toTradeTimestampMs({ timestamp: createdAtRaw });
+  const alreadyPct = Number(row.fundingRatePct);
+  if (Number.isFinite(alreadyPct)) {
+    return {
+      createdAt,
+      fundingRatePct: alreadyPct,
+    };
+  }
+  const fundingRateRaw =
+    row.funding_rate !== undefined
+      ? row.funding_rate
+      : row.fundingRate !== undefined
+      ? row.fundingRate
+      : row.funding;
+  const fundingRate = Number(fundingRateRaw);
+  return {
+    createdAt,
+    fundingRatePct: Number.isFinite(fundingRate) ? fundingRate * 100 : NaN,
+  };
+}
+
+function isLiquidationCause(cause) {
+  const normalized = String(cause || "").toLowerCase();
+  return (
+    normalized.includes("liq") ||
+    normalized.includes("liquid") ||
+    normalized === "market_liquidation"
+  );
+}
+
+function classifyNetflowSign(side) {
+  const normalized = normalizeTradeSide(side);
+  if (!normalized) return 0;
+  if (
+    normalized === "buy" ||
+    normalized === "b" ||
+    normalized === "open_long" ||
+    normalized === "close_short"
+  ) {
+    return 1;
+  }
+  if (
+    normalized === "sell" ||
+    normalized === "s" ||
+    normalized === "open_short" ||
+    normalized === "close_long"
+  ) {
+    return -1;
+  }
+  return 0;
+}
+
+function classifyLiquidationBucket(side) {
+  const normalized = normalizeTradeSide(side);
+  if (!normalized) return "unknown";
+  // Long liquidations close long risk (typically sell / close_long / open_short prints).
+  if (
+    normalized === "sell" ||
+    normalized === "s" ||
+    normalized === "close_long" ||
+    normalized === "open_short"
+  ) {
+    return "long";
+  }
+  // Short liquidations close short risk (typically buy / close_short / open_long prints).
+  if (
+    normalized === "buy" ||
+    normalized === "b" ||
+    normalized === "close_short" ||
+    normalized === "open_long"
+  ) {
+    return "short";
+  }
+  return "unknown";
+}
+
+function dedupeBy(rows = [], keyFn) {
+  const seen = new Set();
+  const out = [];
+  (Array.isArray(rows) ? rows : []).forEach((row) => {
+    const key = keyFn(row);
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    out.push(row);
+  });
+  return out;
+}
+
 function createWalletTrackingComponent({
   sendJson,
   pipeline,
@@ -233,6 +404,41 @@ function createWalletTrackingComponent({
     ttlMs: 2000,
     value: null,
   };
+  const DAY_MS = 24 * 60 * 60 * 1000;
+  const tokenAnalyticsCache = new Map();
+  const tokenAnalyticsInflight = new Map();
+  const tokenAnalyticsCacheTtlMs = Math.max(
+    3000,
+    Number(process.env.PACIFICA_TOKEN_ANALYTICS_CACHE_TTL_MS || 15000)
+  );
+  const tokenAnalyticsTradesPageSize = Math.max(
+    20,
+    Math.min(400, Number(process.env.PACIFICA_TOKEN_ANALYTICS_TRADES_PAGE_SIZE || 200))
+  );
+  const tokenAnalyticsFundingPageSize = Math.max(
+    20,
+    Math.min(400, Number(process.env.PACIFICA_TOKEN_ANALYTICS_FUNDING_PAGE_SIZE || 200))
+  );
+  const tokenAnalyticsTradesMaxPages = Math.max(
+    1,
+    Number(process.env.PACIFICA_TOKEN_ANALYTICS_TRADES_MAX_PAGES || 24)
+  );
+  const tokenAnalyticsFundingMaxPages = Math.max(
+    1,
+    Number(process.env.PACIFICA_TOKEN_ANALYTICS_FUNDING_MAX_PAGES || 16)
+  );
+  const tokenAnalyticsAllLookbackDays = Math.max(
+    30,
+    Number(process.env.PACIFICA_TOKEN_ANALYTICS_ALL_LOOKBACK_DAYS || 365)
+  );
+  const tokenAnalyticsTradesCostPerPage = Math.max(
+    0.2,
+    Number(process.env.PACIFICA_TOKEN_ANALYTICS_TRADES_COST || 1)
+  );
+  const tokenAnalyticsFundingCostPerPage = Math.max(
+    0.2,
+    Number(process.env.PACIFICA_TOKEN_ANALYTICS_FUNDING_COST || 1)
+  );
   const defaultIndexerStatusUrl =
     String(process.env.PORT || "") === "3200"
       ? "http://127.0.0.1:3201/api/indexer/status"
@@ -629,58 +835,639 @@ function createWalletTrackingComponent({
     }
   }
 
-  function buildLiveTradesPayload() {
+  function normalizeTokenAnalyticsTimeframe(value) {
+    const raw = String(value || "all").trim().toLowerCase();
+    if (raw === "24h" || raw === "1d" || raw === "day") return "24h";
+    if (raw === "30d" || raw === "1m" || raw === "month") return "30d";
+    return "all";
+  }
+
+  function getTokenAnalyticsLookbackMs(timeframe) {
+    const normalized = normalizeTokenAnalyticsTimeframe(timeframe);
+    if (normalized === "24h") return 2 * DAY_MS;
+    if (normalized === "30d") return 35 * DAY_MS;
+    return tokenAnalyticsAllLookbackDays * DAY_MS;
+  }
+
+  function trimRowsByLookback(rows, lookbackMs) {
+    const cutoffMs = Date.now() - Math.max(0, Number(lookbackMs || 0));
+    if (!Number.isFinite(cutoffMs) || cutoffMs <= 0) return rows;
+    return (Array.isArray(rows) ? rows : []).filter((row) => {
+      const ts = Number(row && row.timestamp !== undefined ? row.timestamp : row && row.createdAt);
+      return Number.isFinite(ts) && ts >= cutoffMs;
+    });
+  }
+
+  function buildDashboardTokenFallback(symbol) {
+    const dashboard = pipeline.getDashboardPayload();
+    const market = dashboard && dashboard.market && typeof dashboard.market === "object" ? dashboard.market : {};
+    const prices = Array.isArray(market.prices) ? market.prices : [];
+    const priceRow = findPriceRowForSymbol(prices, symbol);
+    const symbolKey = normalizeTokenSymbol(priceRow && priceRow.symbol ? priceRow.symbol : symbol);
+    const fundingRowsRaw =
+      market &&
+      market.fundingBySymbol &&
+      market.fundingBySymbol[symbolKey] &&
+      Array.isArray(market.fundingBySymbol[symbolKey].rows)
+        ? market.fundingBySymbol[symbolKey].rows
+        : [];
+    const tradeRowsRaw =
+      market && market.publicTradesBySymbol && Array.isArray(market.publicTradesBySymbol[symbolKey])
+        ? market.publicTradesBySymbol[symbolKey]
+        : [];
+
+    const fundingRows = fundingRowsRaw
+      .map(normalizeFundingHistoryRow)
+      .filter((row) => Number.isFinite(row.createdAt) && Number.isFinite(row.fundingRatePct));
+    const tradesRows = tradeRowsRaw
+      .map(normalizePublicTradeRow)
+      .filter((row) => Number.isFinite(row.timestamp) && row.timestamp > 0);
+    return {
+      symbol: symbolKey,
+      priceRow: priceRow || null,
+      fundingRows,
+      tradesRows,
+    };
+  }
+
+  async function fetchPaginatedTokenRows(pathname, options = {}) {
+    const queryBase = options && options.query && typeof options.query === "object" ? options.query : {};
+    const pageSize = Math.max(20, Math.min(400, Number(options.pageSize || 200)));
+    const maxPages = Math.max(1, Number(options.maxPages || 1));
+    const cutoffMs = Number(options.cutoffMs || 0);
+    const cost = Math.max(0.1, Number(options.cost || 1));
+    const normalizeRow = typeof options.normalizeRow === "function" ? options.normalizeRow : (x) => x;
+
+    if (!restClient || typeof restClient.get !== "function") {
+      return {
+        rows: [],
+        pages: 0,
+        hasMore: false,
+        lastCursor: null,
+      };
+    }
+
+    let cursor = null;
+    let pages = 0;
+    let hasMore = false;
+    const rows = [];
+
+    while (pages < maxPages) {
+      const query = {
+        ...queryBase,
+        page_size: pageSize,
+      };
+      if (cursor) query.cursor = cursor;
+      const response = await restClient.get(pathname, {
+        query,
+        cost,
+      });
+      const payload = response && response.payload && typeof response.payload === "object" ? response.payload : {};
+      const pageRowsRaw = extractPayloadData(response, []);
+      const pageRows = (Array.isArray(pageRowsRaw) ? pageRowsRaw : [])
+        .map(normalizeRow)
+        .filter(Boolean);
+      rows.push(...pageRows);
+      pages += 1;
+
+      hasMore = Boolean(payload.has_more);
+      const nextCursor = payload.next_cursor ? String(payload.next_cursor) : null;
+      const oldestTs = pageRows.reduce((minTs, row) => {
+        const ts = Number(row && row.timestamp !== undefined ? row.timestamp : row && row.createdAt);
+        if (!Number.isFinite(ts) || ts <= 0) return minTs;
+        if (!Number.isFinite(minTs) || ts < minTs) return ts;
+        return minTs;
+      }, NaN);
+
+      if (Number.isFinite(cutoffMs) && cutoffMs > 0 && Number.isFinite(oldestTs) && oldestTs <= cutoffMs) {
+        break;
+      }
+      if (!hasMore || !nextCursor) break;
+      cursor = nextCursor;
+    }
+
+    return {
+      rows,
+      pages,
+      hasMore,
+      lastCursor: cursor,
+    };
+  }
+
+  function buildTokenAnalyticsPayload({
+    symbol,
+    timeframe,
+    priceRow,
+    tradesRows,
+    fundingRows,
+    sourceMeta,
+  }) {
+    const normalizedSymbol = normalizeTokenSymbol(
+      (priceRow && priceRow.symbol) || symbol || ""
+    );
+    const trades = dedupeBy(
+      (Array.isArray(tradesRows) ? tradesRows : [])
+        .map(normalizePublicTradeRow)
+        .filter((row) => Number.isFinite(row.timestamp) && row.timestamp > 0),
+      (row) => String(row.historyId || `${row.timestamp}:${row.price}:${row.amount}:${row.side}`)
+    ).sort((a, b) => a.timestamp - b.timestamp);
+
+    const funding = dedupeBy(
+      (Array.isArray(fundingRows) ? fundingRows : [])
+        .map(normalizeFundingHistoryRow)
+        .filter((row) => Number.isFinite(row.createdAt) && Number.isFinite(row.fundingRatePct)),
+      (row) => String(row.createdAt)
+    ).sort((a, b) => a.createdAt - b.createdAt);
+
+    const volumeSeries = trades.map((row) => ({
+      timestamp: row.timestamp,
+      value: toNum(row.notionalUsd, 0),
+    }));
+
+    const netflowSeries = trades.map((row) => {
+      const sign = classifyNetflowSign(row.side);
+      const notional = toNum(row.notionalUsd, 0);
+      return {
+        timestamp: row.timestamp,
+        value: sign === 0 ? 0 : notional * sign,
+      };
+    });
+
+    const liquidationSeries = trades
+      .filter((row) => isLiquidationCause(row.cause))
+      .map((row) => {
+        const notional = toNum(row.notionalUsd, 0);
+        const bucket = classifyLiquidationBucket(row.side);
+        if (bucket === "long") {
+          return {
+            timestamp: row.timestamp,
+            value: notional,
+            longValue: notional,
+            shortValue: 0,
+          };
+        }
+        if (bucket === "short") {
+          return {
+            timestamp: row.timestamp,
+            value: notional,
+            longValue: 0,
+            shortValue: notional,
+          };
+        }
+        const sign = classifyNetflowSign(row.side);
+        const inferShort = sign >= 0;
+        return {
+          timestamp: row.timestamp,
+          value: notional,
+          longValue: inferShort ? 0 : notional,
+          shortValue: inferShort ? notional : 0,
+        };
+      });
+
+    const fundingSeries = funding.map((row) => ({
+      timestamp: row.createdAt,
+      value: row.fundingRatePct,
+    }));
+
+    const walletActivitySeries = trades.map((row) => ({
+      timestamp: row.timestamp,
+      value: 1,
+    }));
+
+    const mark = toNum(priceRow && priceRow.mark !== undefined ? priceRow.mark : 0, 0);
+    const openInterest = toNum(
+      priceRow && priceRow.open_interest !== undefined ? priceRow.open_interest : 0,
+      0
+    );
+    const oiUsdNow = mark * openInterest;
+    let oiSeries = [];
+    if (oiUsdNow > 0) {
+      if (fundingSeries.length) {
+        oiSeries = fundingSeries.map((row) => ({
+          timestamp: row.timestamp,
+          value: oiUsdNow,
+        }));
+      } else if (trades.length) {
+        const step = Math.max(1, Math.floor(trades.length / 64));
+        oiSeries = trades
+          .filter((_, idx) => idx % step === 0 || idx === trades.length - 1)
+          .map((row) => ({
+            timestamp: row.timestamp,
+            value: oiUsdNow,
+          }));
+      } else {
+        oiSeries = [
+          {
+            timestamp: Date.now(),
+            value: oiUsdNow,
+          },
+        ];
+      }
+    }
+
+    const horizon24h = Date.now() - DAY_MS;
+    const netflow24hUsd = netflowSeries
+      .filter((row) => Number(row.timestamp || 0) >= horizon24h)
+      .reduce((sum, row) => sum + toNum(row.value, 0), 0);
+    const liquidations24hUsd = liquidationSeries
+      .filter((row) => Number(row.timestamp || 0) >= horizon24h)
+      .reduce((sum, row) => sum + toNum(row.value, 0), 0);
+    const activity24h = walletActivitySeries
+      .filter((row) => Number(row.timestamp || 0) >= horizon24h)
+      .length;
+    const events = trades
+      .slice(-80)
+      .reverse()
+      .map((row) => ({
+        timestamp: Number(row.timestamp || 0),
+        side: String(row.side || "").toLowerCase(),
+        cause: String(row.cause || "").toLowerCase() || "normal",
+        notionalUsd: toNum(row.notionalUsd, 0),
+      }))
+      .filter((row) => Number.isFinite(row.timestamp) && row.timestamp > 0);
+
+    const lastTradeAt = trades.length ? Number(trades[trades.length - 1].timestamp || 0) : null;
+    const lastFundingAt = funding.length ? Number(funding[funding.length - 1].createdAt || 0) : null;
+    const priceTs = toTradeTimestampMs({
+      timestamp: priceRow && priceRow.timestamp !== undefined ? priceRow.timestamp : null,
+    });
+    const updatedAt = [lastTradeAt, lastFundingAt, priceTs]
+      .filter((value) => Number.isFinite(Number(value)) && Number(value) > 0)
+      .reduce((max, value) => Math.max(max, Number(value)), 0);
+
+    return {
+      generatedAt: Date.now(),
+      symbol: normalizedSymbol,
+      timeframe: normalizeTokenAnalyticsTimeframe(timeframe),
+      kpis: {
+        currentOiUsd: oiUsdNow,
+        volume24hUsd: toNum(priceRow && priceRow.volume_24h !== undefined ? priceRow.volume_24h : 0, 0),
+        fundingPctCurrent:
+          toNum(priceRow && priceRow.funding !== undefined ? priceRow.funding : 0, 0) * 100,
+        netflow24hUsd,
+        liquidations24hUsd,
+        activity24h,
+        lastTradeAt,
+        lastFundingAt,
+      },
+      series: {
+        volume: volumeSeries,
+        oi: oiSeries,
+        funding: fundingSeries,
+        liquidations: liquidationSeries,
+        netflow: netflowSeries,
+        wallet_activity: walletActivitySeries,
+      },
+      events,
+      meta: {
+        source: sourceMeta || {},
+        rows: {
+          trades: trades.length,
+          funding: funding.length,
+          liquidations: liquidationSeries.length,
+        },
+        mode: {
+          oi: fundingSeries.length ? "constant_snapshot_on_funding_timestamps" : "snapshot_only",
+          funding: "funding_rate_history",
+          liquidations: "cause_filtered_only",
+          netflow: "side_mapped_open_close",
+        },
+      },
+      freshness: {
+        updatedAt: updatedAt || Date.now(),
+        priceTimestamp: Number.isFinite(priceTs) ? priceTs : null,
+      },
+    };
+  }
+
+  async function buildTokenAnalytics(symbol, timeframe) {
+    const normalizedSymbol = normalizeTokenSymbol(symbol);
+    const normalizedTimeframe = normalizeTokenAnalyticsTimeframe(timeframe);
+    const lookbackMs = getTokenAnalyticsLookbackMs(normalizedTimeframe);
+    const cutoffMs = Date.now() - lookbackMs;
+    const warnings = [];
+
+    const fallback = buildDashboardTokenFallback(normalizedSymbol);
+    const sourceMeta = {
+      price: "dashboard_fallback",
+      funding: "dashboard_fallback",
+      trades: "dashboard_fallback",
+      tradesPages: 0,
+      fundingPages: 0,
+      tradesHasMore: false,
+      fundingHasMore: false,
+      warnings,
+    };
+
+    let priceRow = fallback.priceRow;
+    try {
+      const truth = await getDefiLlamaPricesTruth();
+      const remotePrice = findPriceRowForSymbol(
+        truth && Array.isArray(truth.prices) ? truth.prices : [],
+        normalizedSymbol
+      );
+      if (remotePrice) {
+        priceRow = remotePrice;
+        sourceMeta.price = "/api/v1/info/prices";
+      } else if (!priceRow) {
+        warnings.push("price_symbol_not_found");
+      }
+    } catch (error) {
+      warnings.push(`price_fetch_failed:${error.message}`);
+    }
+
+    let tradesRows = trimRowsByLookback(fallback.tradesRows, lookbackMs);
+    let fundingRows = trimRowsByLookback(fallback.fundingRows, lookbackMs);
+    if (restClient && typeof restClient.get === "function") {
+      try {
+        const remoteTrades = await fetchPaginatedTokenRows("/trades", {
+          query: { symbol: normalizedSymbol },
+          pageSize: tokenAnalyticsTradesPageSize,
+          maxPages: tokenAnalyticsTradesMaxPages,
+          cutoffMs,
+          normalizeRow: normalizePublicTradeRow,
+          cost: tokenAnalyticsTradesCostPerPage,
+        });
+        if (Array.isArray(remoteTrades.rows) && remoteTrades.rows.length) {
+          tradesRows = trimRowsByLookback(remoteTrades.rows, lookbackMs);
+          sourceMeta.trades = "/api/v1/trades";
+          sourceMeta.tradesPages = Number(remoteTrades.pages || 0);
+          sourceMeta.tradesHasMore = Boolean(remoteTrades.hasMore);
+          if (remoteTrades.hasMore) warnings.push("trades_truncated_max_pages");
+        } else {
+          warnings.push("trades_remote_empty");
+        }
+      } catch (error) {
+        warnings.push(`trades_fetch_failed:${error.message}`);
+      }
+
+      try {
+        const remoteFunding = await fetchPaginatedTokenRows("/funding_rate/history", {
+          query: { symbol: normalizedSymbol },
+          pageSize: tokenAnalyticsFundingPageSize,
+          maxPages: tokenAnalyticsFundingMaxPages,
+          cutoffMs,
+          normalizeRow: normalizeFundingHistoryRow,
+          cost: tokenAnalyticsFundingCostPerPage,
+        });
+        if (Array.isArray(remoteFunding.rows) && remoteFunding.rows.length) {
+          fundingRows = trimRowsByLookback(remoteFunding.rows, lookbackMs);
+          sourceMeta.funding = "/api/v1/funding_rate/history";
+          sourceMeta.fundingPages = Number(remoteFunding.pages || 0);
+          sourceMeta.fundingHasMore = Boolean(remoteFunding.hasMore);
+          if (remoteFunding.hasMore) warnings.push("funding_truncated_max_pages");
+        } else {
+          warnings.push("funding_remote_empty");
+        }
+      } catch (error) {
+        warnings.push(`funding_fetch_failed:${error.message}`);
+      }
+    }
+
+    return buildTokenAnalyticsPayload({
+      symbol: normalizedSymbol,
+      timeframe: normalizedTimeframe,
+      priceRow,
+      tradesRows,
+      fundingRows,
+      sourceMeta,
+    });
+  }
+
+  async function getTokenAnalytics(symbol, timeframe, { force = false } = {}) {
+    const normalizedSymbol = normalizeTokenSymbol(symbol);
+    const normalizedTimeframe = normalizeTokenAnalyticsTimeframe(timeframe);
+    const cacheKey = `${normalizedSymbol}:${normalizedTimeframe}`;
+    const now = Date.now();
+
+    if (!force && tokenAnalyticsCache.has(cacheKey)) {
+      const cached = tokenAnalyticsCache.get(cacheKey);
+      if (cached && now - Number(cached.generatedAt || 0) <= tokenAnalyticsCacheTtlMs) {
+        return {
+          ...cached.payload,
+          cache: {
+            hit: true,
+            ttlMs: tokenAnalyticsCacheTtlMs,
+            generatedAt: cached.generatedAt,
+          },
+        };
+      }
+    }
+
+    if (!force && tokenAnalyticsInflight.has(cacheKey)) {
+      return tokenAnalyticsInflight.get(cacheKey);
+    }
+
+    const task = (async () => {
+      const payload = await buildTokenAnalytics(normalizedSymbol, normalizedTimeframe);
+      tokenAnalyticsCache.set(cacheKey, {
+        generatedAt: Date.now(),
+        payload,
+      });
+      return {
+        ...payload,
+        cache: {
+          hit: false,
+          ttlMs: tokenAnalyticsCacheTtlMs,
+          generatedAt: Date.now(),
+        },
+      };
+    })()
+      .finally(() => {
+        tokenAnalyticsInflight.delete(cacheKey);
+      });
+
+    tokenAnalyticsInflight.set(cacheKey, task);
+    return task;
+  }
+
+  function parseWindowParam(rawValue, fallback = 0) {
+    if (rawValue === null || rawValue === undefined || String(rawValue).trim() === "") {
+      return fallback;
+    }
+    const n = Number(rawValue);
+    if (!Number.isFinite(n)) return fallback;
+    const v = Math.floor(n);
+    return v < 0 ? 0 : v;
+  }
+
+  function applyWindow(rows, { offset = 0, limit = 0 } = {}) {
+    const list = Array.isArray(rows) ? rows : [];
+    const safeOffset = parseWindowParam(offset, 0);
+    const safeLimit = parseWindowParam(limit, 0);
+    const total = list.length;
+    const start = Math.min(safeOffset, total);
+    const end = safeLimit > 0 ? Math.min(total, start + safeLimit) : total;
+    const windowed = list.slice(start, end);
+    const windowedByQuery = safeLimit > 0 || safeOffset > 0;
+    return {
+      rows: windowed,
+      total,
+      offset: start,
+      limit: safeLimit,
+      returned: windowed.length,
+      windowedByQuery,
+      hasMore: end < total,
+    };
+  }
+
+  function buildLiveTradesPayload(options = {}) {
     const dashboard = pipeline.getDashboardPayload();
     const market = dashboard.market || {};
     const account = dashboard.account || {};
+    const retentionPublicTradesPerSymbolRaw = Number(
+      process.env.PACIFICA_MAX_PUBLIC_TRADES_PER_SYMBOL || 0
+    );
+    const retentionPublicTradesPerSymbol =
+      Number.isFinite(retentionPublicTradesPerSymbolRaw) &&
+      retentionPublicTradesPerSymbolRaw > 0
+        ? Math.max(50, Math.floor(retentionPublicTradesPerSymbolRaw))
+        : null;
+    const queryPublicOffset = parseWindowParam(options.publicOffset, 0);
+    const queryPublicLimit = parseWindowParam(options.publicLimit, 0);
+    const queryWalletOffset = parseWindowParam(options.walletOffset, 0);
+    const queryWalletLimit = parseWindowParam(options.walletLimit, 0);
+    const queryPositionOffset = parseWindowParam(options.positionOffset, 0);
+    const queryPositionLimit = parseWindowParam(options.positionLimit, 0);
+    const queryAccountTradeOffset = parseWindowParam(options.accountTradeOffset, 0);
+    const queryAccountTradeLimit = parseWindowParam(options.accountTradeLimit, 0);
 
     const publicTradesBySymbol =
       market && market.publicTradesBySymbol && typeof market.publicTradesBySymbol === "object"
         ? market.publicTradesBySymbol
         : {};
 
-    const publicTrades = Object.entries(publicTradesBySymbol)
+    const publicTradesAll = Object.entries(publicTradesBySymbol)
       .flatMap(([symbol, rows]) =>
-        (Array.isArray(rows) ? rows : []).map((row) => ({
-          historyId: row.historyId || null,
-          symbol: row.symbol || String(symbol || "").toUpperCase(),
-          side: row.side || null,
-          cause: row.cause || null,
-          amount: row.amount || "0",
-          price: row.price || "0",
-          timestamp: Number(row.timestamp || 0),
-          li: row.li || null,
-        }))
+        (Array.isArray(rows) ? rows : []).map((row) => {
+          const wallet =
+            row.wallet ||
+            row.owner ||
+            row.trader ||
+            row.account ||
+            row.authority ||
+            row.user ||
+            null;
+          return {
+            historyId: row.historyId || null,
+            symbol: row.symbol || String(symbol || "").toUpperCase(),
+            side: row.side || null,
+            cause: row.cause || null,
+            amount: row.amount || "0",
+            price: row.price || "0",
+            timestamp: Number(row.timestamp || 0),
+            wallet,
+            walletSource: wallet ? "payload" : "unresolved",
+            li: row.li || null,
+          };
+        })
       )
-      .sort((a, b) => Number(b.timestamp || 0) - Number(a.timestamp || 0))
-      .slice(0, 400);
+      .sort((a, b) => Number(b.timestamp || 0) - Number(a.timestamp || 0));
+    const publicTradesWindow = applyWindow(publicTradesAll, {
+      offset: queryPublicOffset,
+      limit: queryPublicLimit,
+    });
 
-    const accountTrades = Array.isArray(dashboard.trades && dashboard.trades.recent)
-      ? dashboard.trades.recent.slice(0, 400)
+    const accountTradesAll = Array.isArray(dashboard.trades && dashboard.trades.recent)
+      ? dashboard.trades.recent
       : [];
-    const positions = Array.isArray(dashboard.positions && dashboard.positions.rows)
-      ? dashboard.positions.rows.slice(0, 200)
+    const accountTradesWindow = applyWindow(accountTradesAll, {
+      offset: queryAccountTradeOffset,
+      limit: queryAccountTradeLimit,
+    });
+
+    const positionsAll = Array.isArray(dashboard.positions && dashboard.positions.rows)
+      ? dashboard.positions.rows
       : [];
-    const walletRows = walletStore ? walletStore.list().slice(0, 300) : [];
+    const positionsWindow = applyWindow(positionsAll, {
+      offset: queryPositionOffset,
+      limit: queryPositionLimit,
+    });
+
+    const walletRowsAll = walletStore ? walletStore.list() : [];
+    const walletRowsWindow = applyWindow(walletRowsAll, {
+      offset: queryWalletOffset,
+      limit: queryWalletLimit,
+    });
+    const now = Date.now();
+    const oneMinuteAgo = now - 60 * 1000;
+    const recentTrades = [];
+    for (const row of publicTradesAll) {
+      const ts = Number(row && row.timestamp ? row.timestamp : 0);
+      if (!ts || ts < oneMinuteAgo) break;
+      recentTrades.push(row);
+    }
+    const longEvents = recentTrades.filter((row) => {
+      const side = String(row.side || "").toLowerCase();
+      return side.includes("long") || side === "buy";
+    }).length;
+    const shortEvents = recentTrades.filter((row) => {
+      const side = String(row.side || "").toLowerCase();
+      return side.includes("short") || side === "sell";
+    }).length;
+    const activeSymbols = Object.keys(publicTradesBySymbol)
+      .map((symbol) => String(symbol || "").trim().toUpperCase())
+      .filter(Boolean).length;
+    const whaleEvents = recentTrades.filter((row) => {
+      const amount = Number(row.amount || 0);
+      const price = Number(row.price || 0);
+      return Number.isFinite(amount) && Number.isFinite(price) && amount * price >= 100000;
+    }).length;
+    const fundingChips = Array.isArray(market.topFunding)
+      ? market.topFunding.slice(0, 8).map((row) => ({
+          symbol: String(row.symbol || "").toUpperCase(),
+          funding: Number(row.funding || 0),
+        }))
+      : [];
 
     return {
-      generatedAt: Date.now(),
+      generatedAt: now,
       sync: dashboard.sync || {},
       environment: dashboard.environment || {},
       summary: {
-        publicTrades: publicTrades.length,
-        accountTrades: accountTrades.length,
-        openPositions: positions.length,
-        indexedWallets: walletRows.length,
+        publicTrades: publicTradesWindow.returned,
+        publicTradesTotal: publicTradesWindow.total,
+        publicTradesWindowed: publicTradesWindow.windowedByQuery,
+        publicTradesHasMore: publicTradesWindow.hasMore,
+        publicTradesOffset: publicTradesWindow.offset,
+        publicTradesLimit: publicTradesWindow.limit,
+        accountTrades: accountTradesWindow.returned,
+        accountTradesTotal: accountTradesWindow.total,
+        accountTradesWindowed: accountTradesWindow.windowedByQuery,
+        accountTradesHasMore: accountTradesWindow.hasMore,
+        accountTradesOffset: accountTradesWindow.offset,
+        accountTradesLimit: accountTradesWindow.limit,
+        openPositions: positionsWindow.returned,
+        openPositionsTotal: positionsWindow.total,
+        openPositionsWindowed: positionsWindow.windowedByQuery,
+        openPositionsHasMore: positionsWindow.hasMore,
+        openPositionsOffset: positionsWindow.offset,
+        openPositionsLimit: positionsWindow.limit,
+        indexedWallets: walletRowsWindow.returned,
+        indexedWalletsTotal: walletRowsAll.length,
+        indexedWalletsWindowed: walletRowsWindow.windowedByQuery,
+        indexedWalletsHasMore: walletRowsWindow.hasMore,
+        indexedWalletsOffset: walletRowsWindow.offset,
+        indexedWalletsLimit: walletRowsWindow.limit,
         wsStatus:
           (dashboard.environment && dashboard.environment.wsStatus) ||
           (dashboard.sync && dashboard.sync.wsStatus) ||
           "idle",
+        streamScope: "exchange_wide_public_trades",
+        retentionPublicTradesPerSymbol,
       },
-      publicTrades,
-      accountTrades,
-      positions,
-      walletPerformance: walletRows,
+      marketContext: {
+        fundingChips,
+        longShortRatio: shortEvents > 0 ? Number((longEvents / shortEvents).toFixed(3)) : null,
+        eventsPerMin: recentTrades.length,
+        whaleEvents,
+        activeSymbols,
+        lastEventAt: publicTradesAll.length ? Number(publicTradesAll[0].timestamp || 0) : null,
+      },
+      publicTrades: publicTradesWindow.rows,
+      accountTrades: accountTradesWindow.rows,
+      positions: positionsWindow.rows,
+      walletPerformance: walletRowsWindow.rows,
       accountOverview: account.overview || null,
     };
   }
@@ -696,10 +1483,140 @@ function createWalletTrackingComponent({
     walletStore.upsert(record, { force: true });
   }
 
-  async function handleRequest(_req, res, url) {
+  async function handleRequest(req, res, url) {
     syncWalletStoreFromDisk();
-    const dashboard = pipeline.getDashboardPayload();
     syncCurrentWallet();
+
+    const liveDefaultPublicLimitRaw = Number(process.env.PACIFICA_LIVE_PUBLIC_DEFAULT_LIMIT || 500);
+    const liveDefaultWalletLimitRaw = Number(process.env.PACIFICA_LIVE_WALLET_DEFAULT_LIMIT || 500);
+    const liveDefaultPositionLimitRaw = Number(process.env.PACIFICA_LIVE_POSITION_DEFAULT_LIMIT || 500);
+    const liveDefaultAccountTradeLimitRaw = Number(
+      process.env.PACIFICA_LIVE_ACCOUNT_TRADE_DEFAULT_LIMIT || 250
+    );
+    const liveDefaultPublicLimit =
+      Number.isFinite(liveDefaultPublicLimitRaw) && liveDefaultPublicLimitRaw > 0
+        ? Math.max(50, Math.floor(liveDefaultPublicLimitRaw))
+        : 500;
+    const liveDefaultWalletLimit =
+      Number.isFinite(liveDefaultWalletLimitRaw) && liveDefaultWalletLimitRaw > 0
+        ? Math.max(50, Math.floor(liveDefaultWalletLimitRaw))
+        : 500;
+    const liveDefaultPositionLimit =
+      Number.isFinite(liveDefaultPositionLimitRaw) && liveDefaultPositionLimitRaw > 0
+        ? Math.max(50, Math.floor(liveDefaultPositionLimitRaw))
+        : 500;
+    const liveDefaultAccountTradeLimit =
+      Number.isFinite(liveDefaultAccountTradeLimitRaw) && liveDefaultAccountTradeLimitRaw > 0
+        ? Math.max(25, Math.floor(liveDefaultAccountTradeLimitRaw))
+        : 250;
+
+    if (url.pathname === "/api/live-trades/stream") {
+      const streamIntervalMs = Math.max(
+        1000,
+        Number(process.env.PACIFICA_LIVE_STREAM_INTERVAL_MS || 2500)
+      );
+      res.writeHead(200, {
+        "Content-Type": "text/event-stream; charset=utf-8",
+        "Cache-Control": "no-cache, no-transform",
+        Connection: "keep-alive",
+        "X-Accel-Buffering": "no",
+      });
+
+      const writeEvent = (event, data) => {
+        try {
+          const serialized = JSON.stringify(data || {});
+          res.write(`event: ${event}\n`);
+          res.write(`data: ${serialized}\n\n`);
+        } catch (_error) {
+          // ignore write errors during teardown
+        }
+      };
+
+      const pushSnapshot = () => {
+        writeEvent("snapshot", {
+          type: "snapshot",
+          at: Date.now(),
+          payload: buildLiveTradesPayload({
+            publicOffset: parseWindowParam(url.searchParams.get("public_offset"), 0),
+            publicLimit: parseWindowParam(
+              url.searchParams.get("public_limit"),
+              liveDefaultPublicLimit
+            ),
+            walletOffset: parseWindowParam(url.searchParams.get("wallet_offset"), 0),
+            walletLimit: parseWindowParam(
+              url.searchParams.get("wallet_limit"),
+              liveDefaultWalletLimit
+            ),
+            positionOffset: parseWindowParam(url.searchParams.get("position_offset"), 0),
+            positionLimit: parseWindowParam(
+              url.searchParams.get("position_limit"),
+              liveDefaultPositionLimit
+            ),
+            accountTradeOffset: parseWindowParam(url.searchParams.get("account_trade_offset"), 0),
+            accountTradeLimit: parseWindowParam(
+              url.searchParams.get("account_trade_limit"),
+              liveDefaultAccountTradeLimit
+            ),
+          }),
+        });
+      };
+
+      const pushHeartbeat = () => {
+        writeEvent("heartbeat", {
+          type: "heartbeat",
+          at: Date.now(),
+        });
+      };
+
+      pushSnapshot();
+      const snapshotTimer = setInterval(pushSnapshot, streamIntervalMs);
+      const heartbeatTimer = setInterval(pushHeartbeat, 10000);
+
+      const cleanup = () => {
+        clearInterval(snapshotTimer);
+        clearInterval(heartbeatTimer);
+      };
+
+      req.on("close", cleanup);
+      req.on("aborted", cleanup);
+      res.on("close", cleanup);
+      res.on("error", cleanup);
+      return true;
+    }
+
+    const dashboard = pipeline.getDashboardPayload();
+
+    if (url.pathname === "/api/token-analytics" && req.method === "GET") {
+      const symbol = normalizeTokenSymbol(url.searchParams.get("symbol"));
+      const timeframe = normalizeTokenAnalyticsTimeframe(url.searchParams.get("timeframe"));
+      const force =
+        String(url.searchParams.get("force") || "").trim() === "1" ||
+        String(url.searchParams.get("force") || "").trim().toLowerCase() === "true";
+
+      if (!symbol) {
+        sendJson(res, 400, {
+          ok: false,
+          error: "missing symbol query param",
+        });
+        return true;
+      }
+
+      try {
+        const payload = await getTokenAnalytics(symbol, timeframe, { force });
+        sendJson(res, 200, {
+          ok: true,
+          ...payload,
+        });
+      } catch (error) {
+        sendJson(res, 500, {
+          ok: false,
+          error: error.message || "token_analytics_failed",
+          symbol,
+          timeframe,
+        });
+      }
+      return true;
+    }
 
     if (url.pathname === "/api/account") {
       sendJson(res, 200, {
@@ -1039,7 +1956,32 @@ function createWalletTrackingComponent({
     }
 
     if (url.pathname === "/api/live-trades") {
-      sendJson(res, 200, buildLiveTradesPayload());
+      sendJson(
+        res,
+        200,
+        buildLiveTradesPayload({
+          publicOffset: parseWindowParam(url.searchParams.get("public_offset"), 0),
+          publicLimit: parseWindowParam(
+            url.searchParams.get("public_limit"),
+            liveDefaultPublicLimit
+          ),
+          walletOffset: parseWindowParam(url.searchParams.get("wallet_offset"), 0),
+          walletLimit: parseWindowParam(
+            url.searchParams.get("wallet_limit"),
+            liveDefaultWalletLimit
+          ),
+          positionOffset: parseWindowParam(url.searchParams.get("position_offset"), 0),
+          positionLimit: parseWindowParam(
+            url.searchParams.get("position_limit"),
+            liveDefaultPositionLimit
+          ),
+          accountTradeOffset: parseWindowParam(url.searchParams.get("account_trade_offset"), 0),
+          accountTradeLimit: parseWindowParam(
+            url.searchParams.get("account_trade_limit"),
+            liveDefaultAccountTradeLimit
+          ),
+        })
+      );
       return true;
     }
 

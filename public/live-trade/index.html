@@ -4,144 +4,207 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>PacificaFlow Live Trade</title>
-    <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="/theme.css" />
     <link rel="stylesheet" href="/live-trade/styles.css" />
   </head>
-  <body>
-    <header class="topbar">
-      <div class="topbar-inner">
-        <div class="brand-wrap">
-          <div class="brand">
+  <body class="lt-body">
+    <div class="lt-bg" aria-hidden="true">
+      <video class="lt-bg-video" autoplay muted loop playsinline>
+        <source src="/assets/pacifica.mp4" type="video/mp4" />
+      </video>
+      <div class="lt-bg-overlay"></div>
+    </div>
+
+    <div class="lt-app">
+      <div id="lt-runtime-error" class="lt-runtime-error" hidden></div>
+      <header class="lt-command-header">
+        <div class="lt-title-block">
+          <div class="lt-brand">
             <img src="/assets/flow2.png" alt="PacificaFlow logo" onerror="this.onerror=null;this.src='/assets/logo.svg';" />
             <div>
-              <div class="brand-title">PacificaFlow</div>
-              <div class="brand-sub">Live Trade Monitor</div>
+              <h1>Live Trade Monitor</h1>
+              <p>Real-time wallet, trade, and position intelligence</p>
             </div>
           </div>
-          <nav class="nav-tabs">
-            <a class="tab-link" href="/">Exchange Overview</a>
-            <a class="tab-link active-link" href="/live-trade/">Live Trades</a>
-          </nav>
         </div>
-        <div class="header-actions">
-          <input id="live-search" placeholder="Search symbol/wallet" />
-          <button id="live-refresh-btn" class="btn-primary">Refresh</button>
-        </div>
-      </div>
-      <div class="status-row">
-        <span class="status-pill" id="live-ws">WS: -</span>
-        <span class="status-pill" id="live-sync">Sync: -</span>
-        <span class="status-pill" id="live-updated">Updated: -</span>
-      </div>
-    </header>
 
-    <main class="shell">
-      <section class="kpi-grid live-kpis" id="live-kpis"></section>
-
-      <section class="panel controls-panel">
-        <div class="timeframe-group" id="live-tabs">
-          <button class="chip-btn active" data-tab="public">Market Trades</button>
-          <button class="chip-btn" data-tab="account">Account Trades</button>
-          <button class="chip-btn" data-tab="positions">Open Positions</button>
-          <button class="chip-btn" data-tab="wallets">Wallet Performance</button>
+        <div class="lt-command-controls">
+          <select id="lt-exchange-select" aria-label="Exchange selector">
+            <option value="pacifica">Pacifica</option>
+          </select>
+          <input id="lt-search" type="search" placeholder="Search symbol / wallet / side" />
+          <button id="lt-refresh-btn" class="lt-btn">Refresh</button>
+          <button id="lt-pause-btn" class="lt-btn lt-btn-alt" aria-pressed="false">Pause Stream</button>
         </div>
+
+        <div class="lt-health-strip">
+          <span class="lt-pill lt-pill-live" id="lt-live-state">LIVE</span>
+          <span class="lt-pill" id="lt-last-event">Last Event: -</span>
+          <span class="lt-pill" id="lt-freshness">Freshness: -</span>
+          <span class="lt-pill" id="lt-stream-health">Stream: -</span>
+          <span class="lt-pill" id="lt-conn">Connection: -</span>
+        </div>
+      </header>
+
+      <section class="lt-filter-bar">
+        <div class="lt-filter-grid lt-filter-grid-basic">
+          <label>
+            Wallet
+            <input id="lt-filter-wallet" type="text" placeholder="Wallet contains..." />
+          </label>
+          <label>
+            Symbol
+            <select id="lt-filter-symbol">
+              <option value="">All</option>
+            </select>
+          </label>
+          <label>
+            Side
+            <select id="lt-filter-side">
+              <option value="">All</option>
+            </select>
+          </label>
+          <label>
+            Min Position USD
+            <input id="lt-filter-min-usd" type="number" min="0" step="100" placeholder="0" />
+          </label>
+          <label>
+            Max Position USD
+            <input id="lt-filter-max-usd" type="number" min="0" step="100" placeholder="No cap" />
+          </label>
+          <button id="lt-reset-filters" class="lt-btn lt-btn-ghost">Reset filters</button>
+        </div>
+
+        <details class="lt-filter-advanced">
+          <summary>Advanced filters</summary>
+          <div class="lt-filter-grid lt-filter-grid-advanced">
+            <label>
+              Freshness
+              <select id="lt-filter-freshness">
+                <option value="">All</option>
+                <option value="fresh">Fresh</option>
+                <option value="cooling">Cooling</option>
+                <option value="stale">Stale</option>
+                <option value="unknown">Unknown</option>
+                <option value="unresolved">Unresolved</option>
+              </select>
+            </label>
+            <label>
+              Min PnL USD
+              <input id="lt-filter-min-pnl" type="number" step="10" placeholder="No floor" />
+            </label>
+            <label>
+              Max PnL USD
+              <input id="lt-filter-max-pnl" type="number" step="10" placeholder="No cap" />
+            </label>
+          </div>
+          <div class="lt-filter-toggles">
+            <label class="lt-checkbox">
+              <input id="lt-filter-tracked" type="checkbox" />
+              <span>Tracked wallets only</span>
+            </label>
+          </div>
+        </details>
+      </section>
+      <section class="lt-filter-meta">
+        <span class="lt-pill" id="lt-filter-summary">Filters: none</span>
+        <span class="lt-pill" id="lt-wallet-summary">Wallet filter: all</span>
       </section>
 
-      <section class="panel live-section active" id="tab-public">
-        <div class="panel-header">
-          <h2>Market Trades (Live)</h2>
-          <span class="muted-pill" id="public-count">0 rows</span>
-        </div>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Time</th>
-                <th>Symbol</th>
-                <th>Side</th>
-                <th>Price</th>
-                <th>Amount</th>
-                <th>Cause</th>
-                <th>LI</th>
-              </tr>
-            </thead>
-            <tbody id="public-trades-body"></tbody>
+      <section class="lt-terminal" aria-live="polite">
+        <header class="lt-terminal-head">
+          <h2>Positions</h2>
+          <span id="lt-positions-row-count" class="lt-pill">0 rows</span>
+        </header>
+        <div class="lt-table-wrap">
+          <table id="lt-positions-table">
+            <thead id="lt-positions-head"></thead>
+            <tbody id="lt-positions-body"></tbody>
           </table>
         </div>
+        <footer class="lt-pagination">
+          <div class="lt-pagination-left">
+            <label>
+              Rows/page
+              <select id="lt-positions-page-size">
+                <option value="50">50</option>
+                <option value="100" selected>100</option>
+                <option value="250">250</option>
+                <option value="500">500</option>
+                <option value="1000">1000</option>
+              </select>
+            </label>
+            <span id="lt-positions-page-window" class="lt-pill">0-0 of 0</span>
+          </div>
+          <div class="lt-pagination-right">
+            <button id="lt-positions-page-prev" class="lt-btn lt-btn-ghost" type="button">Previous</button>
+            <span id="lt-positions-page-info" class="lt-pill">Page 1 / 1</span>
+            <button id="lt-positions-page-next" class="lt-btn lt-btn-ghost" type="button">Next</button>
+          </div>
+        </footer>
       </section>
 
-      <section class="panel live-section" id="tab-account">
-        <div class="panel-header">
-          <h2>Tracked Account Trades</h2>
-          <span class="muted-pill" id="account-count">0 rows</span>
-        </div>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Time</th>
-                <th>Symbol</th>
-                <th>Side</th>
-                <th>Price</th>
-                <th>Amount</th>
-                <th>PnL</th>
-                <th>Fee</th>
-                <th>LI</th>
-              </tr>
-            </thead>
-            <tbody id="account-trades-body"></tbody>
+      <section class="lt-terminal" aria-live="polite">
+        <header class="lt-terminal-head">
+          <h2>Wallet Performance</h2>
+          <span id="lt-wallets-row-count" class="lt-pill">0 rows</span>
+        </header>
+        <div class="lt-table-wrap">
+          <table id="lt-wallets-table">
+            <thead id="lt-wallets-head"></thead>
+            <tbody id="lt-wallets-body"></tbody>
           </table>
         </div>
+        <footer class="lt-pagination">
+          <div class="lt-pagination-left">
+            <label>
+              Rows/page
+              <select id="lt-wallets-page-size">
+                <option value="50">50</option>
+                <option value="100" selected>100</option>
+                <option value="250">250</option>
+                <option value="500">500</option>
+              </select>
+            </label>
+            <span id="lt-wallets-page-window" class="lt-pill">0-0 of 0</span>
+          </div>
+          <div class="lt-pagination-right">
+            <button id="lt-wallets-page-prev" class="lt-btn lt-btn-ghost" type="button">Previous</button>
+            <span id="lt-wallets-page-info" class="lt-pill">Page 1 / 1</span>
+            <button id="lt-wallets-page-next" class="lt-btn lt-btn-ghost" type="button">Next</button>
+          </div>
+        </footer>
       </section>
+    </div>
 
-      <section class="panel live-section" id="tab-positions">
-        <div class="panel-header">
-          <h2>Open Positions</h2>
-          <span class="muted-pill" id="positions-count">0 rows</span>
-        </div>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Symbol</th>
-                <th>Side</th>
-                <th>Amount</th>
-                <th>Entry</th>
-                <th>Mark</th>
-                <th>Notional</th>
-                <th>uPnL</th>
-                <th>Risk</th>
-              </tr>
-            </thead>
-            <tbody id="positions-body"></tbody>
-          </table>
-        </div>
-      </section>
-
-      <section class="panel live-section" id="tab-wallets">
-        <div class="panel-header">
-          <h2>Wallet Performance (Indexed)</h2>
-          <span class="muted-pill" id="wallets-count">0 rows</span>
-        </div>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Wallet</th>
-                <th>Trades</th>
-                <th>Volume</th>
-                <th>PnL</th>
-                <th>Win Rate</th>
-                <th>First Trade</th>
-                <th>Last Trade</th>
-              </tr>
-            </thead>
-            <tbody id="wallets-body"></tbody>
-          </table>
-        </div>
-      </section>
-    </main>
-
-    <script src="/live-trade/app.js"></script>
+    <script>
+      (function () {
+        var errorNodeId = "lt-runtime-error";
+        function showRuntimeError(message) {
+          var node = document.getElementById(errorNodeId);
+          if (!node) return;
+          node.hidden = false;
+          node.textContent = "Live Trade runtime error: " + message;
+        }
+        window.__PF_LIVE_TRADE_BOOTED = false;
+        window.addEventListener("error", function (event) {
+          var msg = (event && event.message) || "unknown";
+          showRuntimeError(msg);
+        });
+        window.addEventListener("unhandledrejection", function (event) {
+          var reason = event && event.reason;
+          var msg = reason && reason.message ? reason.message : String(reason || "unknown");
+          showRuntimeError(msg);
+        });
+        setTimeout(function () {
+          if (!window.__PF_LIVE_TRADE_BOOTED) {
+            showRuntimeError(
+              "frontend did not finish boot. Hard refresh (Ctrl+F5). If this persists, browser JS or stream is blocked."
+            );
+          }
+        }, 7000);
+      })();
+    </script>
+    <script src="/live-trade/app.js?v=20260309-livefix6"></script>
   </body>
 </html>

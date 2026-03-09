@@ -3,7 +3,11 @@ const { ensureDir, parseNumber, readJson, writeJsonAtomic } = require("./utils")
 
 const MAX_RECENT = 180;
 const MAX_HISTORY = 1500;
-const MAX_PUBLIC_TRADES = 300;
+const MAX_PUBLIC_TRADES_RAW = Number(process.env.PACIFICA_MAX_PUBLIC_TRADES_PER_SYMBOL || 0);
+const MAX_PUBLIC_TRADES =
+  Number.isFinite(MAX_PUBLIC_TRADES_RAW) && MAX_PUBLIC_TRADES_RAW > 0
+    ? Math.max(50, Math.floor(MAX_PUBLIC_TRADES_RAW))
+    : Infinity;
 const MAX_CANDLES = 500;
 
 function emptyState() {
@@ -493,9 +497,13 @@ class StateService {
           const prev = Array.isArray(this.state.market.publicTradesBySymbol[row.symbol])
             ? this.state.market.publicTradesBySymbol[row.symbol]
             : [];
-          const next = uniqueBy([row, ...prev], (item) => toKey(item.historyId || `${item.timestamp}:${item.price}:${item.amount}`))
-            .sort((a, b) => b.timestamp - a.timestamp)
-            .slice(0, MAX_PUBLIC_TRADES);
+          const dedupedSorted = uniqueBy(
+            [row, ...prev],
+            (item) => toKey(item.historyId || `${item.timestamp}:${item.price}:${item.amount}`)
+          ).sort((a, b) => b.timestamp - a.timestamp);
+          const next = Number.isFinite(MAX_PUBLIC_TRADES)
+            ? dedupedSorted.slice(0, MAX_PUBLIC_TRADES)
+            : dedupedSorted;
           this.state.market.publicTradesBySymbol[row.symbol] = next;
         });
         this.state.market.updatedAt = now;

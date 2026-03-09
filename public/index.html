@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>PacificaFlow | Exchange Intelligence</title>
-    <link rel="stylesheet" href="/styles.css?v=20260309-layout-restore-4" />
+    <link rel="stylesheet" href="/styles.css?v=20260309-terminal-phase5-token-analytics" />
   </head>
   <body>
     <div class="bg-scene" aria-hidden="true">
@@ -34,6 +34,10 @@
             <span class="nav-icon" aria-hidden="true">◉</span>
             <span class="nav-label">Exchange Overview</span>
           </button>
+          <button class="tab-btn" data-view="token">
+            <span class="nav-icon" aria-hidden="true">◍</span>
+            <span class="nav-label">Token Analytics</span>
+          </button>
           <button class="tab-btn" data-view="wallets">
             <span class="nav-icon" aria-hidden="true">◎</span>
             <span class="nav-label">Wallet Explorer</span>
@@ -47,6 +51,34 @@
 
       <main class="shell">
         <div class="shell-container">
+          <header class="command-bar card" id="command-bar">
+            <div class="command-bar-left">
+              <div class="terminal-search-wrap">
+                <input id="terminal-search-input" type="search" placeholder="Search wallet / symbol" />
+                <button id="terminal-search-btn" class="btn-ghost" type="button">Go</button>
+              </div>
+              <select id="terminal-exchange-select" aria-label="Exchange selector">
+                <option value="pacifica" selected>Pacifica</option>
+              </select>
+            </div>
+            <div class="command-bar-center">
+              <div class="timeframe-group" id="timeframe-group">
+                <button class="chip-btn active" data-timeframe="all">All</button>
+                <button class="chip-btn" data-timeframe="24h">24h</button>
+                <button class="chip-btn" data-timeframe="30d">30d</button>
+              </div>
+            </div>
+            <div class="command-bar-right">
+              <span class="trust-pill trust-pill-live">
+                <span class="live-dot"></span>
+                <span id="exchange-live-label">LIVE</span>
+              </span>
+              <span class="trust-pill" id="status-refresh-age">Data age: -</span>
+              <span class="trust-pill" id="status-latency">Latency: -</span>
+              <span class="trust-pill" id="status-alerts">Alerts: -</span>
+            </div>
+          </header>
+
           <section id="exchange-view" class="view active">
             <div class="markets-ticker card" id="marketsTicker" hidden>
               <div class="markets-ticker-viewport" aria-live="polite" aria-label="Pacifica markets ticker">
@@ -60,25 +92,167 @@
                   <p class="kpi-stage-kicker">Protocol Monitor</p>
                   <h2>Exchange Metrics</h2>
                 </div>
-                <div class="controls-floating" id="exchange-controls">
-                  <div class="timeframe-group" id="timeframe-group">
-                    <button class="chip-btn active" data-timeframe="all">All</button>
-                    <button class="chip-btn" data-timeframe="24h">24h</button>
-                    <button class="chip-btn" data-timeframe="30d">30d</button>
-                  </div>
-                  <div class="live-indicator">
-                    <span class="live-dot"></span>
-                    <span id="exchange-live-label">LIVE</span>
-                  </div>
-                </div>
+                <div class="kpi-stage-meta" id="kpi-context-label">Source: -</div>
               </div>
               <section class="kpi-grid" id="exchange-kpis"></section>
             </section>
 
+            <section class="token-preview-stage panel">
+              <div class="panel-header">
+                <h2>TOKEN ANALYTICS GATEWAY</h2>
+                <span class="muted-pill">Per-symbol deep views</span>
+              </div>
+              <div class="token-preview-grid" id="exchange-token-preview-body"></div>
+            </section>
+
+            <section class="rank-stage tidal-rank-stage">
+              <div class="tidal-rank-header panel">
+                <div class="tidal-rank-title-wrap">
+                  <h2>VOLUME RANK</h2>
+                  <p class="tidal-rank-subtitle">live market dominance across tracked perpetual symbols</p>
+                </div>
+                <div class="tidal-rank-meta">
+                  <span class="live-badge tidal-live-badge">LIVE</span>
+                  <span class="muted-pill" id="tidal-last-updated">updated -</span>
+                  <span class="muted-pill" id="tidal-source-tag">source -</span>
+                  <span class="muted-pill tidal-exchange-tag">Pacifica</span>
+                </div>
+                <div class="rank-head-tools tidal-rank-tools">
+                  <input id="volume-filter" type="search" placeholder="Filter symbol" />
+                  <div class="sort-toggle" id="volume-sort-toggle">
+                    <button class="sort-mode-btn active" data-sort-mode="volume">Volume</button>
+                    <button class="sort-mode-btn" data-sort-mode="share">Share</button>
+                    <button class="sort-mode-btn" data-sort-mode="momentum">Momentum</button>
+                  </div>
+                </div>
+              </div>
+              <div class="tidal-rank-board card">
+                <div class="tidal-rank-list" id="volume-rank-body"></div>
+              </div>
+              <div class="pagination-row volume-pagination-row">
+                <span id="volume-total-label" class="muted-pill">0 symbols</span>
+                <button id="volume-prev-btn" class="btn-ghost">Prev</button>
+                <span id="volume-page-label">Page 1 / 1</span>
+                <button id="volume-next-btn" class="btn-ghost">Next</button>
+              </div>
+            </section>
+
+            <section class="ops-stage">
+              <article class="ops-card panel">
+                <div class="ops-card-head">
+                  <h3>Wallet Freshness</h3>
+                  <span class="muted-pill" id="ops-freshness-state">-</span>
+                </div>
+                <div class="ops-kpi-grid">
+                  <div class="ops-kpi">
+                    <span>Refreshed 5m</span>
+                    <strong id="ops-refreshed-5m">-</strong>
+                  </div>
+                  <div class="ops-kpi">
+                    <span>Refreshed 15m</span>
+                    <strong id="ops-refreshed-15m">-</strong>
+                  </div>
+                  <div class="ops-kpi">
+                    <span>Live group</span>
+                    <strong id="ops-live-group">-</strong>
+                  </div>
+                  <div class="ops-kpi">
+                    <span>Stale wallets</span>
+                    <strong id="ops-stale-wallets">-</strong>
+                  </div>
+                </div>
+              </article>
+              <article class="ops-card panel">
+                <div class="ops-card-head">
+                  <h3>Ingestion Health</h3>
+                  <span class="muted-pill" id="ops-health-state">-</span>
+                </div>
+                <div class="ops-kpi-grid">
+                  <div class="ops-kpi">
+                    <span>Refresh success</span>
+                    <strong id="ops-refresh-success">-</strong>
+                  </div>
+                  <div class="ops-kpi">
+                    <span>Queue pressure</span>
+                    <strong id="ops-queue-pressure">-</strong>
+                  </div>
+                  <div class="ops-kpi">
+                    <span>Active egress</span>
+                    <strong id="ops-active-egress">-</strong>
+                  </div>
+                  <div class="ops-kpi">
+                    <span>Top error</span>
+                    <strong id="ops-top-error">-</strong>
+                  </div>
+                </div>
+              </article>
+              <article class="ops-card panel">
+                <div class="ops-card-head">
+                  <h3>Queue Pressure</h3>
+                  <span class="muted-pill" id="ops-queue-mode">-</span>
+                </div>
+                <div class="ops-gauge-grid">
+                  <div class="ops-gauge">
+                    <span>Live queue</span>
+                    <div class="ops-gauge-track"><div class="ops-gauge-fill" id="ops-live-queue-fill"></div></div>
+                    <strong id="ops-live-queue-label">-</strong>
+                  </div>
+                  <div class="ops-gauge">
+                    <span>Backfill queue</span>
+                    <div class="ops-gauge-track"><div class="ops-gauge-fill" id="ops-backfill-queue-fill"></div></div>
+                    <strong id="ops-backfill-queue-label">-</strong>
+                  </div>
+                </div>
+              </article>
+              <article class="ops-card panel">
+                <div class="ops-card-head">
+                  <h3>Anomaly Timeline</h3>
+                  <span class="muted-pill" id="ops-anomaly-count">0</span>
+                </div>
+                <ul class="anomaly-list" id="ops-anomaly-list">
+                  <li>No anomalies</li>
+                </ul>
+              </article>
+            </section>
+          </section>
+
+          <section id="token-view" class="view">
+            <header class="view-header token-view-header">
+              <div class="view-header-copy">
+                <p class="view-kicker">Per-Symbol Intelligence</p>
+                <h1 id="token-page-title">Token Analytics</h1>
+                <p class="view-subtitle" id="token-page-subtitle">Select a symbol from Volume Rank to load dedicated analytics.</p>
+              </div>
+              <div class="token-header-meta">
+                <span class="muted-pill" id="token-symbol-pill">Symbol -</span>
+                <span class="muted-pill" id="token-exchange-pill">Pacifica</span>
+                <span class="muted-pill" id="token-timeframe-pill">TF all</span>
+                <span class="muted-pill" id="token-live-pill">LIVE</span>
+                <span class="muted-pill" id="token-freshness-pill">updated -</span>
+                <span class="muted-pill" id="token-source-pill">source -</span>
+              </div>
+            </header>
+
+            <section class="token-kpi-stage">
+              <section class="kpi-grid token-kpi-grid" id="token-kpis"></section>
+            </section>
+
             <section class="chart-stage">
               <div class="chart-stage-head">
-                <h2 id="chartTitle">Trading Volume</h2>
-                <div class="chart-toggle-group" aria-label="Trading volume chart controls">
+                <div class="chart-stage-title">
+                  <h2 id="chartTitle">Token Analytics</h2>
+                  <div class="analytics-tabs" id="analytics-tabs">
+                    <button class="analytics-tab active" data-analytics-tab="oi">OI</button>
+                    <button class="analytics-tab" data-analytics-tab="funding">Funding</button>
+                    <button class="analytics-tab" data-analytics-tab="liquidations">Liquidations</button>
+                    <button class="analytics-tab" data-analytics-tab="netflow">Netflow</button>
+                    <button class="analytics-tab" data-analytics-tab="wallet_activity">Wallet Activity</button>
+                    <button class="analytics-tab" data-analytics-tab="volume">Volume</button>
+                  </div>
+                  <p class="chart-stage-note" id="analytics-note">Token-scoped analytics terminal.</p>
+                  <div class="analytics-legend" id="analytics-legend" hidden></div>
+                </div>
+                <div class="chart-toggle-group" aria-label="Token analytics chart controls">
                   <button class="chart-toggle-btn" id="seriesDaily" type="button" aria-label="Daily">
                     D
                   </button>
@@ -94,7 +268,7 @@
                 </div>
               </div>
               <div class="chart-wrap card">
-                <div id="volumeChart" class="volume-chart large" aria-label="Trading volume chart"></div>
+                <div id="volumeChart" class="volume-chart large" aria-label="Token analytics chart"></div>
                 <div id="chartDateBand" class="chart-date-band" aria-label="Chart timeline">
                   <div class="chart-date-gutter"></div>
                   <div class="chart-date-track"></div>
@@ -111,29 +285,22 @@
               </div>
             </section>
 
-            <section class="rank-stage">
-              <div class="panel-header">
-                <h2>VOLUME RANK</h2>
-                <span class="live-badge">LIVE</span>
-              </div>
-              <div class="table-wrap volume-table-wrap">
-                <table class="volume-rank-table">
-                  <thead>
-                    <tr>
-                      <th>Rank</th>
-                      <th>Symbol</th>
-                      <th>Volume</th>
-                    </tr>
-                  </thead>
-                  <tbody id="volume-rank-body"></tbody>
-                </table>
-              </div>
-              <div class="pagination-row volume-pagination-row">
-                <span id="volume-total-label" class="muted-pill">0 symbols</span>
-                <button id="volume-prev-btn" class="btn-ghost">Prev</button>
-                <span id="volume-page-label">Page 1 / 1</span>
-                <button id="volume-next-btn" class="btn-ghost">Next</button>
-              </div>
+            <section class="token-insight-stage">
+              <article class="panel token-insight-panel">
+                <div class="panel-header token-insight-head">
+                  <h2 id="token-insight-title">Metric Insights</h2>
+                  <span class="muted-pill" id="token-insight-meta">-</span>
+                </div>
+                <div class="token-insight-grid">
+                  <div class="token-highlight-strip" id="token-highlight-chips"></div>
+                  <div class="table-wrap token-breakdown-wrap">
+                    <table class="token-breakdown-table">
+                      <thead id="token-breakdown-head"></thead>
+                      <tbody id="token-breakdown-body"></tbody>
+                    </table>
+                  </div>
+                </div>
+              </article>
             </section>
           </section>
 
@@ -229,6 +396,6 @@
       </main>
     </div>
 
-    <script src="/app.js?v=20260309-volume-chart-2"></script>
+    <script src="/app.js?v=20260309-terminal-phase5-token-analytics"></script>
   </body>
 </html>

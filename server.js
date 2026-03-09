@@ -93,6 +93,15 @@ const MULTI_EGRESS_TRANSPORT =
     : "curl";
 const MULTI_EGRESS_MATCH_WORKERS =
   String(process.env.PACIFICA_MULTI_EGRESS_MATCH_WORKERS || "true").toLowerCase() !== "false";
+const LIVE_FOCUS_SYMBOL_MAX_RAW = Number(process.env.PACIFICA_LIVE_FOCUS_SYMBOL_MAX || 0);
+const LIVE_FOCUS_SYMBOL_MAX =
+  Number.isFinite(LIVE_FOCUS_SYMBOL_MAX_RAW) && LIVE_FOCUS_SYMBOL_MAX_RAW > 0
+    ? Math.max(1, Math.floor(LIVE_FOCUS_SYMBOL_MAX_RAW))
+    : Infinity;
+const LIVE_BOOTSTRAP_SYMBOL_MAX = Math.max(
+  1,
+  Number(process.env.PACIFICA_LIVE_BOOTSTRAP_SYMBOL_MAX || 6)
+);
 const SOLANA_RPC_URL =
   String(process.env.SOLANA_RPC_URL || "").trim() || "https://api.mainnet-beta.solana.com";
 const SOLANA_RPC_RATE_LIMIT_CAPACITY = Math.max(
@@ -875,6 +884,7 @@ function uniqueSymbols(list = []) {
 function serveStatic(req, res, url) {
   if (!ENABLE_UI) return false;
   if (req.method !== "GET" && req.method !== "HEAD") return false;
+  if (String(url.pathname || "").startsWith("/api/")) return false;
 
   const requested = decodeURIComponent(url.pathname === "/" ? "/index.html" : url.pathname);
   const safePath = path
@@ -884,9 +894,15 @@ function serveStatic(req, res, url) {
 
   let filePath = path.join(PUBLIC_DIR, safePath);
   if (!filePath.startsWith(PUBLIC_DIR)) return false;
-  if (!fs.existsSync(filePath)) return false;
-
-  let stat = fs.statSync(filePath);
+  let stat = fs.existsSync(filePath) ? fs.statSync(filePath) : null;
+  if (!stat) {
+    const hasExtension = path.extname(safePath) !== "";
+    if (hasExtension) return false;
+    filePath = path.join(PUBLIC_DIR, "index.html");
+    if (!filePath.startsWith(PUBLIC_DIR)) return false;
+    if (!fs.existsSync(filePath)) return false;
+    stat = fs.statSync(filePath);
+  }
   if (stat.isDirectory()) {
     filePath = path.join(filePath, "index.html");
     if (!filePath.startsWith(PUBLIC_DIR)) return false;
@@ -979,10 +995,14 @@ function makeBootstrapper({ restClient, pipeline, logger = console }) {
       pipeline.markBootstrap();
       return {
         failures,
-        focusSymbols: market.prices
-          .slice(0, 4)
-          .map((item) => String(item.symbol || "").toUpperCase())
-          .filter(Boolean),
+        focusSymbols: (() => {
+          const symbols = market.prices
+            .map((item) => String(item.symbol || "").toUpperCase())
+            .filter(Boolean);
+          return Number.isFinite(LIVE_FOCUS_SYMBOL_MAX)
+            ? symbols.slice(0, LIVE_FOCUS_SYMBOL_MAX)
+            : symbols;
+        })(),
       };
     }
 
@@ -1071,18 +1091,22 @@ function makeBootstrapper({ restClient, pipeline, logger = console }) {
       });
     });
 
-    const symbols = uniqueSymbols([
+    const symbolsAll = uniqueSymbols([
       ...accountData.positions.map((row) => row.symbol),
       ...accountData.orders.map((row) => row.symbol),
       ...accountData.tradeHistory.slice(0, 40).map((row) => row.symbol),
-      ...market.prices.slice(0, 4).map((row) => row.symbol),
-    ]).slice(0, 6);
+      ...market.prices.map((row) => row.symbol),
+    ]);
+    const focusSymbols = Number.isFinite(LIVE_FOCUS_SYMBOL_MAX)
+      ? symbolsAll.slice(0, LIVE_FOCUS_SYMBOL_MAX)
+      : symbolsAll;
+    const bootstrapSymbols = focusSymbols.slice(0, LIVE_BOOTSTRAP_SYMBOL_MAX);
 
     const nowMs = Date.now();
     const start1h = nowMs - 72 * 60 * 60 * 1000;
 
     await Promise.all(
-      symbols.map(async (symbol) => {
+      bootstrapSymbols.map(async (symbol) => {
         await pull(`funding_rate_history:${symbol}`, async () => {
           const res = await restClient.get("/funding_rate/history", {
             query: { symbol, limit: 120 },
@@ -1154,7 +1178,7 @@ function makeBootstrapper({ restClient, pipeline, logger = console }) {
 
     return {
       failures,
-      focusSymbols: symbols,
+      focusSymbols,
     };
   };
 }
