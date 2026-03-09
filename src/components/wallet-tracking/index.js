@@ -240,9 +240,21 @@ function createWalletTrackingComponent({
   const indexerStatusUrl = String(
     process.env.PACIFICA_INDEXER_STATUS_PROXY_URL || defaultIndexerStatusUrl
   ).trim();
+  let indexerApiOrigin = "";
+  try {
+    if (indexerStatusUrl) {
+      const parsed = new URL(indexerStatusUrl);
+      indexerApiOrigin = `${parsed.protocol}//${parsed.host}`;
+    }
+  } catch (_error) {
+    indexerApiOrigin = "";
+  }
 
   function syncWalletStoreFromDisk() {
     if (!walletStore || typeof walletStore.load !== "function") return;
+    // When an in-process indexer is present, the in-memory wallet store is the source of truth.
+    // Reloading from disk here can overwrite fresh unflushed updates from live scans.
+    if (walletIndexer && typeof walletIndexer.getStatus === "function") return;
     const now = Date.now();
     if (now - walletStoreRefresh.lastAt < walletStoreRefresh.minIntervalMs) return;
     walletStore.load();
@@ -250,8 +262,10 @@ function createWalletTrackingComponent({
   }
 
   async function getFreshIndexerStatus() {
-    if (!walletIndexer || typeof walletIndexer.getStatus !== "function") return null;
-    const localStatus = walletIndexer.getStatus();
+    const localStatus =
+      walletIndexer && typeof walletIndexer.getStatus === "function"
+        ? walletIndexer.getStatus()
+        : null;
     if (localStatus && localStatus.running) return localStatus;
     if (!indexerStatusUrl) return localStatus;
 
@@ -265,7 +279,7 @@ function createWalletTrackingComponent({
 
     try {
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 1500);
+      const timeout = setTimeout(() => controller.abort(), 4000);
       const res = await fetch(indexerStatusUrl, {
         method: "GET",
         signal: controller.signal,
@@ -278,10 +292,69 @@ function createWalletTrackingComponent({
         indexerStatusCache.value = payload.status;
         return payload.status;
       }
-      return localStatus;
+      return indexerStatusCache.value || localStatus;
     } catch (_error) {
-      return localStatus;
+      return indexerStatusCache.value || localStatus;
     }
+  }
+
+  function parseWalletListParam(value) {
+    return String(value || "")
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
+
+  async function fetchIndexerApi(pathname, params = {}, timeoutMs = 4000) {
+    if (!indexerApiOrigin) return null;
+    try {
+      const endpoint = new URL(pathname, indexerApiOrigin);
+      Object.entries(params || {}).forEach(([key, value]) => {
+        if (value === null || value === undefined) return;
+        endpoint.searchParams.set(key, String(value));
+      });
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), timeoutMs);
+      const res = await fetch(endpoint.toString(), {
+        method: "GET",
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
+      if (!res.ok) return null;
+      return await res.json();
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  async function getLifecycleMap(wallets = []) {
+    const list = Array.from(new Set((Array.isArray(wallets) ? wallets : []).map((x) => String(x || "").trim()).filter(Boolean)));
+    if (!list.length) return {};
+    if (walletIndexer && typeof walletIndexer.getWalletLifecycleMap === "function") {
+      return walletIndexer.getWalletLifecycleMap(list);
+    }
+    const payload = await fetchIndexerApi("/api/indexer/lifecycle-map", {
+      wallets: list.join(","),
+    });
+    if (payload && payload.map && typeof payload.map === "object") {
+      return payload.map;
+    }
+    return {};
+  }
+
+  async function getLifecycleSnapshot(wallet) {
+    const normalized = String(wallet || "").trim();
+    if (!normalized) return null;
+    if (walletIndexer && typeof walletIndexer.getWalletLifecycleSnapshot === "function") {
+      return walletIndexer.getWalletLifecycleSnapshot(normalized);
+    }
+    const payload = await fetchIndexerApi("/api/indexer/lifecycle", {
+      wallet: normalized,
+    });
+    if (payload && payload.snapshot && typeof payload.snapshot === "object") {
+      return payload.snapshot;
+    }
+    return null;
   }
 
   function buildVolumeWindowInfo(truth = {}) {
@@ -620,7 +693,7 @@ function createWalletTrackingComponent({
       wallet,
       state: pipeline.getState(),
     });
-    walletStore.upsert(record);
+    walletStore.upsert(record, { force: true });
   }
 
   async function handleRequest(_req, res, url) {
@@ -861,6 +934,7 @@ function createWalletTrackingComponent({
         payload.volumeRank = selectedRank;
         payload.source = {
           ...(payload.source || {}),
+          prices: Array.isArray(truth.prices) ? truth.prices : [],
           dailyVolumeSource: "/api/v1/info/prices:sum(volume_24h)",
           openInterestSource: "/api/v1/info/prices:sum(open_interest*mark)",
           volumeRankSource: selectedRankSource,
@@ -977,17 +1051,41 @@ function createWalletTrackingComponent({
       return true;
     }
 
+    if (url.pathname === "/api/indexer/lifecycle-map") {
+      const wallets = parseWalletListParam(url.searchParams.get("wallets"));
+      const map =
+        walletIndexer && typeof walletIndexer.getWalletLifecycleMap === "function"
+          ? walletIndexer.getWalletLifecycleMap(wallets)
+          : {};
+      sendJson(res, 200, {
+        generatedAt: Date.now(),
+        count: wallets.length,
+        map,
+      });
+      return true;
+    }
+
+    if (url.pathname === "/api/indexer/lifecycle") {
+      const wallet = String(url.searchParams.get("wallet") || "").trim();
+      const snapshot =
+        walletIndexer && typeof walletIndexer.getWalletLifecycleSnapshot === "function"
+          ? walletIndexer.getWalletLifecycleSnapshot(wallet)
+          : null;
+      sendJson(res, 200, {
+        generatedAt: Date.now(),
+        wallet,
+        snapshot,
+      });
+      return true;
+    }
+
     if (url.pathname === "/api/wallets") {
       const payload = buildWalletExplorerPayload({
         wallets: walletStore ? walletStore.list() : [],
         query: Object.fromEntries(url.searchParams.entries()),
       });
-      if (
-        walletIndexer &&
-        typeof walletIndexer.getWalletLifecycleMap === "function" &&
-        Array.isArray(payload.rows)
-      ) {
-        const lifecycleMap = walletIndexer.getWalletLifecycleMap(payload.rows.map((row) => row.wallet));
+      if (Array.isArray(payload.rows)) {
+        const lifecycleMap = await getLifecycleMap(payload.rows.map((row) => row.wallet));
         payload.rows = payload.rows.map((row) => ({
           ...row,
           lifecycle: lifecycleMap[row.wallet] || null,
@@ -1003,13 +1101,8 @@ function createWalletTrackingComponent({
         wallet: url.searchParams.get("wallet"),
         timeframe: url.searchParams.get("timeframe"),
       });
-      if (
-        walletIndexer &&
-        typeof walletIndexer.getWalletLifecycleSnapshot === "function" &&
-        payload &&
-        payload.wallet
-      ) {
-        payload.lifecycle = walletIndexer.getWalletLifecycleSnapshot(payload.wallet);
+      if (payload && payload.wallet) {
+        payload.lifecycle = await getLifecycleSnapshot(payload.wallet);
       }
       sendJson(res, 200, payload);
       return true;

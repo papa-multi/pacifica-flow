@@ -87,14 +87,42 @@ function normalizeFundingHistoryRow(row = {}) {
 function summarizeErrorReason(message) {
   const msg = String(message || "").toLowerCase();
   if (!msg) return "unknown_error";
+  if (msg.includes("curl_request_failed")) {
+    if (msg.includes("timed out")) return "timeout";
+    if (
+      msg.includes("failed to connect") ||
+      msg.includes("connection to proxy closed") ||
+      msg.includes("can't complete socks5 connection") ||
+      msg.includes("recv failure") ||
+      msg.includes("connection reset")
+    ) {
+      return "proxy_error";
+    }
+    return "network_error";
+  }
   if (msg.includes("429")) return "rate_limit_429";
   if (msg.includes("timeout")) return "timeout";
   if (msg.includes("503")) return "service_unavailable_503";
   if (msg.includes("500")) return "server_error_500";
   if (msg.includes("404")) return "not_found_404";
   if (msg.includes("network")) return "network_error";
+  if (msg.includes("proxy")) return "proxy_error";
+  if (msg.includes("failed to connect")) return "network_error";
   if (msg.includes("econnreset")) return "connection_reset";
   return msg.slice(0, 120);
+}
+
+function isRetriableRequestReason(reason) {
+  const normalized = String(reason || "").toLowerCase();
+  return (
+    normalized === "rate_limit_429" ||
+    normalized === "timeout" ||
+    normalized === "service_unavailable_503" ||
+    normalized === "server_error_500" ||
+    normalized === "network_error" ||
+    normalized === "connection_reset" ||
+    normalized === "proxy_error"
+  );
 }
 
 function normalizeTradeKey(row = {}) {
@@ -236,13 +264,47 @@ class ExchangeWalletIndexer {
       1,
       Math.min(512, Number(options.walletScanConcurrency || 4))
     );
-    this.liveWalletsPerScan = Math.max(
+    this.liveWalletsPerScanConfigured = Math.max(
       0,
-      Math.min(512, Number(options.liveWalletsPerScan || Math.max(1, Math.floor(this.maxWalletsPerScan / 4))))
+      Math.min(
+        512,
+        Number(options.liveWalletsPerScan || Math.max(1, this.maxWalletsPerScan))
+      )
+    );
+    this.liveWalletsPerScanMin = Math.max(
+      1,
+      Math.min(
+        512,
+        Number(options.liveWalletsPerScanMin || Math.max(4, Math.ceil(this.walletScanConcurrency * 0.1)))
+      )
+    );
+    this.liveWalletsPerScanMax = Math.max(
+      this.liveWalletsPerScanMin,
+      Math.min(1024, Number(options.liveWalletsPerScanMax || 1024))
+    );
+    this.liveWalletsPerScan = Math.max(
+      this.liveWalletsPerScanConfigured,
+      this.liveWalletsPerScanMin
+    );
+    this.liveRefreshTargetMs = Math.max(
+      5000,
+      Number(options.liveRefreshTargetMs || 90000)
     );
     this.liveMaxPagesPerWallet = Math.max(
       1,
       Math.min(50, Number(options.liveMaxPagesPerWallet || 1))
+    );
+    this.fullHistoryPagesPerScan = Math.max(
+      1,
+      Number(options.fullHistoryPagesPerScan || 12)
+    );
+    this.backfillPageBudgetWhenLivePressure = Math.max(
+      1,
+      Number(options.backfillPageBudgetWhenLivePressure || 2)
+    );
+    this.stateSaveMinIntervalMs = Math.max(
+      500,
+      Number(options.stateSaveMinIntervalMs || 15000)
     );
     this.cacheEntriesPerEndpoint = Math.max(
       20,
@@ -316,9 +378,21 @@ class ExchangeWalletIndexer {
       this.clientTimeoutCooldownBaseMs,
       Number(options.clientTimeoutCooldownMaxMs || 45000)
     );
+    this.clientProxyErrorCooldownBaseMs = Math.max(
+      1000,
+      Number(options.clientProxyErrorCooldownBaseMs || 5000)
+    );
+    this.clientProxyErrorCooldownMaxMs = Math.max(
+      this.clientProxyErrorCooldownBaseMs,
+      Number(options.clientProxyErrorCooldownMaxMs || 300000)
+    );
     this.clientDefaultCooldownMs = Math.max(
       100,
       Number(options.clientDefaultCooldownMs || 1000)
+    );
+    this.historyRequestMaxAttempts = Math.max(
+      1,
+      Math.min(6, Number(options.historyRequestMaxAttempts || 3))
     );
 
     this.state = emptyState();
@@ -340,6 +414,11 @@ class ExchangeWalletIndexer {
       liveScanQueue: [],
       liveScanSet: new Set(),
       liveEnqueuedAt: new Map(),
+      liveRefreshSnapshot: null,
+      hotLiveWallets: [],
+      hotLiveWalletsAt: 0,
+      stateDirty: false,
+      lastStateSaveAt: 0,
       scanConcurrencyCurrent: this.walletScanConcurrency,
       scanPagesCurrent: this.maxPagesPerWallet,
       scanLast429At: 0,
@@ -610,6 +689,8 @@ class ExchangeWalletIndexer {
       backfillCompletedAt: Number(existing.backfillCompletedAt || 0) || null,
       liveTrackingSince: Number(existing.liveTrackingSince || 0) || null,
       liveLastScanAt: Number(existing.liveLastScanAt || 0) || null,
+      liveHeadTradeKey: existing.liveHeadTradeKey || null,
+      liveHeadFundingKey: existing.liveHeadFundingKey || null,
     };
     this.state.walletStates[wallet] = merged;
     return merged;
@@ -715,27 +796,58 @@ class ExchangeWalletIndexer {
       this.addWallets(depositWallets, "deposit_registry");
     }
 
+    const now = Date.now();
     const restoredQueue = normalizeWallets(this.state.priorityQueue || []);
     const liveQueued = normalizeWallets(this.runtime.priorityScanQueue || []);
     this.runtime.priorityScanQueue = normalizeWallets([...restoredQueue, ...liveQueued]);
     this.runtime.priorityScanSet = new Set(this.runtime.priorityScanQueue);
     this.runtime.priorityEnqueuedAt = new Map(
-      this.runtime.priorityScanQueue.map((wallet) => [wallet, Date.now()])
+      this.runtime.priorityScanQueue.map((wallet) => [wallet, now])
     );
 
-    const restoredLive = normalizeWallets(this.state.liveWallets || []);
-    this.runtime.liveScanQueue = normalizeWallets(restoredLive);
+    // Restore live-tracking wallets in a single pass.
+    // Avoid per-wallet queue/set rebuilds at startup (O(n^2) for large states).
+    const restoredLiveSet = new Set(normalizeWallets(this.state.liveWallets || []));
+    Object.entries(this.state.walletStates || {}).forEach(([key, row]) => {
+      if (!row || typeof row !== "object") return;
+      const normalizedWallet = normalizeAddress(row.wallet || key);
+      if (!normalizedWallet) return;
+      if (!this.isBackfillCompleteRow(row)) return;
+
+      const successAt = Number(row.lastSuccessAt || now) || now;
+      this.state.walletStates[normalizedWallet] = {
+        ...row,
+        wallet: normalizedWallet,
+        lifecycleStage: WALLET_LIFECYCLE.LIVE_TRACKING,
+        backfillCompletedAt: Number(row.backfillCompletedAt || successAt),
+        liveTrackingSince: Number(row.liveTrackingSince || successAt),
+        liveLastScanAt: Number(row.liveLastScanAt || 0) || null,
+      };
+      if (normalizedWallet !== key) {
+        delete this.state.walletStates[key];
+      }
+      restoredLiveSet.add(normalizedWallet);
+    });
+
+    this.state.liveWallets = Array.from(restoredLiveSet.values());
+    this.runtime.liveScanQueue = this.state.liveWallets.slice();
     this.runtime.liveScanSet = new Set(this.runtime.liveScanQueue);
     this.runtime.liveEnqueuedAt = new Map(
-      this.runtime.liveScanQueue.map((wallet) => [wallet, Date.now()])
+      this.runtime.liveScanQueue.map((wallet) => [wallet, now])
     );
 
-    Object.values(this.state.walletStates || {}).forEach((row) => {
-      if (!row || !row.wallet) return;
-      if (this.isBackfillCompleteRow(row)) {
-        this.moveWalletToLiveGroup(row.wallet, Number(row.lastSuccessAt || Date.now()));
+    if (this.runtime.priorityScanQueue.length > 0 && this.runtime.liveScanSet.size > 0) {
+      const beforeLen = this.runtime.priorityScanQueue.length;
+      this.runtime.priorityScanQueue = this.runtime.priorityScanQueue.filter(
+        (wallet) => !this.runtime.liveScanSet.has(wallet)
+      );
+      if (this.runtime.priorityScanQueue.length !== beforeLen) {
+        this.runtime.priorityScanSet = new Set(this.runtime.priorityScanQueue);
+        this.runtime.priorityEnqueuedAt = new Map(
+          this.runtime.priorityScanQueue.map((wallet) => [wallet, now])
+        );
       }
-    });
+    }
 
     if (this.runtime.priorityScanQueue.length > 0) {
       this.logger.info(
@@ -762,6 +874,26 @@ class ExchangeWalletIndexer {
       ? normalizeWallets(this.state.liveWallets)
       : [];
     writeJsonAtomic(this.statePath, this.state);
+    this.runtime.stateDirty = false;
+    this.runtime.lastStateSaveAt = Date.now();
+  }
+
+  markStateDirty() {
+    this.runtime.stateDirty = true;
+  }
+
+  persistStateIfNeeded(force = false) {
+    if (!force && !this.runtime.stateDirty) return false;
+    const now = Date.now();
+    if (
+      !force &&
+      Number(this.runtime.lastStateSaveAt || 0) > 0 &&
+      now - Number(this.runtime.lastStateSaveAt || 0) < this.stateSaveMinIntervalMs
+    ) {
+      return false;
+    }
+    this.save();
+    return true;
   }
 
   resetIndexingState(options = {}) {
@@ -991,7 +1123,8 @@ class ExchangeWalletIndexer {
 
       this.state.lastDiscoveryAt = Date.now();
       this.state.discoveryCycles += 1;
-      this.save();
+      this.markStateDirty();
+      this.persistStateIfNeeded();
 
       const summary = this.buildDiagnosticsSummary();
       const topReason =
@@ -1015,18 +1148,163 @@ class ExchangeWalletIndexer {
     };
   }
 
+  getHotLiveWallets(limit = 256) {
+    const max = Math.max(1, Number(limit || 256));
+    const now = Date.now();
+    if (
+      Array.isArray(this.runtime.hotLiveWallets) &&
+      this.runtime.hotLiveWallets.length > 0 &&
+      now - Number(this.runtime.hotLiveWalletsAt || 0) < 60000
+    ) {
+      return this.runtime.hotLiveWallets.slice(0, max);
+    }
+    if (!this.walletStore || typeof this.walletStore.list !== "function") {
+      return [];
+    }
+
+    const liveSet = new Set(normalizeWallets(this.state.liveWallets || []));
+    const ranked = this.walletStore
+      .list()
+      .map((row) => ({
+        wallet: normalizeAddress(row && row.wallet),
+        volumeUsd: Number(
+          (row && row.all && row.all.volumeUsd) ||
+            (row && row.volumeUsd) ||
+            0
+        ),
+        lastTrade: Number(
+          (row && row.all && row.all.lastTrade) ||
+            (row && row.lastTrade) ||
+            0
+        ),
+      }))
+      .filter((row) => row.wallet && liveSet.has(row.wallet))
+      .sort((a, b) => {
+        if (b.volumeUsd !== a.volumeUsd) return b.volumeUsd - a.volumeUsd;
+        return b.lastTrade - a.lastTrade;
+      })
+      .slice(0, Math.max(max, 512))
+      .map((row) => row.wallet);
+
+    this.runtime.hotLiveWallets = ranked;
+    this.runtime.hotLiveWalletsAt = now;
+    return ranked.slice(0, max);
+  }
+
   pickWalletBatch() {
     const wallets = normalizeWallets(this.state.knownWallets || []);
     const liveWallets = normalizeWallets(this.state.liveWallets || []);
     if (!wallets.length && !liveWallets.length) return [];
 
+    const now = Date.now();
     const tasks = [];
     const selected = new Set();
 
-    const backfillCapacity = Math.min(this.maxWalletsPerScan, wallets.length);
+    let liveAgeSum = 0;
+    let liveAgeCount = 0;
+    let liveAgeMax = 0;
+    let staleLiveWallets = 0;
+    liveWallets.forEach((wallet) => {
+      const row = this.state.walletStates && this.state.walletStates[wallet];
+      const anchor = Number(
+        (row && (row.liveLastScanAt || row.lastSuccessAt || row.liveTrackingSince || row.backfillCompletedAt || row.discoveredAt)) ||
+          0
+      );
+      if (anchor <= 0) {
+        staleLiveWallets += 1;
+        return;
+      }
+      const age = Math.max(0, now - anchor);
+      liveAgeSum += age;
+      liveAgeCount += 1;
+      if (age > liveAgeMax) liveAgeMax = age;
+      if (age >= this.liveRefreshTargetMs) staleLiveWallets += 1;
+    });
+    const liveAgeAvg = liveAgeCount > 0 ? Math.round(liveAgeSum / liveAgeCount) : 0;
+
+    let liveCapacity = Math.min(
+      liveWallets.length,
+      Math.max(this.liveWalletsPerScanConfigured, this.liveWalletsPerScanMin)
+    );
+    if (staleLiveWallets > 0) {
+      const staleBoost = Math.ceil(staleLiveWallets * 0.35);
+      liveCapacity = Math.max(liveCapacity, staleBoost);
+      if (liveAgeMax > this.liveRefreshTargetMs * 2) {
+        liveCapacity = Math.max(
+          liveCapacity,
+          Math.ceil(Math.max(this.liveWalletsPerScanConfigured, this.liveWalletsPerScanMin) * 1.5)
+        );
+      }
+    }
+    const adaptiveLiveHardCap = Math.max(
+      this.liveWalletsPerScanMax,
+      this.walletScanConcurrency * 4
+    );
+    liveCapacity = clamp(
+      liveCapacity,
+      0,
+      Math.min(liveWallets.length, adaptiveLiveHardCap)
+    );
+
+    const baseBackfillCapacity = Math.max(
+      0,
+      Math.min(this.maxWalletsPerScan - Math.min(liveCapacity, this.maxWalletsPerScan), wallets.length)
+    );
+    const hasBackfillPressure =
+      this.runtime.priorityScanQueue.length > 0 ||
+      this.runtime.backlogMode ||
+      wallets.length > liveWallets.length;
+    const reservedBackfillCapacity = hasBackfillPressure
+      ? Math.min(
+          wallets.length,
+          Math.max(6, Math.min(24, Math.ceil(this.walletScanConcurrency * 0.08)))
+        )
+      : 0;
+    const backfillCapacity = Math.max(baseBackfillCapacity, reservedBackfillCapacity);
     let backfillCursor = wallets.length > 0 ? this.state.scanCursor % wallets.length : 0;
 
-    while (tasks.length < backfillCapacity && this.runtime.priorityScanQueue.length > 0) {
+    let liveCursor = liveWallets.length > 0 ? this.state.liveScanCursor % liveWallets.length : 0;
+    let liveAttempts = 0;
+    let liveAdded = 0;
+    const hotCapacity = Math.min(
+      liveCapacity,
+      Math.max(this.liveWalletsPerScanMin, Math.min(this.walletScanConcurrency, 96))
+    );
+    const hotWallets = this.getHotLiveWallets(hotCapacity * 2);
+    let hotAdded = 0;
+    for (let i = 0; i < hotWallets.length && liveAdded < hotCapacity; i += 1) {
+      const wallet = hotWallets[i];
+      if (!wallet || selected.has(wallet)) continue;
+      if (!this.isWalletLiveTracking(wallet)) continue;
+      selected.add(wallet);
+      tasks.push({ wallet, mode: "live", reason: "live_hotset" });
+      liveAdded += 1;
+      hotAdded += 1;
+    }
+    const maxLiveAttempts = Math.max(1, liveWallets.length * 4);
+    while (liveAdded < liveCapacity && liveAttempts < maxLiveAttempts) {
+      const wallet = liveWallets[liveCursor];
+      liveCursor = liveWallets.length > 0 ? (liveCursor + 1) % liveWallets.length : 0;
+      liveAttempts += 1;
+      if (!wallet || selected.has(wallet)) continue;
+      if (!this.isWalletLiveTracking(wallet)) continue;
+      selected.add(wallet);
+      tasks.push({ wallet, mode: "live", reason: "live_round_robin" });
+      liveAdded += 1;
+    }
+    this.state.liveScanCursor = liveCursor;
+    this.runtime.liveRefreshSnapshot = {
+      at: now,
+      capacity: liveCapacity,
+      selected: liveAdded,
+      hotSelected: hotAdded,
+      staleWallets: staleLiveWallets,
+      avgAgeMs: liveAgeAvg,
+      maxAgeMs: liveAgeMax,
+    };
+
+    let backfillAdded = 0;
+    while (backfillAdded < backfillCapacity && this.runtime.priorityScanQueue.length > 0) {
       const wallet = this.runtime.priorityScanQueue.shift();
       this.runtime.priorityScanSet.delete(wallet);
       this.runtime.priorityEnqueuedAt.delete(wallet);
@@ -1038,11 +1316,12 @@ class ExchangeWalletIndexer {
       if (lifecycle === WALLET_LIFECYCLE.LIVE_TRACKING) continue;
       selected.add(wallet);
       tasks.push({ wallet, mode: "backfill", reason: "priority" });
+      backfillAdded += 1;
     }
 
     let attempts = 0;
     const maxAttempts = wallets.length * 4;
-    while (tasks.length < backfillCapacity && attempts < maxAttempts && wallets.length > 0) {
+    while (backfillAdded < backfillCapacity && attempts < maxAttempts && wallets.length > 0) {
       const wallet = wallets[backfillCursor];
       backfillCursor = (backfillCursor + 1) % wallets.length;
       attempts += 1;
@@ -1053,24 +1332,9 @@ class ExchangeWalletIndexer {
       if (lifecycle === WALLET_LIFECYCLE.LIVE_TRACKING) continue;
       selected.add(wallet);
       tasks.push({ wallet, mode: "backfill", reason: "round_robin" });
+      backfillAdded += 1;
     }
     this.state.scanCursor = backfillCursor;
-
-    const liveCapacity = Math.max(0, Math.min(this.liveWalletsPerScan, liveWallets.length));
-    let liveCursor = liveWallets.length > 0 ? this.state.liveScanCursor % liveWallets.length : 0;
-    let liveAttempts = 0;
-    const maxLiveAttempts = liveWallets.length * 3;
-    while (liveCapacity > 0 && liveAttempts < maxLiveAttempts) {
-      if (tasks.filter((task) => task.mode === "live").length >= liveCapacity) break;
-      const wallet = liveWallets[liveCursor];
-      liveCursor = (liveCursor + 1) % liveWallets.length;
-      liveAttempts += 1;
-      if (!wallet || selected.has(wallet)) continue;
-      if (!this.isWalletLiveTracking(wallet)) continue;
-      selected.add(wallet);
-      tasks.push({ wallet, mode: "live", reason: "live_round_robin" });
-    }
-    this.state.liveScanCursor = liveCursor;
 
     return tasks;
   }
@@ -1127,33 +1391,49 @@ class ExchangeWalletIndexer {
 
       let response = null;
       let requestError = null;
-      const clientEntry =
-        restClient && typeof restClient.get === "function" ? null : this.pickRestClientEntry();
-      const selectedClient =
-        restClient && typeof restClient.get === "function"
+      const directClientProvided = restClient && typeof restClient.get === "function";
+      const maxAttempts = directClientProvided ? 1 : this.historyRequestMaxAttempts;
+      const triedClientIds = new Set();
+      let attempt = 0;
+      while (attempt < maxAttempts) {
+        attempt += 1;
+        requestError = null;
+        const clientEntry = directClientProvided
+          ? null
+          : this.pickRestClientEntry({ excludeIds: triedClientIds });
+        if (clientEntry && clientEntry.id) {
+          triedClientIds.add(clientEntry.id);
+        }
+        const selectedClient = directClientProvided
           ? restClient
           : clientEntry && clientEntry.client
           ? clientEntry.client
           : this.restClients[0];
-      const requestStartedAt = Date.now();
-      this.observeClientRequestStart(clientEntry);
-      try {
-        response = await selectedClient.get(pathname, {
-          query,
-          cost: this.historyCost,
-        });
-      } catch (error) {
-        requestError = error;
-      } finally {
-        if (requestError) {
-          this.observeClientRequestFailure(clientEntry, requestError);
-        } else {
-          this.observeClientRequestSuccess(clientEntry, Date.now() - requestStartedAt);
+        const requestStartedAt = Date.now();
+        this.observeClientRequestStart(clientEntry);
+        requests += 1;
+        try {
+          response = await selectedClient.get(pathname, {
+            query,
+            cost: this.historyCost,
+          });
+        } catch (error) {
+          requestError = error;
+        } finally {
+          if (requestError) {
+            this.observeClientRequestFailure(clientEntry, requestError);
+          } else {
+            this.observeClientRequestSuccess(clientEntry, Date.now() - requestStartedAt);
+          }
+          this.observeClientRequestEnd(clientEntry);
         }
-        this.observeClientRequestEnd(clientEntry);
+        if (!requestError) break;
+        const reason = summarizeErrorReason(toErrorMessage(requestError));
+        if (!isRetriableRequestReason(reason) || attempt >= maxAttempts) {
+          break;
+        }
       }
       if (requestError) throw requestError;
-      requests += 1;
 
       const payload = response && response.payload ? response.payload : {};
       const pageRows = extractPayloadData(response, []);
@@ -1193,7 +1473,11 @@ class ExchangeWalletIndexer {
     const startedAt = now;
     const prev = this.getOrInitWalletState(wallet, "scan");
     const mode = options && options.mode === "live" ? "live" : "backfill";
-    const history = this.loadWalletHistory(wallet);
+    const backfillPageBudget = Math.max(
+      0,
+      Number(options && options.backfillPageBudget ? options.backfillPageBudget : 0)
+    );
+    let history = null;
     const client =
       restClient && typeof restClient.get === "function" ? restClient : null;
 
@@ -1212,12 +1496,17 @@ class ExchangeWalletIndexer {
     }
 
     try {
+      if (mode !== "live") {
+        history = this.loadWalletHistory(wallet);
+      }
       const useFullHistory = mode === "backfill" ? this.fullHistoryPerWallet : false;
       const maxPagesForMode =
         mode === "live"
           ? this.liveMaxPagesPerWallet
           : useFullHistory
-          ? 0
+          ? backfillPageBudget > 0
+            ? Math.min(this.fullHistoryPagesPerScan, backfillPageBudget)
+            : this.fullHistoryPagesPerScan
           : this.runtime.scanPagesCurrent;
       const tradeStartCursor = mode === "live" ? null : prev.tradeCursor || null;
       const fundingStartCursor = mode === "live" ? null : prev.fundingCursor || null;
@@ -1233,7 +1522,10 @@ class ExchangeWalletIndexer {
           maxPages: maxPagesForMode,
           startCursor: tradeStartCursor,
           done: tradeDoneInput,
-          pageCache: history.pageCache && history.pageCache.trades ? history.pageCache.trades : {},
+          pageCache:
+            history && history.pageCache && history.pageCache.trades
+              ? history.pageCache.trades
+              : {},
         }),
         this.fetchPaginatedHistory("/funding/history", {
           restClient: client,
@@ -1244,7 +1536,9 @@ class ExchangeWalletIndexer {
           startCursor: fundingStartCursor,
           done: fundingDoneInput,
           pageCache:
-            history.pageCache && history.pageCache.funding ? history.pageCache.funding : {},
+            history && history.pageCache && history.pageCache.funding
+              ? history.pageCache.funding
+              : {},
         }),
       ]);
 
@@ -1254,6 +1548,79 @@ class ExchangeWalletIndexer {
       const incomingFunding = uniq(
         fundingRes.rows.map((row) => JSON.stringify(normalizeFundingHistoryRow(row)))
       ).map((raw) => JSON.parse(raw));
+
+      const headTradeKey = incomingTrades.length ? normalizeTradeKey(incomingTrades[0]) : null;
+      const headFundingKey = incomingFunding.length
+        ? normalizeFundingKey(incomingFunding[0])
+        : null;
+
+      const prevTradeHeadKey = prev.liveHeadTradeKey || null;
+      const prevFundingHeadKey = prev.liveHeadFundingKey || null;
+      const liveHeadKnown = Boolean(prevTradeHeadKey || prevFundingHeadKey);
+      const liveHeadUnchanged =
+        mode === "live" &&
+        liveHeadKnown &&
+        headTradeKey === prevTradeHeadKey &&
+        headFundingKey === prevFundingHeadKey;
+
+      if (liveHeadUnchanged) {
+        if (this.walletStore && typeof this.walletStore.touch === "function") {
+          this.walletStore.touch(wallet, now);
+        }
+        this.state.walletStates[wallet] = {
+          ...prev,
+          wallet,
+          lastAttemptAt: now,
+          lastScannedAt: now,
+          lastSuccessAt: now,
+          lastError: null,
+          lastErrorReason: null,
+          scansSucceeded: Number(prev.scansSucceeded || 0) + 1,
+          scansFailed: Number(prev.scansFailed || 0),
+          consecutiveFailures: 0,
+          lastScanDurationMs: Date.now() - startedAt,
+          newTradeRowsLoaded: 0,
+          newFundingRowsLoaded: 0,
+          tradePagesLoaded: tradesRes.pages,
+          fundingPagesLoaded: fundingRes.pages,
+          tradeHasMore: false,
+          fundingHasMore: false,
+          tradeDone: true,
+          fundingDone: true,
+          tradeCursor: null,
+          fundingCursor: null,
+          lastTradeNextCursor: tradesRes.nextCursor || null,
+          lastFundingNextCursor: fundingRes.nextCursor || null,
+          tradeCacheHits: Number(prev.tradeCacheHits || 0) + Number(tradesRes.cacheHits || 0),
+          fundingCacheHits: Number(prev.fundingCacheHits || 0) + Number(fundingRes.cacheHits || 0),
+          tradeRequests: Number(prev.tradeRequests || 0) + Number(tradesRes.requests || 0),
+          fundingRequests: Number(prev.fundingRequests || 0) + Number(fundingRes.requests || 0),
+          lifecycleStage: WALLET_LIFECYCLE.LIVE_TRACKING,
+          backfillCompletedAt: Number(prev.backfillCompletedAt || prev.lastSuccessAt || now),
+          liveTrackingSince: Number(prev.liveTrackingSince || now),
+          liveLastScanAt: now,
+          liveHeadTradeKey: headTradeKey,
+          liveHeadFundingKey: headFundingKey,
+        };
+        this.moveWalletToLiveGroup(wallet, now);
+        this.markStateDirty();
+        this.persistStateIfNeeded();
+
+        return {
+          wallet,
+          ok: true,
+          mode,
+          fastPath: "live_head_unchanged",
+          trades: Number(prev.tradeRowsLoaded || 0),
+          funding: Number(prev.fundingRowsLoaded || 0),
+          newTrades: 0,
+          newFunding: 0,
+        };
+      }
+
+      if (!history) {
+        history = this.loadWalletHistory(wallet);
+      }
 
       let newTrades = 0;
       incomingTrades.forEach((row) => {
@@ -1277,7 +1644,14 @@ class ExchangeWalletIndexer {
         trades: tradesRes.pageCache || {},
         funding: fundingRes.pageCache || {},
       };
-      this.saveWalletHistory(wallet, history);
+      const shouldPersistHistory =
+        mode !== "live" ||
+        newTrades > 0 ||
+        newFunding > 0 ||
+        !liveHeadKnown;
+      if (shouldPersistHistory) {
+        this.saveWalletHistory(wallet, history);
+      }
 
       const record = buildWalletRecordFromHistory({
         wallet,
@@ -1366,6 +1740,8 @@ class ExchangeWalletIndexer {
         backfillCompletedAt,
         liveTrackingSince,
         liveLastScanAt,
+        liveHeadTradeKey: headTradeKey,
+        liveHeadFundingKey: headFundingKey,
       };
       if (tradeDone && fundingDone) {
         this.moveWalletToLiveGroup(wallet, now);
@@ -1374,7 +1750,8 @@ class ExchangeWalletIndexer {
       } else {
         this.enqueuePriorityWallets([wallet], { reason: "live_overflow_catchup", includeLive: true });
       }
-      this.save();
+      this.markStateDirty();
+      this.persistStateIfNeeded();
 
       return {
         wallet,
@@ -1408,7 +1785,8 @@ class ExchangeWalletIndexer {
       } else {
         this.enqueueLiveWallets([wallet]);
       }
-      this.save();
+      this.markStateDirty();
+      this.persistStateIfNeeded();
 
       return {
         wallet,
@@ -1466,7 +1844,37 @@ class ExchangeWalletIndexer {
 
           const task = batch[current];
           if (!task || !task.wallet) continue;
-          const result = await this.scanWallet(task.wallet, null, { mode: task.mode });
+          const backfillPageBudget =
+            task.mode === "backfill" && liveBatchSize > 0
+              ? this.backfillPageBudgetWhenLivePressure
+              : 0;
+          let result = await this.scanWallet(task.wallet, null, {
+            mode: task.mode,
+            backfillPageBudget,
+          });
+          if (!result || !result.ok) {
+            const reason = summarizeErrorReason(result && result.error ? result.error : "");
+            const canRetry =
+              task.mode === "live" &&
+              isRetriableRequestReason(reason) &&
+              !String(result && result.error ? result.error : "")
+                .toLowerCase()
+                .includes("not found");
+            if (canRetry) {
+              result = await this.scanWallet(task.wallet, null, {
+                mode: task.mode,
+                backfillPageBudget,
+              });
+              if (result && result.ok) {
+                this.logger.log(
+                  `[wallet-indexer] retry_ok wallet=${task.wallet.slice(
+                    0,
+                    8
+                  )} mode=${task.mode} reason=${reason}`
+                );
+              }
+            }
+          }
           if (result && result.ok) ok += 1;
           else {
             failed += 1;
@@ -1483,7 +1891,11 @@ class ExchangeWalletIndexer {
 
       this.state.lastScanAt = Date.now();
       this.state.scanCycles += 1;
-      this.save();
+      this.markStateDirty();
+      this.persistStateIfNeeded();
+      if (this.walletStore && typeof this.walletStore.flush === "function") {
+        this.walletStore.flush(false);
+      }
 
       const now = Date.now();
       const rate429Count = Number(errorReasons.get("rate_limit_429") || 0);
@@ -1531,7 +1943,7 @@ class ExchangeWalletIndexer {
           ? `${summary.topErrorReasons[0].reason}:${summary.topErrorReasons[0].count}`
           : "none";
       this.logger.info(
-        `[wallet-indexer] scan summary scanned=${batch.length} backfill=${backfillBatchSize} live=${liveBatchSize} ok=${ok} failed=${failed} known=${this.state.knownWallets.length} indexed=${summary.indexed} partial=${summary.partial} pending=${summary.pending} failed_total=${summary.failed} live_tracking=${summary.liveTracking} backlog=${summary.backlog} queue=${this.runtime.priorityScanQueue.length} live_queue=${this.runtime.liveScanQueue.length} avg_pending_wait_ms=${summary.averagePendingWaitMs} avg_queue_wait_ms=${summary.averageQueueWaitMs} backlog_mode=${this.runtime.backlogMode ? "on" : "off"} backlog_reason=${this.runtime.backlogReason || "none"} scan_concurrency=${this.runtime.scanConcurrencyCurrent} scan_pages=${this.fullHistoryPerWallet ? "full_history" : this.runtime.scanPagesCurrent} client_active=${clientPool.active}/${clientPool.total} client_cooling=${clientPool.cooling} client_inflight=${clientPool.inFlight} top_error=${topReason}`
+        `[wallet-indexer] scan summary scanned=${batch.length} backfill=${backfillBatchSize} live=${liveBatchSize} ok=${ok} failed=${failed} known=${this.state.knownWallets.length} indexed=${summary.indexed} partial=${summary.partial} pending=${summary.pending} failed_total=${summary.failed} live_tracking=${summary.liveTracking} backlog=${summary.backlog} queue=${this.runtime.priorityScanQueue.length} live_queue=${this.runtime.liveScanQueue.length} live_stale=${summary.liveStaleWallets} live_avg_age_ms=${summary.liveAverageAgeMs} live_max_age_ms=${summary.liveMaxAgeMs} avg_pending_wait_ms=${summary.averagePendingWaitMs} avg_queue_wait_ms=${summary.averageQueueWaitMs} backlog_mode=${this.runtime.backlogMode ? "on" : "off"} backlog_reason=${this.runtime.backlogReason || "none"} scan_concurrency=${this.runtime.scanConcurrencyCurrent} scan_pages=${this.fullHistoryPerWallet ? `full_history_chunk:${this.fullHistoryPagesPerScan}` : this.runtime.scanPagesCurrent} client_active=${clientPool.active}/${clientPool.total} client_cooling=${clientPool.cooling} client_inflight=${clientPool.inFlight} top_error=${topReason}`
       );
 
       return {
@@ -1587,7 +1999,12 @@ class ExchangeWalletIndexer {
       clearInterval(this.runtime.scanTimer);
       this.runtime.scanTimer = null;
     }
-    this.save();
+    if (this.walletStore && typeof this.walletStore.stop === "function") {
+      this.walletStore.stop();
+    } else if (this.walletStore && typeof this.walletStore.flush === "function") {
+      this.walletStore.flush(true);
+    }
+    this.persistStateIfNeeded(true);
   }
 
   getStatus() {
@@ -1640,9 +2057,17 @@ class ExchangeWalletIndexer {
       scanIntervalMs: this.scanIntervalMs,
       discoveryIntervalMs: this.discoveryIntervalMs,
       maxWalletsPerScan: this.maxWalletsPerScan,
-      liveWalletsPerScan: this.liveWalletsPerScan,
+      liveWalletsPerScan: this.liveWalletsPerScanConfigured,
+      liveWalletsPerScanMin: this.liveWalletsPerScanMin,
+      liveWalletsPerScanMax: this.liveWalletsPerScanMax,
+      liveWalletsPerScanAdaptiveMax: Math.max(
+        this.liveWalletsPerScanMax,
+        this.walletScanConcurrency * 4
+      ),
+      liveRefreshTargetMs: this.liveRefreshTargetMs,
       liveMaxPagesPerWallet: this.liveMaxPagesPerWallet,
       maxPagesPerWallet: this.fullHistoryPerWallet ? null : this.maxPagesPerWallet,
+      fullHistoryPagesPerScan: this.fullHistoryPerWallet ? this.fullHistoryPagesPerScan : null,
       fullHistoryPerWallet: this.fullHistoryPerWallet,
       tradesPageLimit: this.tradesPageLimit,
       fundingPageLimit: this.fundingPageLimit,
@@ -1656,6 +2081,10 @@ class ExchangeWalletIndexer {
       liveGroupSize: normalizeWallets(this.state.liveWallets || []).length,
       averagePendingWaitMs: diagnostics.averagePendingWaitMs,
       averageQueueWaitMs: diagnostics.averageQueueWaitMs,
+      liveAverageAgeMs: diagnostics.liveAverageAgeMs,
+      liveMaxAgeMs: diagnostics.liveMaxAgeMs,
+      liveStaleWallets: diagnostics.liveStaleWallets,
+      liveRefreshSnapshot: this.runtime.liveRefreshSnapshot || null,
       topErrorReasons: diagnostics.topErrorReasons,
       backlogMode: {
         active: backlogEval.active,
@@ -1672,6 +2101,7 @@ class ExchangeWalletIndexer {
         concurrencyMax: this.walletScanConcurrency,
         pagesCurrent: this.fullHistoryPerWallet ? null : this.runtime.scanPagesCurrent,
         pagesMax: this.fullHistoryPerWallet ? null : this.maxPagesPerWallet,
+        fullHistoryPagesPerScan: this.fullHistoryPerWallet ? this.fullHistoryPagesPerScan : null,
         mode: this.fullHistoryPerWallet ? "full_history" : "capped",
       },
       restClients: {
@@ -1717,6 +2147,10 @@ class ExchangeWalletIndexer {
     let backfilling = 0;
     let fullyIndexed = 0;
     let liveTracking = 0;
+    let liveAgeSum = 0;
+    let liveAgeCount = 0;
+    let liveAgeMax = 0;
+    let liveStaleWallets = 0;
 
     const reasonCounts = new Map();
     rows.forEach((row) => {
@@ -1734,7 +2168,27 @@ class ExchangeWalletIndexer {
       if (lifecycle === WALLET_LIFECYCLE.DISCOVERED || lifecycle === WALLET_LIFECYCLE.PENDING_BACKFILL) pendingBackfill += 1;
       else if (lifecycle === WALLET_LIFECYCLE.BACKFILLING) backfilling += 1;
       else if (lifecycle === WALLET_LIFECYCLE.FULLY_INDEXED) fullyIndexed += 1;
-      else if (lifecycle === WALLET_LIFECYCLE.LIVE_TRACKING) liveTracking += 1;
+      else if (lifecycle === WALLET_LIFECYCLE.LIVE_TRACKING) {
+        liveTracking += 1;
+        const anchor = Number(
+          (row &&
+            (row.liveLastScanAt ||
+              row.lastSuccessAt ||
+              row.liveTrackingSince ||
+              row.backfillCompletedAt ||
+              row.discoveredAt)) ||
+            0
+        );
+        if (anchor > 0) {
+          const age = Math.max(0, now - anchor);
+          liveAgeSum += age;
+          liveAgeCount += 1;
+          if (age > liveAgeMax) liveAgeMax = age;
+          if (age >= this.liveRefreshTargetMs) liveStaleWallets += 1;
+        } else {
+          liveStaleWallets += 1;
+        }
+      }
 
       const scansSucceeded = Number(row && row.scansSucceeded ? row.scansSucceeded : 0);
       const scansFailed = Number(row && row.scansFailed ? row.scansFailed : 0);
@@ -1797,6 +2251,9 @@ class ExchangeWalletIndexer {
         queueWaitValues.length > 0
           ? Math.round(queueWaitValues.reduce((sum, v) => sum + v, 0) / queueWaitValues.length)
           : 0,
+      liveAverageAgeMs: liveAgeCount > 0 ? Math.round(liveAgeSum / liveAgeCount) : 0,
+      liveMaxAgeMs: liveAgeMax,
+      liveStaleWallets,
       topErrorReasons,
       attemptedWallets: attempted,
       successfulScans: succeeded,
@@ -1835,10 +2292,12 @@ class ExchangeWalletIndexer {
     return out;
   }
 
-  pickRestClientEntry() {
+  pickRestClientEntry(options = {}) {
     if (!this.clientPoolState.length) return null;
     if (this.clientPoolState.length === 1) return this.clientPoolState[0];
 
+    const excludeIds =
+      options && options.excludeIds instanceof Set ? options.excludeIds : null;
     const now = Date.now();
     let best = null;
     let bestScore = Number.POSITIVE_INFINITY;
@@ -1847,15 +2306,23 @@ class ExchangeWalletIndexer {
     for (let i = 0; i < this.clientPoolState.length; i += 1) {
       const idx = (start + i) % this.clientPoolState.length;
       const row = this.clientPoolState[idx];
+      if (excludeIds && excludeIds.has(row.id)) continue;
       const coolingMs = Math.max(0, Number(row.cooldownUntil || 0) - now);
       if (coolingMs > 0) continue;
       const failureRatio = row.requests > 0 ? row.failures / row.requests : 0;
       const latencyPenalty = row.latencyMsAvg > 0 ? row.latencyMsAvg / 750 : 0;
+      const hardFailurePenalty =
+        row.requests >= 20 && row.successes <= 1
+          ? 500
+          : row.requests >= 40 && failureRatio >= 0.75
+          ? 250
+          : 0;
       const score =
         Number(row.inFlight || 0) * 6 +
         Number(row.consecutiveFailures || 0) * 4 +
         Number(row.consecutive429 || 0) * 8 +
         failureRatio * 12 +
+        hardFailurePenalty +
         latencyPenalty +
         Math.random() * 0.5;
       if (score < bestScore) {
@@ -1871,11 +2338,16 @@ class ExchangeWalletIndexer {
       return best;
     }
 
-    let earliest = this.clientPoolState[0];
-    for (let i = 1; i < this.clientPoolState.length; i += 1) {
-      if (Number(this.clientPoolState[i].cooldownUntil || 0) < Number(earliest.cooldownUntil || 0)) {
-        earliest = this.clientPoolState[i];
+    let earliest = null;
+    for (let i = 0; i < this.clientPoolState.length; i += 1) {
+      const row = this.clientPoolState[i];
+      if (excludeIds && excludeIds.has(row.id)) continue;
+      if (!earliest || Number(row.cooldownUntil || 0) < Number(earliest.cooldownUntil || 0)) {
+        earliest = row;
       }
+    }
+    if (!earliest) {
+      earliest = this.clientPoolState[0];
     }
     this.runtime.clientPickCursor =
       (this.clientPoolState.findIndex((row) => row.id === earliest.id) + 1) %
@@ -1938,6 +2410,13 @@ class ExchangeWalletIndexer {
         this.clientTimeoutCooldownMaxMs
       );
     }
+    if (reason === "proxy_error") {
+      return clamp(
+        this.clientProxyErrorCooldownBaseMs * 2 ** Math.min(7, failCount - 1),
+        this.clientProxyErrorCooldownBaseMs,
+        this.clientProxyErrorCooldownMaxMs
+      );
+    }
     return this.clientDefaultCooldownMs;
   }
 
@@ -1961,11 +2440,28 @@ class ExchangeWalletIndexer {
     if (reason === "timeout") {
       clientEntry.timeoutFailures = Math.max(0, Number(clientEntry.timeoutFailures || 0)) + 1;
     }
-    if (reason === "network_error" || reason === "connection_reset") {
+    if (
+      reason === "network_error" ||
+      reason === "connection_reset" ||
+      reason === "proxy_error"
+    ) {
       clientEntry.networkFailures = Math.max(0, Number(clientEntry.networkFailures || 0)) + 1;
     }
     const cooldownMs = this.computeClientCooldownMs(reason, clientEntry);
-    clientEntry.cooldownUntil = Math.max(Number(clientEntry.cooldownUntil || 0), now + cooldownMs);
+    let nextCooldownUntil = Math.max(Number(clientEntry.cooldownUntil || 0), now + cooldownMs);
+    const totalRequests = Math.max(0, Number(clientEntry.requests || 0));
+    const totalSuccesses = Math.max(0, Number(clientEntry.successes || 0));
+    const totalFailures = Math.max(0, Number(clientEntry.failures || 0));
+    if (totalRequests >= 20 && totalSuccesses <= 1) {
+      nextCooldownUntil = Math.max(nextCooldownUntil, now + 10 * 60 * 1000);
+    } else if (
+      totalRequests >= 60 &&
+      totalFailures >= totalSuccesses * 3 &&
+      reason !== "rate_limit_429"
+    ) {
+      nextCooldownUntil = Math.max(nextCooldownUntil, now + 3 * 60 * 1000);
+    }
+    clientEntry.cooldownUntil = nextCooldownUntil;
   }
 
   observeClientRequestEnd(clientEntry) {

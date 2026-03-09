@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>PacificaFlow | Exchange Intelligence</title>
-    <link rel="stylesheet" href="/styles.css?v=20260309frozen-split-3" />
+    <link rel="stylesheet" href="/styles.css?v=20260309-layout-restore-4" />
   </head>
   <body>
     <div class="bg-scene" aria-hidden="true">
@@ -22,7 +22,7 @@
     <div class="app-layout">
       <aside class="sidebar">
         <a class="brand sidebar-brand" href="/">
-          <img src="/assets/logo.svg" alt="PacificaFlow logo" />
+          <img src="/assets/flow2.png" alt="PacificaFlow logo" onerror="this.onerror=null;this.src='/assets/logo.svg';" />
           <span class="brand-stack">
             <strong class="brand-title">PacificaFlow</strong>
             <span class="brand-sub">Exchange Intelligence Console</span>
@@ -48,6 +48,12 @@
       <main class="shell">
         <div class="shell-container">
           <section id="exchange-view" class="view active">
+            <div class="markets-ticker card" id="marketsTicker" hidden>
+              <div class="markets-ticker-viewport" aria-live="polite" aria-label="Pacifica markets ticker">
+                <div class="markets-ticker-track" id="marketsTickerTrack"></div>
+              </div>
+            </div>
+
             <section class="kpi-stage">
               <div class="kpi-stage-head">
                 <div class="kpi-stage-copy">
@@ -69,13 +75,49 @@
               <section class="kpi-grid" id="exchange-kpis"></section>
             </section>
 
+            <section class="chart-stage">
+              <div class="chart-stage-head">
+                <h2 id="chartTitle">Trading Volume</h2>
+                <div class="chart-toggle-group" aria-label="Trading volume chart controls">
+                  <button class="chart-toggle-btn" id="seriesDaily" type="button" aria-label="Daily">
+                    D
+                  </button>
+                  <button class="chart-toggle-btn" id="seriesWeekly" type="button" aria-label="Weekly">
+                    W
+                  </button>
+                  <button class="chart-toggle-btn active" id="seriesMonthly" type="button" aria-label="Monthly">
+                    M
+                  </button>
+                  <button class="chart-toggle-btn" id="chartCumulative" type="button" aria-label="Cumulative line">
+                    C
+                  </button>
+                </div>
+              </div>
+              <div class="chart-wrap card">
+                <div id="volumeChart" class="volume-chart large" aria-label="Trading volume chart"></div>
+                <div id="chartDateBand" class="chart-date-band" aria-label="Chart timeline">
+                  <div class="chart-date-gutter"></div>
+                  <div class="chart-date-track"></div>
+                </div>
+                <div id="chartNavigator" class="chart-navigator" aria-label="Time range navigator">
+                  <div id="navigatorBars" class="navigator-bars"></div>
+                  <div id="navigatorMaskLeft" class="navigator-mask left"></div>
+                  <div id="navigatorMaskRight" class="navigator-mask right"></div>
+                  <div id="navigatorWindow" class="navigator-window">
+                    <span class="navigator-handle left" data-handle="left"></span>
+                    <span class="navigator-handle right" data-handle="right"></span>
+                  </div>
+                </div>
+              </div>
+            </section>
+
             <section class="rank-stage">
               <div class="panel-header">
                 <h2>VOLUME RANK</h2>
                 <span class="live-badge">LIVE</span>
               </div>
-              <div class="table-wrap">
-                <table>
+              <div class="table-wrap volume-table-wrap">
+                <table class="volume-rank-table">
                   <thead>
                     <tr>
                       <th>Rank</th>
@@ -137,7 +179,7 @@
                 <span id="wallet-total-label" class="muted-pill">0 wallets</span>
               </div>
               <div class="table-wrap">
-                <table>
+                <table class="wallet-table">
                   <thead>
                     <tr>
                       <th>#</th>
@@ -187,6 +229,6 @@
       </main>
     </div>
 
-    <script src="/app.js"></script>
+    <script src="/app.js?v=20260309-volume-chart-2"></script>
   </body>
 </html>

@@ -267,9 +267,35 @@ const INDEXER_LIVE_WALLETS_PER_SCAN = Math.max(
   0,
   Math.min(256, Number(process.env.PACIFICA_INDEXER_LIVE_WALLETS_PER_SCAN || 10))
 );
+const INDEXER_LIVE_WALLETS_PER_SCAN_MIN = Math.max(
+  1,
+  Math.min(
+    512,
+    Number(
+      process.env.PACIFICA_INDEXER_LIVE_WALLETS_PER_SCAN_MIN ||
+        Math.max(4, Math.ceil(INDEXER_WALLET_SCAN_CONCURRENCY * 0.1))
+    )
+  )
+);
+const INDEXER_LIVE_WALLETS_PER_SCAN_MAX = Math.max(
+  INDEXER_LIVE_WALLETS_PER_SCAN_MIN,
+  Math.min(1024, Number(process.env.PACIFICA_INDEXER_LIVE_WALLETS_PER_SCAN_MAX || 256))
+);
+const INDEXER_LIVE_REFRESH_TARGET_MS = Math.max(
+  5000,
+  Number(process.env.PACIFICA_INDEXER_LIVE_REFRESH_TARGET_MS || 90000)
+);
 const INDEXER_LIVE_MAX_PAGES_PER_WALLET = Math.max(
   1,
   Math.min(50, Number(process.env.PACIFICA_INDEXER_LIVE_MAX_PAGES_PER_WALLET || 1))
+);
+const INDEXER_FULL_HISTORY_PAGES_PER_SCAN = Math.max(
+  1,
+  Number(process.env.PACIFICA_INDEXER_FULL_HISTORY_PAGES_PER_SCAN || 12)
+);
+const INDEXER_STATE_SAVE_MIN_INTERVAL_MS = Math.max(
+  500,
+  Number(process.env.PACIFICA_INDEXER_STATE_SAVE_MIN_INTERVAL_MS || 15000)
 );
 const INDEXER_CACHE_ENTRIES_PER_ENDPOINT = Math.max(
   20,
@@ -1721,7 +1747,12 @@ async function main() {
         fundingPageLimit: INDEXER_FUNDING_PAGE_LIMIT,
         walletScanConcurrency: effectiveWalletScanConcurrency,
         liveWalletsPerScan: INDEXER_LIVE_WALLETS_PER_SCAN,
+        liveWalletsPerScanMin: INDEXER_LIVE_WALLETS_PER_SCAN_MIN,
+        liveWalletsPerScanMax: INDEXER_LIVE_WALLETS_PER_SCAN_MAX,
+        liveRefreshTargetMs: INDEXER_LIVE_REFRESH_TARGET_MS,
         liveMaxPagesPerWallet: INDEXER_LIVE_MAX_PAGES_PER_WALLET,
+        fullHistoryPagesPerScan: INDEXER_FULL_HISTORY_PAGES_PER_SCAN,
+        stateSaveMinIntervalMs: INDEXER_STATE_SAVE_MIN_INTERVAL_MS,
         cacheEntriesPerEndpoint: INDEXER_CACHE_ENTRIES_PER_ENDPOINT,
         backlogModeEnabled: INDEXER_BACKLOG_MODE_ENABLED,
         backlogWalletThreshold: INDEXER_BACKLOG_WALLETS_THRESHOLD,
@@ -1767,7 +1798,8 @@ async function main() {
         buildWalletRecordFromState({
           wallet,
           state: pipeline.getState(),
-        })
+        }),
+        { force: true }
       );
       if (walletIndexer && typeof walletIndexer.addWallets === "function") {
         walletIndexer.addWallets([wallet], "tracked_account");
@@ -1888,16 +1920,16 @@ async function main() {
       );
       console.log(`[pacifica-flow] indexer_batch_size=${effectiveIndexerBatchSize}`);
       console.log(
-        `[pacifica-flow] indexer_live_mode wallets_per_scan=${INDEXER_LIVE_WALLETS_PER_SCAN} live_max_pages_per_wallet=${INDEXER_LIVE_MAX_PAGES_PER_WALLET}`
+        `[pacifica-flow] indexer_live_mode wallets_per_scan=${INDEXER_LIVE_WALLETS_PER_SCAN} wallets_per_scan_min=${INDEXER_LIVE_WALLETS_PER_SCAN_MIN} wallets_per_scan_max=${INDEXER_LIVE_WALLETS_PER_SCAN_MAX} live_refresh_target_ms=${INDEXER_LIVE_REFRESH_TARGET_MS} live_max_pages_per_wallet=${INDEXER_LIVE_MAX_PAGES_PER_WALLET}`
       );
       console.log(
-        `[pacifica-flow] indexer_history_mode=${INDEXER_FULL_HISTORY_PER_WALLET ? "full_history" : "capped"} max_pages_per_wallet=${INDEXER_MAX_PAGES_PER_WALLET}`
+        `[pacifica-flow] indexer_history_mode=${INDEXER_FULL_HISTORY_PER_WALLET ? "full_history" : "capped"} max_pages_per_wallet=${INDEXER_MAX_PAGES_PER_WALLET} full_history_pages_per_scan=${INDEXER_FULL_HISTORY_PAGES_PER_SCAN}`
       );
       console.log(
         `[pacifica-flow] indexer_backlog_mode=${INDEXER_BACKLOG_MODE_ENABLED ? "enabled" : "disabled"} backlog_wallets_threshold=${INDEXER_BACKLOG_WALLETS_THRESHOLD} backlog_avg_wait_ms_threshold=${INDEXER_BACKLOG_AVG_WAIT_MS_THRESHOLD} backlog_discover_every_cycles=${INDEXER_BACKLOG_DISCOVER_EVERY_CYCLES} backlog_refill_batch=${INDEXER_BACKLOG_REFILL_BATCH}`
       );
       console.log(
-        `[pacifica-flow] indexer_cache_entries_per_endpoint=${INDEXER_CACHE_ENTRIES_PER_ENDPOINT} scan_ramp_quiet_ms=${INDEXER_SCAN_RAMP_QUIET_MS} scan_ramp_step_ms=${INDEXER_SCAN_RAMP_STEP_MS}`
+        `[pacifica-flow] indexer_cache_entries_per_endpoint=${INDEXER_CACHE_ENTRIES_PER_ENDPOINT} state_save_min_interval_ms=${INDEXER_STATE_SAVE_MIN_INTERVAL_MS} scan_ramp_quiet_ms=${INDEXER_SCAN_RAMP_QUIET_MS} scan_ramp_step_ms=${INDEXER_SCAN_RAMP_STEP_MS}`
       );
       console.log(
         `[pacifica-flow] indexer_client_cooldown 429_base_ms=${INDEXER_CLIENT_429_COOLDOWN_BASE_MS} 429_max_ms=${INDEXER_CLIENT_429_COOLDOWN_MAX_MS} err_base_ms=${INDEXER_CLIENT_SERVER_ERROR_COOLDOWN_BASE_MS} err_max_ms=${INDEXER_CLIENT_SERVER_ERROR_COOLDOWN_MAX_MS} timeout_base_ms=${INDEXER_CLIENT_TIMEOUT_COOLDOWN_BASE_MS} timeout_max_ms=${INDEXER_CLIENT_TIMEOUT_COOLDOWN_MAX_MS} default_ms=${INDEXER_CLIENT_DEFAULT_COOLDOWN_MS}`

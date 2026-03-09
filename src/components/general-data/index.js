@@ -14,6 +14,229 @@ function createGeneralDataComponent({
   getGlobalKpiState,
   refreshGlobalKpi,
 }) {
+  const DAY_MS = 24 * 60 * 60 * 1000;
+
+  function parseUtcDateMs(dateLike) {
+    const iso = String(dateLike || "").trim().slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(iso)) return null;
+    const ms = Date.parse(`${iso}T00:00:00.000Z`);
+    return Number.isFinite(ms) ? ms : null;
+  }
+
+  function getDayStartUtc(timestamp) {
+    const value = Number(timestamp);
+    if (!Number.isFinite(value)) return null;
+    const date = new Date(value);
+    return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate());
+  }
+
+  function getWeekStartUtc(timestamp) {
+    const dayStart = getDayStartUtc(timestamp);
+    if (!Number.isFinite(dayStart)) return null;
+    const date = new Date(dayStart);
+    const day = (date.getUTCDay() + 6) % 7; // Monday as week start
+    return dayStart - day * DAY_MS;
+  }
+
+  function getMonthKeyUtc(timestamp) {
+    const value = Number(timestamp);
+    if (!Number.isFinite(value)) return null;
+    const date = new Date(value);
+    const year = date.getUTCFullYear();
+    const month = String(date.getUTCMonth() + 1).padStart(2, "0");
+    return `${year}-${month}`;
+  }
+
+  function getYearKeyUtc(timestamp) {
+    const value = Number(timestamp);
+    if (!Number.isFinite(value)) return null;
+    return String(new Date(value).getUTCFullYear());
+  }
+
+  function monthKeyToTimestamp(key) {
+    const parts = String(key || "").split("-");
+    if (parts.length !== 2) return null;
+    const year = Number(parts[0]);
+    const month = Number(parts[1]);
+    if (!Number.isFinite(year) || !Number.isFinite(month)) return null;
+    return Date.UTC(year, month - 1, 1);
+  }
+
+  function aggregateFromDayMap(dayMap, keyFn) {
+    const result = new Map();
+    if (!dayMap || typeof dayMap.forEach !== "function") return result;
+    dayMap.forEach((value, key) => {
+      const dayKey = Number(key);
+      const numValue = Number(value);
+      if (!Number.isFinite(dayKey) || !Number.isFinite(numValue)) return;
+      const bucketKey = keyFn(dayKey);
+      if (bucketKey === null || bucketKey === undefined) return;
+      result.set(bucketKey, (result.get(bucketKey) || 0) + numValue);
+    });
+    return result;
+  }
+
+  function normalizeDailyMap(dayMap, { startDay = null, coverageDay = null } = {}) {
+    const normalized = new Map();
+    if (!dayMap || typeof dayMap.forEach !== "function") return normalized;
+    let maxDay = null;
+    dayMap.forEach((value, key) => {
+      const dayKey = getDayStartUtc(Number(key));
+      const numValue = Number(value);
+      if (!Number.isFinite(dayKey) || !Number.isFinite(numValue)) return;
+      if (Number.isFinite(startDay) && dayKey < startDay) return;
+      if (Number.isFinite(coverageDay) && dayKey > coverageDay) return;
+      normalized.set(dayKey, (normalized.get(dayKey) || 0) + numValue);
+      if (!Number.isFinite(maxDay) || dayKey > maxDay) maxDay = dayKey;
+    });
+
+    const fromDay = Number.isFinite(startDay) ? startDay : null;
+    const toDay = Number.isFinite(coverageDay)
+      ? coverageDay
+      : Number.isFinite(maxDay)
+      ? maxDay
+      : null;
+    if (Number.isFinite(fromDay) && Number.isFinite(toDay) && toDay >= fromDay) {
+      for (let day = fromDay; day <= toDay; day += DAY_MS) {
+        if (!normalized.has(day)) normalized.set(day, 0);
+      }
+    }
+
+    return new Map([...normalized.entries()].sort((a, b) => a[0] - b[0]));
+  }
+
+  function buildMetricSeries(
+    { dailyMap, weeklyMap, monthlyMap, yearlyMap },
+    coverageTimestamp,
+    monthNames
+  ) {
+    const hasCoverage = Number.isFinite(coverageTimestamp);
+    const daily = [...(dailyMap || new Map()).entries()]
+      .map(([key, value]) => ({ key: Number(key), value: Number(value) }))
+      .filter((item) => Number.isFinite(item.key) && Number.isFinite(item.value))
+      .filter((item) => (!hasCoverage ? true : item.key <= coverageTimestamp))
+      .sort((a, b) => a.key - b.key);
+
+    const weekly = [...(weeklyMap || new Map()).entries()]
+      .map(([key, value]) => ({ key: Number(key), value: Number(value) }))
+      .filter((item) => Number.isFinite(item.key) && Number.isFinite(item.value))
+      .filter((item) => (!hasCoverage ? true : item.key <= coverageTimestamp))
+      .sort((a, b) => a.key - b.key);
+
+    const monthly = [...(monthlyMap || new Map()).entries()]
+      .map(([key, value]) => ({
+        key: String(key),
+        value: Number(value),
+        timestamp: monthKeyToTimestamp(key),
+      }))
+      .filter((item) => Number.isFinite(item.timestamp) && Number.isFinite(item.value))
+      .filter((item) => (!hasCoverage ? true : item.timestamp <= coverageTimestamp))
+      .sort((a, b) => (a.key === b.key ? 0 : a.key < b.key ? -1 : 1));
+
+    const yearly = [...(yearlyMap || new Map()).entries()]
+      .map(([key, value]) => ({ key: String(key), value: Number(value) }))
+      .filter((item) => Number.isFinite(Number(item.key)) && Number.isFinite(item.value))
+      .sort((a, b) => Number(a.key) - Number(b.key));
+
+    return {
+      daily: daily.map((item) => {
+        const date = new Date(item.key);
+        return {
+          label: `${monthNames[date.getUTCMonth()]} ${String(date.getUTCDate()).padStart(2, "0")}`,
+          value: item.value,
+          timestamp: item.key,
+        };
+      }),
+      weekly: weekly.map((item) => {
+        const date = new Date(item.key);
+        return {
+          label: `${monthNames[date.getUTCMonth()]} ${String(date.getUTCDate()).padStart(2, "0")}`,
+          value: item.value,
+          timestamp: item.key,
+        };
+      }),
+      monthly: monthly.map((item) => ({
+        label: `${monthNames[Number(item.key.split("-")[1]) - 1]} ${item.key.split("-")[0]}`,
+        value: item.value,
+        timestamp: item.timestamp,
+      })),
+      yearly: yearly.map((item) => ({
+        label: item.key,
+        value: item.value,
+        timestamp: Date.UTC(Number(item.key), 0, 1),
+      })),
+    };
+  }
+
+  function buildVolumeSeriesFromGlobalKpi(globalState) {
+    const history =
+      globalState && globalState.history && typeof globalState.history === "object"
+        ? globalState.history
+        : {};
+    const meta =
+      globalState && globalState.volumeMeta && typeof globalState.volumeMeta === "object"
+        ? globalState.volumeMeta
+        : {};
+    const dailyByDate =
+      history && history.dailyByDate && typeof history.dailyByDate === "object"
+        ? history.dailyByDate
+        : {};
+
+    const startDay =
+      parseUtcDateMs(meta.trackingStartDate) ||
+      parseUtcDateMs(history.startDate) ||
+      parseUtcDateMs("2025-09-09");
+    const coverageDay =
+      parseUtcDateMs(meta.lastProcessedDate) ||
+      parseUtcDateMs(history.lastProcessedDate) ||
+      getDayStartUtc(Date.now());
+
+    const rawDailyMap = new Map();
+    Object.entries(dailyByDate).forEach(([day, row]) => {
+      const dayMs = parseUtcDateMs(day);
+      if (!Number.isFinite(dayMs)) return;
+      const value =
+        row && typeof row === "object" && row.dailyVolume !== undefined ? row.dailyVolume : row;
+      const volume = Number(value);
+      if (!Number.isFinite(volume)) return;
+      rawDailyMap.set(dayMs, volume);
+    });
+
+    const volumeDaily = normalizeDailyMap(rawDailyMap, {
+      startDay,
+      coverageDay,
+    });
+    const volumeWeekly = aggregateFromDayMap(volumeDaily, getWeekStartUtc);
+    const volumeMonthly = aggregateFromDayMap(volumeDaily, getMonthKeyUtc);
+    const volumeYearly = aggregateFromDayMap(volumeDaily, getYearKeyUtc);
+
+    const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    const volumeSeries = buildMetricSeries(
+      {
+        dailyMap: volumeDaily,
+        weeklyMap: volumeWeekly,
+        monthlyMap: volumeMonthly,
+        yearlyMap: volumeYearly,
+      },
+      coverageDay,
+      monthNames
+    );
+
+    return {
+      volume: volumeSeries,
+      fees: { daily: [], weekly: [], monthly: [], yearly: [] },
+      revenue: { daily: [], weekly: [], monthly: [], yearly: [] },
+      meta: {
+        source: "global_kpi_history",
+        startDate: Number.isFinite(startDay) ? new Date(startDay).toISOString().slice(0, 10) : null,
+        trackedThrough: Number.isFinite(coverageDay)
+          ? new Date(coverageDay).toISOString().slice(0, 10)
+          : null,
+        points: volumeSeries.daily.length,
+      },
+    };
+  }
+
   function computeDefiLlamaV2FromPrices(rows = []) {
     return (Array.isArray(rows) ? rows : []).reduce(
       (acc, item) => {
@@ -130,6 +353,12 @@ function createGeneralDataComponent({
         generatedAt: Date.now(),
         data: typeof getGlobalKpiState === "function" ? getGlobalKpiState() : null,
       });
+      return true;
+    }
+
+    if (url.pathname === "/api/volume-series" && req.method === "GET") {
+      const shared = typeof getGlobalKpiState === "function" ? getGlobalKpiState() : null;
+      sendJson(res, 200, buildVolumeSeriesFromGlobalKpi(shared || {}));
       return true;
     }
 
