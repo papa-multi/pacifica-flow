@@ -66,6 +66,9 @@ function toErrorMessage(error) {
 function normalizeTradeHistoryRow(row = {}) {
   return {
     historyId: row.history_id || null,
+    orderId: row.order_id || null,
+    lastOrderId: row.last_order_id || null,
+    li: row.last_order_id || null,
     symbol: String(row.symbol || "").toUpperCase(),
     amount: row.amount !== undefined ? row.amount : "0",
     price: row.price !== undefined ? row.price : "0",

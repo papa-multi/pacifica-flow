@@ -55,6 +55,13 @@ const ONCHAIN_ENABLED =
   String(process.env.PACIFICA_ONCHAIN_ENABLED || "true").toLowerCase() !== "false";
 const ONCHAIN_RUNNER_ENABLED =
   String(process.env.PACIFICA_ONCHAIN_RUNNER_ENABLED || "false").toLowerCase() !== "false";
+const PIPELINE_PERSIST_EVERY_MS = Math.max(
+  1000,
+  Number(
+    process.env.PACIFICA_PIPELINE_PERSIST_EVERY_MS ||
+      (!INDEXER_ENABLED && !ONCHAIN_ENABLED ? 15000 : 5000)
+  )
+);
 const API_CONFIG_KEY = String(process.env.PACIFICA_API_CONFIG_KEY || "").trim();
 const RATE_LIMIT_WINDOW_MS = Math.max(
   1000,
@@ -911,10 +918,19 @@ function serveStatic(req, res, url) {
   }
   if (!stat.isFile()) return false;
 
+  const ext = path.extname(filePath).toLowerCase();
+  const isHtml = ext === ".html";
+  const isRootRuntimeAsset =
+    safePath === "app.js" || safePath === "styles.css" || safePath === "theme.css";
+  const isLiveTradeRuntimeAsset =
+    safePath.startsWith("live-trade/") && (ext === ".js" || ext === ".css");
+  const cacheControl = isHtml || isRootRuntimeAsset || isLiveTradeRuntimeAsset
+    ? "no-store"
+    : "public, max-age=604800, stale-while-revalidate=86400";
   res.writeHead(200, {
     "Content-Type": contentTypeFor(filePath),
     "Content-Length": stat.size,
-    "Cache-Control": "no-store",
+    "Cache-Control": cacheControl,
   });
 
   if (req.method === "HEAD") {
@@ -1686,6 +1702,7 @@ async function main() {
     apiBase: API_BASE,
     wsUrl: WS_URL,
     serviceName: SERVICE,
+    persistEveryMs: PIPELINE_PERSIST_EVERY_MS,
   });
 
   await pipeline.load();
@@ -1865,6 +1882,11 @@ async function main() {
     walletStore,
     walletIndexer,
     restClient,
+    liveRestClientEntries: indexerRestClientEntries.map((entry) => ({
+      id: entry.id,
+      client: entry.client,
+      proxyUrl: entry.proxyUrl || null,
+    })),
     globalKpiProvider: getGlobalKpiState,
   });
 
@@ -1932,6 +1954,7 @@ async function main() {
     console.log(
       `[pacifica-flow] pacifica_api_rpm_used=${pacificaRateState.used1m} pacifica_api_rpm_cap=${pacificaRateState.rpmCap}`
     );
+    console.log(`[pacifica-flow] pipeline_persist_every_ms=${PIPELINE_PERSIST_EVERY_MS}`);
     if (API_CONFIG_KEY) {
       console.log("[pacifica-flow] pf_api_key=present");
     }

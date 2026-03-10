@@ -260,6 +260,10 @@ function createRestClient({
         }
       },
       {
+        maxAttempts: Math.max(
+          1,
+          Number(options.retryMaxAttempts || options.maxAttempts || NaN) || undefined
+        ),
         onRetry: ({ attempt, delay, error }) => {
           logger.warn(
             `[rest-client:${clientId}] retry attempt=${attempt} delay_ms=${delay} reason=${error.message}`

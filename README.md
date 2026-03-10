@@ -35,7 +35,17 @@ This mode runs on `http://localhost:3400` by default with conservative RPC pacin
 Split workers (recommended for scale):
 
 ```bash
-# Terminal 1: wallet history indexer (no onchain discovery)
+# Dedicated live-position shards for wallet-first full coverage
+export PACIFICA_LIVE_WALLET_FIRST_SHARD_COUNT=4
+export PACIFICA_LIVE_WALLET_FIRST_PERSIST_DIR=/root/pacifica-flow/data/live_positions
+
+# Terminal A-D: one shard each
+PORT=0 PACIFICA_LIVE_WALLET_FIRST_SHARD_INDEX=0 npm run worker:live-positions
+PORT=0 PACIFICA_LIVE_WALLET_FIRST_SHARD_INDEX=1 npm run worker:live-positions
+PORT=0 PACIFICA_LIVE_WALLET_FIRST_SHARD_INDEX=2 npm run worker:live-positions
+PORT=0 PACIFICA_LIVE_WALLET_FIRST_SHARD_INDEX=3 npm run worker:live-positions
+
+# Terminal 1: wallet history indexer (single owner of mutable index state)
 PORT=3201 npm run worker:wallet-indexer
 
 # Terminal 2: on-chain discovery worker
@@ -48,6 +58,15 @@ PORT=3203 npm run worker:global-kpi
 PORT=3200 npm run service:ui-api
 ```
 
+If the UI/API node should only serve merged shard output and not run its own wallet-first scanner:
+
+```bash
+export PACIFICA_LIVE_WALLET_FIRST_ENABLED=false
+export PACIFICA_LIVE_WALLET_FIRST_EXTERNAL_SHARDS=true
+export PACIFICA_LIVE_WALLET_FIRST_PERSIST_DIR=/root/pacifica-flow/data/live_positions
+PORT=3200 npm run service:ui-api
+```
+
 ## Systemd Services (Auto-start + Auto-restart)
 
 This repo includes systemd units so you do not need multiple terminals.
@@ -56,6 +75,7 @@ Service layout:
 
 - `pacifica-wallet-indexer.service`
   - full wallet history indexing (no artificial trade/history cap)
+  - single owner of indexer state/checkpoints for stability
   - multi-egress enabled (uses all healthy proxies/IPs in `working_proxies.txt`)
 - `pacifica-onchain-discovery.service`
   - Solana on-chain discovery + deposit-wallet registry updates
@@ -64,6 +84,12 @@ Service layout:
   - writes snapshot to `data/pipeline/global_kpi.json`
 - `pacifica-ui-api.service`
   - UI + internal API (reads checkpoints/snapshots, does not run indexer loops)
+- `pacifica-live-positions.target`
+  - grouped live-position shard pool controller
+- `pacifica-live-positions@.service`
+  - wallet-first live position shard worker
+  - writes shard snapshots to `data/live_positions/`
+  - run multiple shard instances in parallel for faster full-wallet coverage
 
 Port binding note:
 
@@ -71,21 +97,29 @@ Port binding note:
 
 Grouped target:
 
-- `pacifica-flow.target` (starts/stops all 4 services together)
+- `pacifica-flow.target`
+  - starts/stops the full stack: indexer, on-chain discovery, KPI worker, UI/API, and live-position shard pool
+- `pacifica-live-positions.target`
+  - starts/stops only the live-position shard pool
 
 Install and start:
 
 ```bash
 cd /root/pacifica-flow
-sudo bash ./scripts/systemd/install.sh --now
+sudo bash ./scripts/systemd/install.sh --live-position-shards 4 --now
 ```
 
 Or via npm wrappers:
 
 ```bash
 cd /root/pacifica-flow
-sudo npm run systemd:install:now
+sudo npm run systemd:install:now -- --live-position-shards 4
 ```
+
+`--live-position-shards N` does two things:
+
+- rebuilds `data/live_positions/proxy_shards/proxies_<shard>.txt`
+- enables `pacifica-live-positions@0..N-1.service` so they start with `pacifica-flow.target`
 
 Control:
 
@@ -96,12 +130,18 @@ sudo systemctl stop pacifica-flow.target
 sudo systemctl restart pacifica-flow.target
 sudo systemctl status pacifica-flow.target
 
+# live-position shard pool only
+sudo systemctl start pacifica-live-positions.target
+sudo systemctl stop pacifica-live-positions.target
+sudo systemctl status pacifica-live-positions.target
+
 # individual services
 sudo systemctl status pacifica-wallet-indexer.service
 sudo systemctl restart pacifica-wallet-indexer.service
 sudo systemctl status pacifica-onchain-discovery.service
 sudo systemctl status pacifica-global-kpi.service
 sudo systemctl status pacifica-ui-api.service
+sudo systemctl status 'pacifica-live-positions@*.service'
 ```
 
 Logs:
@@ -115,6 +155,7 @@ sudo journalctl -f -u pacifica-wallet-indexer.service
 sudo journalctl -f -u pacifica-onchain-discovery.service
 sudo journalctl -f -u pacifica-global-kpi.service
 sudo journalctl -f -u pacifica-ui-api.service
+sudo journalctl -f -u 'pacifica-live-positions@*.service'
 ```
 
 Quick status helper:
@@ -215,6 +256,15 @@ sudo bash ./scripts/systemd/uninstall.sh
 - `PACIFICA_INDEXER_SCAN_RAMP_QUIET_MS` (default: `180000`)
 - `PACIFICA_INDEXER_SCAN_RAMP_STEP_MS` (default: `60000`)
 - `PACIFICA_INDEXER_DISCOVERY_ONLY` (default: `false`)
+- `PACIFICA_LIVE_WALLET_FIRST_SHARD_COUNT` (default: `1`)
+- `PACIFICA_LIVE_WALLET_FIRST_SHARD_INDEX` (default: `0`)
+- `PACIFICA_LIVE_WALLET_FIRST_PERSIST_DIR` (default: `./data/live_positions`)
+- `PACIFICA_LIVE_WALLET_FIRST_PERSIST_EVERY_MS` (default: `5000`)
+- `PACIFICA_LIVE_WALLET_FIRST_MAX_PERSISTED_EVENTS` (default: `500`)
+- `PACIFICA_LIVE_WALLET_FIRST_EXTERNAL_SHARDS` (default: `false`; merge shard snapshots instead of using only the local in-process scanner)
+- `PACIFICA_LIVE_WALLET_FIRST_MAX_INFLIGHT_PER_CLIENT` (default: `2`)
+- `PACIFICA_LIVE_WALLET_FIRST_MAX_INFLIGHT_DIRECT` (default: `1`)
+- `PACIFICA_LIVE_WALLET_FIRST_DIRECT_FALLBACK_ON_LAST_ATTEMPT` (default: `false`)
 
 ## Phase 1 Scope in This Scaffold
 

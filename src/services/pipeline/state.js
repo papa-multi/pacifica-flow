@@ -326,6 +326,7 @@ function normalizeBboItem(item = {}) {
 function normalizePublicTradeItem(item = {}) {
   return {
     historyId: item.h || null,
+    orderId: item.i || null,
     symbol: String(item.s || "").toUpperCase(),
     amount: String(item.a || "0"),
     price: String(item.p || "0"),

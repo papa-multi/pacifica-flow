@@ -38,12 +38,13 @@ body.lt-body {
   overflow: hidden;
 }
 
+.lt-bg-image,
 .lt-bg-video {
   width: 100%;
   height: 100%;
   object-fit: cover;
-  filter: blur(4px) saturate(0.72) brightness(0.42);
-  opacity: 0.38;
+  filter: saturate(0.92) brightness(0.58);
+  opacity: 0.5;
 }
 
 .lt-bg-overlay {
@@ -86,7 +87,7 @@ body.lt-body {
   padding: 14px;
   display: grid;
   gap: 12px;
-  backdrop-filter: blur(6px);
+  backdrop-filter: none;
 }
 
 .lt-brand {

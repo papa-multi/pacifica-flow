@@ -17,17 +17,21 @@ function createRetryPolicy(options = {}) {
   const jitterRatio = Math.max(0, Number(options.jitterRatio || 0));
 
   async function execute(fn, context = {}) {
+    const effectiveMaxAttempts = Math.max(
+      1,
+      Number(context && context.maxAttempts ? context.maxAttempts : maxAttempts)
+    );
     let attempt = 0;
     let lastError = null;
 
-    while (attempt < maxAttempts) {
+    while (attempt < effectiveMaxAttempts) {
       attempt += 1;
       try {
         return await fn(attempt);
       } catch (error) {
         lastError = error;
         const retryable = error instanceof RetryableError || Boolean(error.retryable);
-        if (!retryable || attempt >= maxAttempts) throw error;
+        if (!retryable || attempt >= effectiveMaxAttempts) throw error;
 
         const customDelay = Number(
           error instanceof RetryableError && error.details

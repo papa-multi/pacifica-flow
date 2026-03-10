@@ -4,14 +4,12 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>PacificaFlow | Exchange Intelligence</title>
-    <link rel="stylesheet" href="/styles.css?v=20260309-terminal-phase5-token-analytics" />
+    <link rel="stylesheet" href="/styles.css?v=20260310-perf1" />
   </head>
   <body>
+    <div id="pf-runtime-error" class="lt-runtime-error" hidden></div>
     <div class="bg-scene" aria-hidden="true">
       <div class="bg-layer bg-main"></div>
-      <video class="bg-video" autoplay muted loop playsinline preload="metadata">
-        <source src="/assets/pacifica.mp4" type="video/mp4" />
-      </video>
       <div class="bg-layer bg-grade"></div>
       <div class="bg-layer bg-water-motion"></div>
       <div class="bg-layer bg-rock-impact"></div>
@@ -22,7 +20,7 @@
     <div class="app-layout">
       <aside class="sidebar">
         <a class="brand sidebar-brand" href="/">
-          <img src="/assets/flow2.png" alt="PacificaFlow logo" onerror="this.onerror=null;this.src='/assets/logo.svg';" />
+          <img src="/assets/logo.svg" alt="PacificaFlow logo" />
           <span class="brand-stack">
             <strong class="brand-title">PacificaFlow</strong>
             <span class="brand-sub">Exchange Intelligence Console</span>
@@ -33,10 +31,6 @@
           <button class="tab-btn active" data-view="exchange">
             <span class="nav-icon" aria-hidden="true">◉</span>
             <span class="nav-label">Exchange Overview</span>
-          </button>
-          <button class="tab-btn" data-view="token">
-            <span class="nav-icon" aria-hidden="true">◍</span>
-            <span class="nav-label">Token Analytics</span>
           </button>
           <button class="tab-btn" data-view="wallets">
             <span class="nav-icon" aria-hidden="true">◎</span>
@@ -92,17 +86,57 @@
                   <p class="kpi-stage-kicker">Protocol Monitor</p>
                   <h2>Exchange Metrics</h2>
                 </div>
+                <div class="kpi-stage-controls">
+                  <span class="kpi-stage-period-label">Period</span>
+                  <div class="timeframe-group kpi-timeframe-group" id="kpi-timeframe-group">
+                    <button class="chip-btn" data-timeframe="all">All</button>
+                    <button class="chip-btn" data-timeframe="24h">24h</button>
+                    <button class="chip-btn" data-timeframe="30d">30d</button>
+                  </div>
+                </div>
                 <div class="kpi-stage-meta" id="kpi-context-label">Source: -</div>
               </div>
               <section class="kpi-grid" id="exchange-kpis"></section>
             </section>
 
-            <section class="token-preview-stage panel">
-              <div class="panel-header">
-                <h2>TOKEN ANALYTICS GATEWAY</h2>
-                <span class="muted-pill">Per-symbol deep views</span>
+            <section class="chart-stage">
+              <div class="chart-stage-head">
+                <div class="chart-stage-title">
+                  <h2 id="chartTitle">Trading Volume</h2>
+                  <p class="chart-stage-note" id="analytics-note">Exchange-wide volume history.</p>
+                  <div class="analytics-legend" id="analytics-legend" hidden></div>
+                </div>
+                <div class="chart-toggle-group" aria-label="Trading volume chart controls">
+                  <button class="chart-toggle-btn" id="seriesDaily" type="button" aria-label="Daily">
+                    D
+                  </button>
+                  <button class="chart-toggle-btn" id="seriesWeekly" type="button" aria-label="Weekly">
+                    W
+                  </button>
+                  <button class="chart-toggle-btn active" id="seriesMonthly" type="button" aria-label="Monthly">
+                    M
+                  </button>
+                  <button class="chart-toggle-btn" id="chartCumulative" type="button" aria-label="Line chart">
+                    L
+                  </button>
+                </div>
               </div>
-              <div class="token-preview-grid" id="exchange-token-preview-body"></div>
+              <div class="chart-wrap card">
+                <div id="volumeChart" class="volume-chart large" aria-label="Trading volume chart"></div>
+                <div id="chartDateBand" class="chart-date-band" aria-label="Chart timeline">
+                  <div class="chart-date-gutter"></div>
+                  <div class="chart-date-track"></div>
+                </div>
+                <div id="chartNavigator" class="chart-navigator" aria-label="Time range navigator">
+                  <div id="navigatorBars" class="navigator-bars"></div>
+                  <div id="navigatorMaskLeft" class="navigator-mask left"></div>
+                  <div id="navigatorMaskRight" class="navigator-mask right"></div>
+                  <div id="navigatorWindow" class="navigator-window">
+                    <span class="navigator-handle left" data-handle="left"></span>
+                    <span class="navigator-handle right" data-handle="right"></span>
+                  </div>
+                </div>
+              </div>
             </section>
 
             <section class="rank-stage tidal-rank-stage">
@@ -140,38 +174,10 @@
             <section class="ops-stage">
               <article class="ops-card panel">
                 <div class="ops-card-head">
-                  <h3>Wallet Freshness</h3>
-                  <span class="muted-pill" id="ops-freshness-state">-</span>
-                </div>
-                <div class="ops-kpi-grid">
-                  <div class="ops-kpi">
-                    <span>Refreshed 5m</span>
-                    <strong id="ops-refreshed-5m">-</strong>
-                  </div>
-                  <div class="ops-kpi">
-                    <span>Refreshed 15m</span>
-                    <strong id="ops-refreshed-15m">-</strong>
-                  </div>
-                  <div class="ops-kpi">
-                    <span>Live group</span>
-                    <strong id="ops-live-group">-</strong>
-                  </div>
-                  <div class="ops-kpi">
-                    <span>Stale wallets</span>
-                    <strong id="ops-stale-wallets">-</strong>
-                  </div>
-                </div>
-              </article>
-              <article class="ops-card panel">
-                <div class="ops-card-head">
                   <h3>Ingestion Health</h3>
                   <span class="muted-pill" id="ops-health-state">-</span>
                 </div>
                 <div class="ops-kpi-grid">
-                  <div class="ops-kpi">
-                    <span>Refresh success</span>
-                    <strong id="ops-refresh-success">-</strong>
-                  </div>
                   <div class="ops-kpi">
                     <span>Queue pressure</span>
                     <strong id="ops-queue-pressure">-</strong>
@@ -212,94 +218,6 @@
                 <ul class="anomaly-list" id="ops-anomaly-list">
                   <li>No anomalies</li>
                 </ul>
-              </article>
-            </section>
-          </section>
-
-          <section id="token-view" class="view">
-            <header class="view-header token-view-header">
-              <div class="view-header-copy">
-                <p class="view-kicker">Per-Symbol Intelligence</p>
-                <h1 id="token-page-title">Token Analytics</h1>
-                <p class="view-subtitle" id="token-page-subtitle">Select a symbol from Volume Rank to load dedicated analytics.</p>
-              </div>
-              <div class="token-header-meta">
-                <span class="muted-pill" id="token-symbol-pill">Symbol -</span>
-                <span class="muted-pill" id="token-exchange-pill">Pacifica</span>
-                <span class="muted-pill" id="token-timeframe-pill">TF all</span>
-                <span class="muted-pill" id="token-live-pill">LIVE</span>
-                <span class="muted-pill" id="token-freshness-pill">updated -</span>
-                <span class="muted-pill" id="token-source-pill">source -</span>
-              </div>
-            </header>
-
-            <section class="token-kpi-stage">
-              <section class="kpi-grid token-kpi-grid" id="token-kpis"></section>
-            </section>
-
-            <section class="chart-stage">
-              <div class="chart-stage-head">
-                <div class="chart-stage-title">
-                  <h2 id="chartTitle">Token Analytics</h2>
-                  <div class="analytics-tabs" id="analytics-tabs">
-                    <button class="analytics-tab active" data-analytics-tab="oi">OI</button>
-                    <button class="analytics-tab" data-analytics-tab="funding">Funding</button>
-                    <button class="analytics-tab" data-analytics-tab="liquidations">Liquidations</button>
-                    <button class="analytics-tab" data-analytics-tab="netflow">Netflow</button>
-                    <button class="analytics-tab" data-analytics-tab="wallet_activity">Wallet Activity</button>
-                    <button class="analytics-tab" data-analytics-tab="volume">Volume</button>
-                  </div>
-                  <p class="chart-stage-note" id="analytics-note">Token-scoped analytics terminal.</p>
-                  <div class="analytics-legend" id="analytics-legend" hidden></div>
-                </div>
-                <div class="chart-toggle-group" aria-label="Token analytics chart controls">
-                  <button class="chart-toggle-btn" id="seriesDaily" type="button" aria-label="Daily">
-                    D
-                  </button>
-                  <button class="chart-toggle-btn" id="seriesWeekly" type="button" aria-label="Weekly">
-                    W
-                  </button>
-                  <button class="chart-toggle-btn active" id="seriesMonthly" type="button" aria-label="Monthly">
-                    M
-                  </button>
-                  <button class="chart-toggle-btn" id="chartCumulative" type="button" aria-label="Cumulative line">
-                    C
-                  </button>
-                </div>
-              </div>
-              <div class="chart-wrap card">
-                <div id="volumeChart" class="volume-chart large" aria-label="Token analytics chart"></div>
-                <div id="chartDateBand" class="chart-date-band" aria-label="Chart timeline">
-                  <div class="chart-date-gutter"></div>
-                  <div class="chart-date-track"></div>
-                </div>
-                <div id="chartNavigator" class="chart-navigator" aria-label="Time range navigator">
-                  <div id="navigatorBars" class="navigator-bars"></div>
-                  <div id="navigatorMaskLeft" class="navigator-mask left"></div>
-                  <div id="navigatorMaskRight" class="navigator-mask right"></div>
-                  <div id="navigatorWindow" class="navigator-window">
-                    <span class="navigator-handle left" data-handle="left"></span>
-                    <span class="navigator-handle right" data-handle="right"></span>
-                  </div>
-                </div>
-              </div>
-            </section>
-
-            <section class="token-insight-stage">
-              <article class="panel token-insight-panel">
-                <div class="panel-header token-insight-head">
-                  <h2 id="token-insight-title">Metric Insights</h2>
-                  <span class="muted-pill" id="token-insight-meta">-</span>
-                </div>
-                <div class="token-insight-grid">
-                  <div class="token-highlight-strip" id="token-highlight-chips"></div>
-                  <div class="table-wrap token-breakdown-wrap">
-                    <table class="token-breakdown-table">
-                      <thead id="token-breakdown-head"></thead>
-                      <tbody id="token-breakdown-body"></tbody>
-                    </table>
-                  </div>
-                </div>
               </article>
             </section>
           </section>
@@ -396,6 +314,61 @@
       </main>
     </div>
 
-    <script src="/app.js?v=20260309-terminal-phase5-token-analytics"></script>
+    <script>
+      (function () {
+        var errorNodeId = "pf-runtime-error";
+        function showRuntimeError(message) {
+          var node = document.getElementById(errorNodeId);
+          if (!node) return;
+          node.hidden = false;
+          node.textContent = "Dashboard runtime error: " + message;
+          window.__PF_APP_RUNTIME_ERROR_SHOWN = true;
+        }
+        window.__PF_APP_SHOW_RUNTIME_ERROR = showRuntimeError;
+        window.__PF_APP_SCRIPT_NETWORK_OK = false;
+        window.__PF_APP_SCRIPT_EXECUTED = false;
+        window.__PF_APP_BOOTED = false;
+        window.__PF_APP_BOOT_STEP = "html_init";
+        window.__PF_APP_RUNTIME_ERROR_SHOWN = false;
+        window.addEventListener("error", function (event) {
+          var msg = (event && event.message) || "unknown";
+          showRuntimeError(msg);
+        });
+        window.addEventListener("unhandledrejection", function (event) {
+          var reason = event && event.reason;
+          var msg = reason && reason.message ? reason.message : String(reason || "unknown");
+          showRuntimeError(msg);
+        });
+        setTimeout(function () {
+          if (!window.__PF_APP_SCRIPT_NETWORK_OK) {
+            showRuntimeError(
+              "frontend bundle failed to load. Hard refresh (Ctrl+F5). If this persists, the public host is serving a stale or blocked JS asset."
+            );
+            return;
+          }
+          if (!window.__PF_APP_SCRIPT_EXECUTED) {
+            showRuntimeError(
+              "frontend bundle loaded but did not execute. Browser may be using stale or incompatible JS."
+            );
+            return;
+          }
+          if (window.__PF_APP_RUNTIME_ERROR_SHOWN) {
+            return;
+          }
+          if (!window.__PF_APP_BOOTED) {
+            showRuntimeError(
+              "frontend did not finish boot. step=" +
+                (window.__PF_APP_BOOT_STEP || "unknown") +
+                ". Browser JS, API mapping, or stream startup is blocked."
+            );
+          }
+        }, 15000);
+      })();
+    </script>
+    <script
+      src="/app.js?v=20260310-rootfix8"
+      onload="window.__PF_APP_SCRIPT_NETWORK_OK = true;"
+      onerror="window.__PF_APP_SCRIPT_NETWORK_OK = false; if (window.__PF_APP_SHOW_RUNTIME_ERROR) { window.__PF_APP_SHOW_RUNTIME_ERROR('frontend bundle failed to load from /app.js'); }"
+    ></script>
   </body>
 </html>

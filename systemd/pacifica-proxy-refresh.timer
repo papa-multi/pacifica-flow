@@ -1,0 +1,12 @@
+[Unit]
+Description=Run Pacifica Proxy Refresh on a schedule
+
+[Timer]
+OnActiveSec=20min
+OnUnitActiveSec=2h
+RandomizedDelaySec=10min
+Persistent=true
+Unit=pacifica-proxy-refresh.service
+
+[Install]
+WantedBy=timers.target

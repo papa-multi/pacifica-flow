@@ -2,6 +2,7 @@
 Description=PacificaFlow UI/API Service
 After=network-online.target
 Wants=network-online.target
+PartOf=pacifica-flow.target
 
 [Service]
 Type=simple

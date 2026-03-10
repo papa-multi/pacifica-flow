@@ -50,6 +50,25 @@ body {
   overflow-x: hidden;
 }
 
+.lt-runtime-error {
+  position: fixed;
+  top: 18px;
+  left: 50%;
+  z-index: 1200;
+  width: min(920px, calc(100vw - 32px));
+  transform: translateX(-50%);
+  padding: 12px 16px;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 140, 140, 0.28);
+  background: rgba(52, 15, 21, 0.94);
+  color: #ffdfe3;
+  box-shadow: 0 18px 42px rgba(8, 2, 4, 0.38);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
 a {
   color: inherit;
   text-decoration: none;
@@ -67,6 +86,7 @@ select {
   inset: 0;
 }
 
+.bg-image,
 .bg-video {
   position: fixed;
   inset: 0;
@@ -75,9 +95,9 @@ select {
   object-fit: cover;
   pointer-events: none;
   z-index: 0;
-  opacity: 0.58;
-  filter: saturate(1) contrast(1.02) brightness(1.02);
-  transform: translate3d(calc(var(--pf-mx) * -8px), calc(var(--pf-my) * -5px), 0) scale(1.02);
+  opacity: 0.5;
+  filter: none;
+  transform: none;
 }
 
 .bg-scene {
@@ -99,17 +119,21 @@ select {
 }
 
 .bg-layer {
-  will-change: transform, opacity, background-position;
+  will-change: auto;
 }
 
 .bg-main {
-  background-image: url("/assets/bg4.webp");
+  background-image: url("/assets/bg_new.png");
+  background-image: image-set(
+    url("/assets/bg_new_2048.webp") type("image/webp") 1x,
+    url("/assets/bg_new.png") type("image/png") 1x
+  );
   background-size: cover;
   background-position: center;
-  opacity: 0.25;
-  filter: saturate(0.96) contrast(1.05) brightness(1.03);
-  transform: translate3d(calc(var(--pf-mx) * -8px), calc(var(--pf-my) * -6px), 0);
-  animation: bgDrift 86s linear infinite alternate;
+  opacity: 0.34;
+  filter: none;
+  transform: none;
+  animation: none;
 }
 
 .bg-grade {
@@ -122,6 +146,7 @@ select {
 }
 
 .bg-water-motion {
+  display: none;
   inset: auto 0 -8% 0;
   height: 68vh;
   background:
@@ -139,6 +164,7 @@ select {
 }
 
 .bg-rock-impact {
+  display: none;
   inset: 0;
   background:
     radial-gradient(95px 34px at 14% 76%, rgba(213, 241, 255, 0.24), rgba(213, 241, 255, 0) 72%),
@@ -174,6 +200,7 @@ select {
 }
 
 .bg-symbol-impact {
+  display: none;
   inset: 0;
   background:
     radial-gradient(120px 44px at 74% 50%, rgba(192, 232, 255, 0.2), rgba(192, 232, 255, 0) 74%);
@@ -207,6 +234,7 @@ select {
 }
 
 .bg-splash {
+  display: none;
   inset: 0;
   background-image:
     radial-gradient(4px 4px at 14% 74%, rgba(201, 236, 253, 0.2), transparent 66%),
@@ -221,6 +249,7 @@ select {
 }
 
 .bg-atmosphere {
+  display: none;
   background:
     radial-gradient(640px 260px at 68% 58%, rgba(181, 220, 245, 0.14), transparent 74%),
     radial-gradient(560px 220px at 26% 66%, rgba(170, 214, 241, 0.12), transparent 74%);
@@ -1891,6 +1920,7 @@ select {
   display: flex;
   align-items: flex-end;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 12px;
   margin-bottom: 12px;
 }
@@ -1913,6 +1943,24 @@ select {
   font-family: var(--pf-font-display);
   font-size: 15px;
   letter-spacing: 0.02em;
+}
+
+.kpi-stage-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.kpi-stage-period-label {
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(171, 198, 216, 0.9);
+}
+
+.kpi-timeframe-group .chip-btn {
+  min-width: 54px;
+  justify-content: center;
 }
 
 .kpi-stage-meta {
@@ -2011,7 +2059,7 @@ select {
 
 .kpi-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(180px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 11px;
 }
 
@@ -2047,6 +2095,58 @@ select {
   font-size: clamp(20px, 1.8vw, 24px);
   letter-spacing: -0.01em;
   line-height: 1.16;
+}
+
+.kpi-delta-row {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(230, 241, 249, 0.12);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.kpi-delta-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: 999px;
+  padding: 5px 9px;
+  border: 1px solid rgba(221, 239, 250, 0.2);
+  background: rgba(8, 17, 28, 0.22);
+  font-size: 10px;
+  line-height: 1;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-family: var(--pf-font-mono);
+  color: rgba(226, 240, 249, 0.92);
+}
+
+.kpi-delta-badge.up {
+  color: #aef4d7;
+  border-color: rgba(174, 244, 215, 0.28);
+  background: rgba(18, 55, 44, 0.22);
+}
+
+.kpi-delta-badge.down {
+  color: #ffbdca;
+  border-color: rgba(255, 189, 202, 0.28);
+  background: rgba(65, 25, 37, 0.2);
+}
+
+.kpi-delta-badge.flat {
+  color: rgba(220, 236, 246, 0.9);
+}
+
+.kpi-delta-label {
+  flex: 1;
+  min-width: 0;
+  text-align: right;
+  font-size: 10px;
+  line-height: 1.35;
+  letter-spacing: 0.04em;
+  color: rgba(171, 198, 216, 0.9);
 }
 
 .kpi-meta {

@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SOURCE_FILE="$ROOT_DIR/data/live_positions/positions_proxies.txt"
+OUT_DIR="$ROOT_DIR/data/live_positions/proxy_shards"
+SHARDS="${1:-4}"
+
+if [[ ! -f "$SOURCE_FILE" ]]; then
+  echo "Missing live positions proxy file: $SOURCE_FILE" >&2
+  exit 1
+fi
+
+if ! [[ "$SHARDS" =~ ^[0-9]+$ ]] || [[ "$SHARDS" -lt 1 ]]; then
+  echo "Shard count must be a positive integer." >&2
+  exit 1
+fi
+
+mkdir -p "$OUT_DIR"
+find "$OUT_DIR" -maxdepth 1 -type f -name 'proxies_*.txt' -delete
+
+for ((i=0; i<SHARDS; i+=1)); do
+  : > "$OUT_DIR/proxies_${i}.txt"
+done
+
+idx=0
+while IFS= read -r proxy; do
+  [[ -n "$proxy" ]] || continue
+  shard=$((idx % SHARDS))
+  printf '%s\n' "$proxy" >> "$OUT_DIR/proxies_${shard}.txt"
+  idx=$((idx + 1))
+done < "$SOURCE_FILE"
+
+for ((i=0; i<SHARDS; i+=1)); do
+  count="$(wc -l < "$OUT_DIR/proxies_${i}.txt" | tr -d ' ')"
+  echo "shard=$i proxies=$count file=$OUT_DIR/proxies_${i}.txt"
+done

@@ -1,0 +1,17 @@
+[Unit]
+Description=Pacifica Proxy Refresh and Apply
+After=network-online.target pacifica-ui-api.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/root/pacifica-proxy-lab
+Environment=PACIFICA_PROXY_LAB_CONCURRENCY=64
+Environment=PACIFICA_PROXY_LAB_TIMEOUT_MS=6000
+Environment=PACIFICA_PROXY_LAB_POSITIONS_ROUNDS=2
+Environment=PACIFICA_PROXY_LAB_PRICES_ROUNDS=0
+Environment=PACIFICA_PROXY_LAB_LEADERBOARD_ROUNDS=0
+Environment=PACIFICA_PROXY_LAB_USE_FILE=healthy
+Environment=PACIFICA_PROXY_LAB_MIN_NEW_PROXIES=1
+ExecStartPre=/usr/bin/bash -n /root/pacifica-proxy-lab/scripts/refresh_and_apply.sh
+ExecStart=/root/pacifica-proxy-lab/scripts/refresh_and_apply.sh

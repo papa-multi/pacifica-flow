@@ -4,6 +4,7 @@ Wants=pacifica-wallet-indexer.service
 Wants=pacifica-onchain-discovery.service
 Wants=pacifica-global-kpi.service
 Wants=pacifica-ui-api.service
+Wants=pacifica-live-positions.target
 After=network-online.target
 
 [Install]

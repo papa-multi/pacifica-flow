@@ -1,0 +1,18 @@
+[Unit]
+Description=PacificaFlow Live Positions Worker Shard %i
+After=network-online.target
+Wants=network-online.target
+PartOf=pacifica-live-positions.target pacifica-flow.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/pacifica-flow
+ExecStart=/root/pacifica-flow/scripts/systemd/run_live_positions_shard.sh %i __PACIFICA_LIVE_SHARDS__
+Restart=always
+RestartSec=3
+TimeoutStopSec=30
+
+[Install]
+WantedBy=pacifica-live-positions.target
+WantedBy=pacifica-flow.target

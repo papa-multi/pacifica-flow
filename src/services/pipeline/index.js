@@ -56,6 +56,23 @@ class PacificaPipelineService {
     this.state.load();
     this.metrics.load();
 
+    const skipReplay =
+      String(process.env.PACIFICA_PIPELINE_SKIP_REPLAY || "false").toLowerCase() === "true";
+    if (skipReplay) {
+      // Fast-start mode: trust persisted snapshots and avoid replaying large event logs.
+      this.metrics.refresh(this.state.getState());
+      this.persistMaybe(true);
+      return {
+        replayed: 0,
+        lastEventId:
+          this.events && this.events.index && Number.isFinite(Number(this.events.index.lastEventId))
+            ? Number(this.events.index.lastEventId)
+            : null,
+        skipped: true,
+        mode: "snapshot_only",
+      };
+    }
+
     const replay = await this.rebuildFromEventLog();
     this.flushAll();
 

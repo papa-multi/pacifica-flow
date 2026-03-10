@@ -4,14 +4,12 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>PacificaFlow Live Trade</title>
-    <link rel="stylesheet" href="/theme.css" />
-    <link rel="stylesheet" href="/live-trade/styles.css" />
+    <link rel="stylesheet" href="/theme.css?v=20260310-perf1" />
+    <link rel="stylesheet" href="/live-trade/styles.css?v=20260310-perf1" />
   </head>
   <body class="lt-body">
     <div class="lt-bg" aria-hidden="true">
-      <video class="lt-bg-video" autoplay muted loop playsinline>
-        <source src="/assets/pacifica.mp4" type="video/mp4" />
-      </video>
+      <img class="lt-bg-image" src="/assets/bg_new_2048.webp" alt="" onerror="this.onerror=null;this.src='/assets/bg_new.png';" />
       <div class="lt-bg-overlay"></div>
     </div>
 
@@ -20,7 +18,7 @@
       <header class="lt-command-header">
         <div class="lt-title-block">
           <div class="lt-brand">
-            <img src="/assets/flow2.png" alt="PacificaFlow logo" onerror="this.onerror=null;this.src='/assets/logo.svg';" />
+            <img src="/assets/logo.svg" alt="PacificaFlow logo" />
             <div>
               <h1>Live Trade Monitor</h1>
               <p>Real-time wallet, trade, and position intelligence</p>
@@ -43,6 +41,8 @@
           <span class="lt-pill" id="lt-freshness">Freshness: -</span>
           <span class="lt-pill" id="lt-stream-health">Stream: -</span>
           <span class="lt-pill" id="lt-conn">Connection: -</span>
+          <span class="lt-pill" id="lt-attribution">Attribution: -</span>
+          <span class="lt-pill" id="lt-attribution-growth">Attribution growth: -</span>
         </div>
       </header>
 
@@ -186,7 +186,10 @@
           node.hidden = false;
           node.textContent = "Live Trade runtime error: " + message;
         }
+        window.__PF_SHOW_LIVE_TRADE_RUNTIME_ERROR = showRuntimeError;
         window.__PF_LIVE_TRADE_BOOTED = false;
+        window.__PF_LIVE_TRADE_SCRIPT_NETWORK_OK = false;
+        window.__PF_LIVE_TRADE_SCRIPT_EXECUTED = false;
         window.addEventListener("error", function (event) {
           var msg = (event && event.message) || "unknown";
           showRuntimeError(msg);
@@ -197,14 +200,30 @@
           showRuntimeError(msg);
         });
         setTimeout(function () {
+          if (!window.__PF_LIVE_TRADE_SCRIPT_NETWORK_OK) {
+            showRuntimeError(
+              "frontend bundle failed to load. Hard refresh (Ctrl+F5). If this persists, the public host is serving a stale or blocked JS asset."
+            );
+            return;
+          }
+          if (!window.__PF_LIVE_TRADE_SCRIPT_EXECUTED) {
+            showRuntimeError(
+              "frontend bundle loaded but did not execute. Browser may be using stale or incompatible JS."
+            );
+            return;
+          }
           if (!window.__PF_LIVE_TRADE_BOOTED) {
             showRuntimeError(
               "frontend did not finish boot. Hard refresh (Ctrl+F5). If this persists, browser JS or stream is blocked."
             );
           }
-        }, 7000);
+        }, 15000);
       })();
     </script>
-    <script src="/live-trade/app.js?v=20260309-livefix6"></script>
+    <script
+      src="/live-trade/app.js?v=20260310-livefix7"
+      onload="window.__PF_LIVE_TRADE_SCRIPT_NETWORK_OK = true;"
+      onerror="window.__PF_LIVE_TRADE_SCRIPT_NETWORK_OK = false; if (window.__PF_SHOW_LIVE_TRADE_RUNTIME_ERROR) { window.__PF_SHOW_LIVE_TRADE_RUNTIME_ERROR('frontend bundle failed to load from /live-trade/app.js'); }"
+    ></script>
   </body>
 </html>
