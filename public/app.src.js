@@ -21,6 +21,8 @@ const state = {
   walletSearch: "",
   walletPage: 1,
   walletPageSize: 20,
+  walletSortKey: "volumeUsd",
+  walletSortDir: "desc",
   selectedWallet: null,
 };
 const tickerState = {
@@ -152,6 +154,18 @@ function fmtTime(ts) {
   const num = Number(ts);
   if (!Number.isFinite(num) || num <= 0) return "-";
   return new Date(num).toLocaleString();
+}
+
+function fmtTimeShort(ts) {
+  const num = Number(ts);
+  if (!Number.isFinite(num) || num <= 0) return "-";
+  return new Date(num).toLocaleString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }
 
 function fmtAgo(ts) {
@@ -1713,68 +1727,6 @@ async function postJson(url, payload = {}, options = {}) {
   return data;
 }
 
-function renderStatusBars() {
-  const ex = state.exchange || {};
-  const indexer = ex?.indexer || null;
-  const progress = getIndexerBreakdown(indexer);
-  const wsStatus = ex?.sync?.wsStatus || "unknown";
-  const generatedAt = Number(ex?.generatedAt || 0);
-  const liveGroup = Number(indexer?.liveGroupSize ?? progress.liveTracking ?? 0);
-  const staleWallets = Number(indexer?.liveStaleWallets ?? 0);
-  const staleRatio = liveGroup > 0 ? staleWallets / liveGroup : 0;
-  const successfulScans = Number(indexer?.successfulScans ?? 0);
-  const failedScans = Number(indexer?.failedScans ?? 0);
-  const scanAttempts = successfulScans + failedScans;
-  const refreshSuccessPct = scanAttempts > 0 ? (successfulScans / scanAttempts) * 100 : 0;
-  const avgAgeMs = Number(indexer?.liveAverageAgeMs ?? 0);
-  const queuePressure = Number(indexer?.priorityQueueSize ?? 0) + Number(indexer?.liveQueueSize ?? 0);
-  const topError = Array.isArray(indexer?.topErrorReasons) && indexer.topErrorReasons.length
-    ? indexer.topErrorReasons[0]
-    : null;
-  const activeEgress = Number(indexer?.restClients?.count ?? 0);
-  setText(
-    "ops-freshness-state",
-    staleRatio > 0.45 ? "degraded" : staleRatio > 0.2 ? "warming" : "healthy"
-  );
-
-  setText("ops-health-state", refreshSuccessPct >= 85 ? "stable" : refreshSuccessPct >= 70 ? "warning" : "critical");
-  setText("ops-queue-pressure", fmt(queuePressure, 0));
-  setText("ops-active-egress", fmt(activeEgress, 0));
-  setText("ops-top-error", topError ? `${topError.reason} (${fmt(topError.count, 0)})` : "none");
-
-  const liveQueue = Number(indexer?.liveQueueSize ?? 0);
-  const backfillQueue = Number(indexer?.priorityQueueSize ?? 0);
-  const liveQueueTarget = Math.max(liveGroup || 1, 1500);
-  const backfillQueueTarget = Math.max(Number(indexer?.backlogMode?.thresholdWallets ?? 2000), 2000);
-  const liveFill = clamp((liveQueue / liveQueueTarget) * 100, 0, 100);
-  const backfillFill = clamp((backfillQueue / backfillQueueTarget) * 100, 0, 100);
-
-  const liveQueueFillNode = el("ops-live-queue-fill");
-  if (liveQueueFillNode) liveQueueFillNode.style.width = `${liveFill}%`;
-  const backfillQueueFillNode = el("ops-backfill-queue-fill");
-  if (backfillQueueFillNode) backfillQueueFillNode.style.width = `${backfillFill}%`;
-  setText("ops-live-queue-label", `${fmt(liveQueue, 0)} / ${fmt(liveQueueTarget, 0)}`);
-  setText("ops-backfill-queue-label", `${fmt(backfillQueue, 0)} / ${fmt(backfillQueueTarget, 0)}`);
-  setText("ops-queue-mode", indexer?.backlogMode?.active ? "backlog mode" : "normal");
-
-  const anomalies = [];
-  if (staleRatio > 0.35) anomalies.push(`Stale ratio elevated (${fmt(staleRatio * 100, 1)}%).`);
-  if (refreshSuccessPct < 75) anomalies.push(`Refresh success low (${fmt(refreshSuccessPct, 1)}%).`);
-  if (backfillQueue > backfillQueueTarget * 0.6) anomalies.push(`Backfill queue pressure high (${fmt(backfillQueue, 0)}).`);
-  if (topError?.count > 0) anomalies.push(`Top error: ${topError.reason} (${fmt(topError.count, 0)}).`);
-
-  const anomalyList = el("ops-anomaly-list");
-  if (anomalyList) {
-    anomalyList.innerHTML = anomalies.length
-      ? anomalies
-          .slice(0, 5)
-          .map((item) => `<li><span class="anomaly-time">now</span><span class="anomaly-msg">${escapeHtml(item)}</span></li>`)
-          .join("")
-      : "<li><span class='anomaly-time'>now</span><span class='anomaly-msg'>No active anomalies.</span></li>";
-  }
-  setText("ops-anomaly-count", fmt(anomalies.length, 0));
-}
-
 function renderIndexerProgressPanel() {
   const ex = state.exchange || {};
   const indexer = ex.indexer || null;
@@ -2843,7 +2795,7 @@ function renderExchange() {
     },
     {
       key: "Total Fees",
-      value: `$${fmt(kpis.totalFeesUsd, 2)}`,
+      value: `$${fmt(kpis.totalFeesUsd, 0)}`,
       periodChanges: [
         getKpiPeriodChangeDisplay("24H", periodChanges?.["24h"]?.totalFeesUsd),
         getKpiPeriodChangeDisplay("30D", periodChanges?.["30d"]?.totalFeesUsd),
@@ -3009,12 +2961,7 @@ function renderExchange() {
   state.volumeRankPage = Math.max(1, Math.min(totalPages, Number(state.volumeRankPage || 1)));
   const pageStart = (state.volumeRankPage - 1) * pageSize;
   const pageRows = rankedRows.slice(pageStart, pageStart + pageSize);
-  const rankSourceLabel = String(payload?.source?.volumeRankSource || "n/a")
-    .replace(/^\/api\//, "")
-    .split(":")[0];
-  const rankWindowLabel = String(payload?.source?.volumeRankWindowUsed || state.timeframe || "24h").toUpperCase();
   setText("tidal-last-updated", `updated ${fmtAgo(payload.generatedAt)}`);
-  setText("tidal-source-tag", `source ${rankWindowLabel} · ${rankSourceLabel || "n/a"}`);
   document.querySelectorAll("#volume-sort-toggle .sort-mode-btn").forEach((btn) => {
     btn.classList.toggle("active", btn.dataset.sortMode === state.volumeSort);
   });
@@ -3086,29 +3033,33 @@ function renderWallets() {
 
   setText("wallet-total-label", `${payload.total || 0} wallets`);
   setText("wallet-page-label", `Page ${payload.page || 1} / ${payload.pages || 1}`);
+  syncWalletSortHeaders();
 
   const body = el("wallet-table-body");
   if (body) {
-    body.innerHTML = rows
-      .map((row) => {
-        const lifecycleStage = row?.lifecycle?.lifecycleStage || "unknown";
-        const stageLabel = String(lifecycleStage).replace(/_/g, " ");
-        return `<tr>
-          <td>${row.rank}</td>
-          <td class="wallet-cell" title="${row.wallet}">${row.wallet}</td>
-          <td>${fmt(row.trades, 0)}</td>
-          <td>$${fmtCompact(row.volumeUsd)}</td>
-          <td>${fmt(row.totalWins, 0)}</td>
-          <td>${fmt(row.totalLosses, 0)}</td>
-          <td class="${toNum(row.pnlUsd, 0) >= 0 ? "good" : "bad"}">${fmtSigned(row.pnlUsd, 2)}</td>
-          <td>${fmt(row.winRate, 2)}%</td>
-          <td>${fmtTime(row.firstTrade)}</td>
-          <td>${fmtTime(row.lastTrade)}</td>
-          <td><span class="muted-pill">${stageLabel}</span></td>
-          <td><button class="btn-ghost inspect-btn" data-wallet="${row.wallet}">Inspect</button></td>
-        </tr>`;
-      })
-      .join("");
+    body.innerHTML = rows.length
+      ? rows
+          .map((row) => {
+            const pnlUsd = toNum(row?.pnlUsd, NaN);
+            const firstTrade = row?.firstTrade || null;
+            const lastTrade = row?.lastTrade || row?.lastActivity || row?.updatedAt || null;
+            const fmtMoney = (value) =>
+              Number.isFinite(value) ? `${value > 0 ? "+" : value < 0 ? "-" : ""}$${fmt(Math.abs(value), 2)}` : "-";
+            return `<tr class="wallet-list-row" data-wallet="${row.wallet}">
+              <td class="wallet-cell" title="${row.wallet}">${row.wallet}</td>
+              <td>${fmt(row.trades || 0, 0)}</td>
+              <td>${Number.isFinite(toNum(row.volumeUsd, NaN)) ? `$${fmtCompact(row.volumeUsd)}` : "-"}</td>
+              <td>${fmt(row.totalWins || 0, 0)}</td>
+              <td>${fmt(row.totalLosses || 0, 0)}</td>
+              <td class="${pnlUsd >= 0 ? "good" : "bad"}">${fmtMoney(pnlUsd)}</td>
+              <td>${Number.isFinite(toNum(row.winRate, NaN)) ? `${fmt(row.winRate, 2)}%` : "-"}</td>
+              <td title="${escapeHtml(fmtTime(firstTrade))}">${escapeHtml(fmtTimeShort(firstTrade))}</td>
+              <td title="${escapeHtml(fmtTime(lastTrade))}">${escapeHtml(fmtTimeShort(lastTrade))}</td>
+              <td><button class="btn-ghost inspect-btn" data-wallet="${row.wallet}">Inspect</button></td>
+            </tr>`;
+          })
+          .join("")
+      : "<tr><td colspan='10' class='muted'>No wallets match the current filters.</td></tr>";
   }
 
   const prevBtn = el("wallet-prev-btn");
@@ -3117,33 +3068,75 @@ function renderWallets() {
   if (nextBtn) nextBtn.disabled = (payload.page || 1) >= (payload.pages || 1);
 }
 
+function syncWalletSortHeaders() {
+  document.querySelectorAll("[data-wallet-sort-key]").forEach((btn) => {
+    const key = String(btn.dataset.walletSortKey || "");
+    const isActive = key === state.walletSortKey;
+    const direction = isActive ? state.walletSortDir : "";
+    btn.classList.toggle("active", isActive);
+    btn.dataset.sortDir = direction;
+    btn.setAttribute("aria-pressed", isActive ? "true" : "false");
+    btn.setAttribute("aria-label", `${btn.dataset.sortLabel || key} sort ${direction || "off"}`);
+    const indicator = btn.querySelector("[data-wallet-sort-indicator]");
+    if (indicator) {
+      indicator.textContent = isActive ? (direction === "asc" ? "↑" : "↓") : "↑↓";
+    }
+  });
+}
+
 function renderWalletProfile() {
   const profile = state.walletProfile;
   const kpiWrap = el("wallet-profile-kpis");
   const symbolsBody = el("wallet-profile-symbols");
+  const positionsBody = el("wallet-profile-positions");
+  const closeBtn = el("wallet-profile-close");
+  const panel = el("wallet-profile-panel");
+  const subtitle = el("wallet-profile-subtitle");
+  const appLayout = document.querySelector(".app-layout");
+
+  if (closeBtn && !closeBtn.dataset.bound) {
+    closeBtn.dataset.bound = "true";
+    closeBtn.addEventListener("click", () => {
+      state.selectedWallet = null;
+      state.walletProfile = null;
+      renderWalletProfile();
+    });
+  }
 
   if (!profile || !profile.found || !profile.summary) {
     setText("wallet-profile-id", "Select a wallet");
-    if (kpiWrap) kpiWrap.innerHTML = "<div class='muted'>No wallet selected.</div>";
+    setText("wallet-profile-subtitle", "Wallet summary, live posture, and concentration.");
+    if (kpiWrap) {
+      kpiWrap.innerHTML = `<div class='muted'>${
+        profile && profile.error ? escapeHtml(profile.error) : "No wallet selected."
+      }</div>`;
+    }
     if (symbolsBody) symbolsBody.innerHTML = "";
+    if (positionsBody) positionsBody.innerHTML = "";
+    if (panel) panel.hidden = true;
+    if (appLayout) appLayout.classList.remove("wallet-drawer-open");
     return;
   }
 
+  if (panel) panel.hidden = false;
+  if (appLayout) appLayout.classList.add("wallet-drawer-open");
   setText("wallet-profile-id", profile.wallet);
+  setText(
+    "wallet-profile-subtitle",
+    `${String(profile.summary.freshness || "unknown")} • ${fmt(profile.summary.openPositions || 0, 0)} open positions`
+  );
 
   const s = profile.summary;
   if (kpiWrap) {
-    const lifecycleStage = profile?.lifecycle?.lifecycleStage || "unknown";
     kpiWrap.innerHTML = [
-      ["Rank", `#${s.rank || "-"}`],
-      ["Trades", fmt(s.trades, 0)],
-      ["Volume", `$${fmtCompact(s.volumeUsd)}`],
-      ["PnL", fmtSigned(s.pnlUsd, 2)],
-      ["Win Rate", `${fmt(s.winRate, 2)}%`],
-      ["First Trade", fmtTime(s.firstTrade)],
-      ["Last Trade", fmtTime(s.lastTrade)],
-      ["Fees", `$${fmtCompact(s.feesUsd)}`],
-      ["Stage", String(lifecycleStage).replace(/_/g, " ")],
+      ["24H Realized", fmtSigned(s.d24?.pnlUsd, 2)],
+      ["7D Realized", fmtSigned(s.d7?.pnlUsd, 2)],
+      ["30D Realized", fmtSigned(s.d30?.pnlUsd, 2)],
+      ["All-Time Realized", fmtSigned(s.all?.pnlUsd, 2)],
+      ["Wallet Unrealized", fmtSigned(s.unrealizedPnlUsd, 2)],
+      ["Open Positions", fmt(s.openPositions, 0)],
+      ["Exposure", `$${fmtCompact(s.exposureUsd)}`],
+      ["Last Activity", fmtTime(s.lastActivityAt)],
     ]
       .map(
         ([label, value]) => `<div class="profile-kpi"><div>${label}</div><strong>${value}</strong></div>`
@@ -3151,13 +3144,33 @@ function renderWalletProfile() {
       .join("");
   }
 
+  if (positionsBody) {
+    const rows = Array.isArray(profile.positions) ? profile.positions : [];
+    positionsBody.innerHTML = rows.length
+      ? rows
+          .map(
+            (row) => `<tr>
+          <td>${row.symbol}</td>
+          <td>${String(row.side || "-").toUpperCase()}</td>
+          <td>$${fmtCompact(row.positionUsd)}</td>
+          <td>${Number.isFinite(toNum(row.entry, NaN)) ? fmt(row.entry, 4) : "-"}</td>
+          <td>${Number.isFinite(toNum(row.mark, NaN)) ? fmt(row.mark, 4) : "-"}</td>
+          <td class="${toNum(row.unrealizedPnlUsd, 0) >= 0 ? "good" : "bad"}">${fmtSigned(row.unrealizedPnlUsd, 2)}</td>
+          <td>${fmtTime(row.updatedAt)}</td>
+        </tr>`
+          )
+          .join("")
+      : "<tr><td colspan='7' class='muted'>No open positions tracked.</td></tr>";
+  }
+
   if (symbolsBody) {
-    const rows = Array.isArray(profile.symbolBreakdown) ? profile.symbolBreakdown : [];
+    const rows = Array.isArray(s.concentration) ? s.concentration : [];
     symbolsBody.innerHTML = rows
       .map(
         (row) => `<tr>
           <td>${row.symbol}</td>
-          <td>$${row.volumeCompact}</td>
+          <td>$${fmtCompact(row.volumeUsd)}</td>
+          <td>${fmt(row.sharePct, 2)}%</td>
         </tr>`
       )
       .join("");
@@ -3168,6 +3181,11 @@ function applyView(nextView, options = {}) {
   const skipRoute = Boolean(options.skipRoute);
   const replaceRoute = Boolean(options.replaceRoute);
   state.view = nextView;
+  if (nextView !== "wallets" && state.selectedWallet) {
+    state.selectedWallet = null;
+    state.walletProfile = null;
+    renderWalletProfile();
+  }
 
   document.querySelectorAll(".tab-btn").forEach((btn) => {
     btn.classList.toggle("active", btn.dataset.view === nextView);
@@ -3198,7 +3216,6 @@ async function refreshExchange() {
       }
     }
     state.exchange = data;
-    renderStatusBars();
     renderExchange();
     renderIndexerProgressPanel();
     return data;
@@ -3260,6 +3277,8 @@ async function refreshWallets() {
       q: state.walletSearch,
       page: String(state.walletPage),
       pageSize: String(state.walletPageSize),
+      sort: state.walletSortKey,
+      dir: state.walletSortDir,
     });
     const data = await fetchJson(`/api/wallets?${params.toString()}`);
     state.wallets = data;
@@ -3272,11 +3291,15 @@ async function inspectWallet(wallet) {
   if (!wallet) return;
   state.selectedWallet = wallet;
   return runSingleFlight("walletProfile", async () => {
-    const params = new URLSearchParams({
-      wallet,
-      timeframe: state.timeframe,
-    });
-    state.walletProfile = await fetchJson(`/api/wallets/profile?${params.toString()}`);
+    try {
+      state.walletProfile = await fetchJson(`/api/live-trades/wallet/${encodeURIComponent(wallet)}`);
+    } catch (error) {
+      state.walletProfile = {
+        wallet,
+        found: false,
+        error: error && error.message ? error.message : "wallet_detail_unavailable",
+      };
+    }
     renderWalletProfile();
     return state.walletProfile;
   });
@@ -3387,9 +3410,25 @@ function bindEvents() {
     const target = event.target;
     if (!(target instanceof HTMLElement)) return;
     const btn = target.closest(".inspect-btn");
-    if (!btn) return;
-    const wallet = btn.getAttribute("data-wallet");
+    const row = target.closest(".wallet-list-row");
+    const wallet = btn?.getAttribute("data-wallet") || row?.getAttribute("data-wallet");
+    if (!wallet) return;
     await inspectWallet(wallet);
+  });
+
+  document.querySelectorAll("[data-wallet-sort-key]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const nextKey = String(btn.dataset.walletSortKey || "").trim();
+      if (!nextKey) return;
+      if (state.walletSortKey === nextKey) {
+        state.walletSortDir = state.walletSortDir === "asc" ? "desc" : "asc";
+      } else {
+        state.walletSortKey = nextKey;
+        state.walletSortDir = "desc";
+      }
+      state.walletPage = 1;
+      await refreshWallets();
+    });
   });
 
   el("volume-filter")?.addEventListener("input", (event) => {

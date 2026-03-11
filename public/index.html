@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>PacificaFlow | Exchange Intelligence</title>
-    <link rel="stylesheet" href="/styles.css?v=20260311-layoutpro1" />
+    <link rel="stylesheet" href="/styles.css?v=20260311-walletsort1" />
   </head>
   <body>
     <div id="pf-runtime-error" class="lt-runtime-error" hidden></div>
@@ -113,13 +113,10 @@
               <div class="tidal-rank-header panel">
                 <div class="tidal-rank-title-wrap">
                   <h2>VOLUME RANK</h2>
-                  <p class="tidal-rank-subtitle">live market dominance across tracked perpetual symbols</p>
                 </div>
                 <div class="tidal-rank-meta">
                   <span class="live-badge tidal-live-badge">LIVE</span>
                   <span class="muted-pill" id="tidal-last-updated">updated -</span>
-                  <span class="muted-pill" id="tidal-source-tag">source -</span>
-                  <span class="muted-pill tidal-exchange-tag">Pacifica</span>
                 </div>
                 <div class="rank-head-tools tidal-rank-tools">
                   <input id="volume-filter" type="search" placeholder="Filter symbol" />
@@ -141,55 +138,6 @@
               </div>
             </section>
 
-            <section class="ops-stage">
-              <article class="ops-card panel">
-                <div class="ops-card-head">
-                  <h3>Ingestion Health</h3>
-                  <span class="muted-pill" id="ops-health-state">-</span>
-                </div>
-                <div class="ops-kpi-grid">
-                  <div class="ops-kpi">
-                    <span>Queue pressure</span>
-                    <strong id="ops-queue-pressure">-</strong>
-                  </div>
-                  <div class="ops-kpi">
-                    <span>Active egress</span>
-                    <strong id="ops-active-egress">-</strong>
-                  </div>
-                  <div class="ops-kpi">
-                    <span>Top error</span>
-                    <strong id="ops-top-error">-</strong>
-                  </div>
-                </div>
-              </article>
-              <article class="ops-card panel">
-                <div class="ops-card-head">
-                  <h3>Queue Pressure</h3>
-                  <span class="muted-pill" id="ops-queue-mode">-</span>
-                </div>
-                <div class="ops-gauge-grid">
-                  <div class="ops-gauge">
-                    <span>Live queue</span>
-                    <div class="ops-gauge-track"><div class="ops-gauge-fill" id="ops-live-queue-fill"></div></div>
-                    <strong id="ops-live-queue-label">-</strong>
-                  </div>
-                  <div class="ops-gauge">
-                    <span>Backfill queue</span>
-                    <div class="ops-gauge-track"><div class="ops-gauge-fill" id="ops-backfill-queue-fill"></div></div>
-                    <strong id="ops-backfill-queue-label">-</strong>
-                  </div>
-                </div>
-              </article>
-              <article class="ops-card panel">
-                <div class="ops-card-head">
-                  <h3>Anomaly Timeline</h3>
-                  <span class="muted-pill" id="ops-anomaly-count">0</span>
-                </div>
-                <ul class="anomaly-list" id="ops-anomaly-list">
-                  <li>No anomalies</li>
-                </ul>
-              </article>
-            </section>
           </section>
 
           <section id="wallets-view" class="view">
@@ -216,20 +164,6 @@
 
             <section class="panel">
               <div class="panel-header">
-                <h2>INDEXING PROGRESS</h2>
-                <span id="indexer-backlog-label" class="muted-pill">Backlog: -</span>
-              </div>
-              <div class="kpi-grid progress-kpi-grid" id="indexer-progress-kpis"></div>
-              <div class="progress-wrap">
-                <div class="progress-bar">
-                  <div id="indexer-progress-bar" class="progress-fill"></div>
-                </div>
-                <div id="indexer-progress-meta" class="progress-meta">-</div>
-              </div>
-            </section>
-
-            <section class="panel">
-              <div class="panel-header">
                 <h2>WALLET EXPLORER</h2>
                 <span id="wallet-total-label" class="muted-pill">0 wallets</span>
               </div>
@@ -237,17 +171,15 @@
                 <table class="wallet-table">
                   <thead>
                     <tr>
-                      <th>#</th>
                       <th>Wallet</th>
-                      <th>Trades</th>
-                      <th>Volume</th>
-                      <th>Total Wins</th>
-                      <th>Total Losses</th>
-                      <th>PnL</th>
-                      <th>Win Rate</th>
-                      <th>First Trade</th>
-                      <th>Last Trade</th>
-                      <th>Stage</th>
+                      <th><button class="table-sort-btn" type="button" data-wallet-sort-key="trades" data-wallet-sort-label="Trades">Trades <span data-wallet-sort-indicator>↑↓</span></button></th>
+                      <th><button class="table-sort-btn" type="button" data-wallet-sort-key="volumeUsd" data-wallet-sort-label="Volume">Volume <span data-wallet-sort-indicator>↑↓</span></button></th>
+                      <th><button class="table-sort-btn" type="button" data-wallet-sort-key="totalWins" data-wallet-sort-label="Total Wins">Total Wins <span data-wallet-sort-indicator>↑↓</span></button></th>
+                      <th><button class="table-sort-btn" type="button" data-wallet-sort-key="totalLosses" data-wallet-sort-label="Total Losses">Total Losses <span data-wallet-sort-indicator>↑↓</span></button></th>
+                      <th><button class="table-sort-btn" type="button" data-wallet-sort-key="pnlUsd" data-wallet-sort-label="PnL">PnL <span data-wallet-sort-indicator>↑↓</span></button></th>
+                      <th><button class="table-sort-btn" type="button" data-wallet-sort-key="winRate" data-wallet-sort-label="Win Rate">Win Rate <span data-wallet-sort-indicator>↑↓</span></button></th>
+                      <th><button class="table-sort-btn" type="button" data-wallet-sort-key="firstTrade" data-wallet-sort-label="First Trade">First Trade <span data-wallet-sort-indicator>↑↓</span></button></th>
+                      <th><button class="table-sort-btn" type="button" data-wallet-sort-key="lastTrade" data-wallet-sort-label="Last Trade">Last Trade <span data-wallet-sort-indicator>↑↓</span></button></th>
                       <th>Action</th>
                     </tr>
                   </thead>
@@ -260,28 +192,61 @@
                 <button id="wallet-next-btn" class="btn-ghost">Next</button>
               </div>
             </section>
-
-            <section class="panel" id="wallet-profile-panel">
-              <div class="panel-header">
-                <h2>WALLET PROFILE</h2>
-                <span id="wallet-profile-id" class="muted-pill">Select a wallet</span>
-              </div>
-              <div class="profile-kpis" id="wallet-profile-kpis"></div>
-              <div class="table-wrap">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Symbol</th>
-                      <th>Volume</th>
-                    </tr>
-                  </thead>
-                  <tbody id="wallet-profile-symbols"></tbody>
-                </table>
-              </div>
-            </section>
           </section>
         </div>
       </main>
+
+      <aside id="wallet-profile-panel" class="wallet-detail-drawer" hidden>
+        <div class="wallet-detail-head">
+          <div class="wallet-detail-copy">
+            <span class="view-kicker">Wallet Detail</span>
+            <h3 id="wallet-profile-id">Select a wallet</h3>
+            <p id="wallet-profile-subtitle" class="view-subtitle">Wallet summary, live posture, and concentration.</p>
+          </div>
+          <button id="wallet-profile-close" class="btn-ghost" type="button">Close</button>
+        </div>
+        <div class="wallet-detail-body">
+          <div class="profile-kpis" id="wallet-profile-kpis"></div>
+          <section class="wallet-detail-section">
+            <div class="panel-header">
+              <h2>OPEN POSITIONS</h2>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Symbol</th>
+                    <th>Side</th>
+                    <th>Position USD</th>
+                    <th>Entry</th>
+                    <th>Mark</th>
+                    <th>Unrealized</th>
+                    <th>Updated</th>
+                  </tr>
+                </thead>
+                <tbody id="wallet-profile-positions"></tbody>
+              </table>
+            </div>
+          </section>
+          <section class="wallet-detail-section">
+            <div class="panel-header">
+              <h2>CONCENTRATION</h2>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Symbol</th>
+                    <th>Volume</th>
+                    <th>Share</th>
+                  </tr>
+                </thead>
+                <tbody id="wallet-profile-symbols"></tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+      </aside>
     </div>
 
     <script>
@@ -336,7 +301,7 @@
       })();
     </script>
     <script
-      src="/app.js?v=20260311-chartclean1"
+      src="/app.js?v=20260311-walletsort1"
       onload="window.__PF_APP_SCRIPT_NETWORK_OK = true;"
       onerror="window.__PF_APP_SCRIPT_NETWORK_OK = false; if (window.__PF_APP_SHOW_RUNTIME_ERROR) { window.__PF_APP_SHOW_RUNTIME_ERROR('frontend bundle failed to load from /app.js'); }"
     ></script>

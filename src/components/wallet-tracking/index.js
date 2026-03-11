@@ -5,7 +5,9 @@ const {
 } = require("../../services/pipeline/api");
 const { buildWalletRecordFromState } = require("../../services/analytics/wallet_stats");
 const { LiveTradeAttributionStore } = require("../../services/analytics/live_trade_attribution_store");
+const { HotWalletWsMonitor } = require("../../services/analytics/hot_wallet_ws_monitor");
 const { loadMergedShardSnapshot } = require("../../services/analytics/live_positions_snapshot_store");
+const { LiveWalletTriggerStore } = require("../../services/analytics/live_wallet_trigger_store");
 const { WalletFirstLivePositionsMonitor } = require("../../services/analytics/wallet_first_live_positions");
 const { readJson } = require("../../services/pipeline/utils");
 const fs = require("fs");
@@ -32,6 +34,128 @@ function toCompact(value) {
   if (abs >= 1e6) return `${toFixed(num / 1e6, 2)}M`;
   if (abs >= 1e3) return `${toFixed(num / 1e3, 2)}K`;
   return toFixed(num, 2);
+}
+
+function buildMarketPriceLookup(pricesBySymbol = {}) {
+  const lookup = new Map();
+  const source =
+    pricesBySymbol && typeof pricesBySymbol === "object" ? pricesBySymbol : {};
+  Object.entries(source).forEach(([symbol, value]) => {
+    const normalized = String(symbol || "").trim().toUpperCase();
+    if (!normalized) return;
+    const row = value && typeof value === "object" ? value : {};
+    const mark = toNum(
+      row.mark !== undefined
+        ? row.mark
+        : row.markPrice !== undefined
+        ? row.markPrice
+        : row.mid !== undefined
+        ? row.mid
+        : row.price,
+      NaN
+    );
+    if (!Number.isFinite(mark) || mark <= 0) return;
+    lookup.set(normalized, mark);
+  });
+  return lookup;
+}
+
+function enrichPositionRowWithMarketPrice(row = {}, priceLookup = null) {
+  const safeRow = row && typeof row === "object" ? row : {};
+  const lookup = priceLookup instanceof Map ? priceLookup : null;
+  const readMaybeNumber = (value) => {
+    if (value === null || value === undefined || value === "") return NaN;
+    const num = Number(value);
+    return Number.isFinite(num) ? num : NaN;
+  };
+  const symbol = String(safeRow.symbol || "").trim().toUpperCase();
+  const entry = readMaybeNumber(
+    safeRow.entry !== undefined
+      ? safeRow.entry
+      : safeRow.entryPrice !== undefined
+      ? safeRow.entryPrice
+      : safeRow.entry_price !== undefined
+      ? safeRow.entry_price
+      : safeRow.raw && safeRow.raw.entry_price !== undefined
+      ? safeRow.raw.entry_price
+      : NaN
+  );
+  const existingMark = readMaybeNumber(
+    safeRow.mark !== undefined
+      ? safeRow.mark
+      : safeRow.markPrice !== undefined
+      ? safeRow.markPrice
+      : safeRow.mark_price !== undefined
+      ? safeRow.mark_price
+      : safeRow.currentPrice !== undefined
+      ? safeRow.currentPrice
+      : safeRow.raw && safeRow.raw.mark_price !== undefined
+      ? safeRow.raw.mark_price
+      : NaN
+  );
+  const marketMark = symbol && lookup ? toNum(lookup.get(symbol), NaN) : NaN;
+  const rawPnlInput =
+    safeRow.unrealizedPnlUsd !== undefined && safeRow.unrealizedPnlUsd !== null
+      ? safeRow.unrealizedPnlUsd
+      : safeRow.unrealized_pnl !== undefined && safeRow.unrealized_pnl !== null
+      ? safeRow.unrealized_pnl
+      : safeRow.unrealizedPnl !== undefined && safeRow.unrealizedPnl !== null
+      ? safeRow.unrealizedPnl
+      : safeRow.pnl !== undefined && safeRow.pnl !== null
+      ? safeRow.pnl
+      : undefined;
+  const hasExplicitPnl = Number.isFinite(readMaybeNumber(rawPnlInput));
+  const mark =
+    Number.isFinite(marketMark) &&
+    (
+      !Number.isFinite(existingMark) ||
+      !hasExplicitPnl ||
+      (Number.isFinite(entry) && Math.abs(existingMark - entry) <= 1e-12)
+    )
+      ? marketMark
+      : existingMark;
+  const size = Math.abs(
+    readMaybeNumber(
+      safeRow.size !== undefined
+        ? safeRow.size
+        : safeRow.amount !== undefined
+        ? safeRow.amount
+        : safeRow.qty !== undefined
+        ? safeRow.qty
+        : safeRow.raw && safeRow.raw.amount !== undefined
+        ? safeRow.raw.amount
+        : NaN
+    )
+  );
+  let pnl = readMaybeNumber(rawPnlInput);
+  if (!Number.isFinite(pnl) && Number.isFinite(entry) && Number.isFinite(mark) && Number.isFinite(size)) {
+    const sideRaw = String(safeRow.side || safeRow.rawSide || "").trim().toLowerCase();
+    const direction =
+      sideRaw.includes("short") || sideRaw === "ask" || sideRaw === "short" ? -1 : 1;
+    pnl = (mark - entry) * size * direction;
+  }
+  const positionUsd =
+    Number.isFinite(mark) && Number.isFinite(size)
+      ? Math.abs(mark * size)
+      : toNum(
+          safeRow.positionUsd !== undefined
+            ? safeRow.positionUsd
+            : safeRow.notionalUsd !== undefined
+            ? safeRow.notionalUsd
+            : NaN,
+          NaN
+        );
+  return {
+    ...safeRow,
+    mark: Number.isFinite(mark) ? Number(mark.toFixed(8)) : safeRow.mark,
+    pnl: Number.isFinite(pnl) ? Number(pnl.toFixed(2)) : safeRow.pnl,
+    unrealizedPnlUsd: Number.isFinite(pnl)
+      ? Number(pnl.toFixed(2))
+      : safeRow.unrealizedPnlUsd,
+    positionUsd: Number.isFinite(positionUsd)
+      ? Number(positionUsd.toFixed(2))
+      : safeRow.positionUsd,
+  };
 }
 
 function computeDefiLlamaV2FromPrices(rows = []) {
@@ -209,6 +333,7 @@ const KPI_DAY_MS = 24 * 60 * 60 * 1000;
 function pickWalletWindowBucket(record = {}, timeframe = "all") {
   const safeRecord = record && typeof record === "object" ? record : {};
   if (timeframe === "24h") return safeRecord.d24 || null;
+  if (timeframe === "7d") return safeRecord.d7 || null;
   if (timeframe === "30d") return safeRecord.d30 || null;
   return safeRecord.all || null;
 }
@@ -273,6 +398,157 @@ function computeWalletCoverageDays(walletRecords = []) {
   }
 
   return Math.max(1, Math.floor((maxLastTrade - minFirstTrade) / KPI_DAY_MS) + 1);
+}
+
+function buildWalletPerformanceSupportSummary({
+  walletMetricsHistoryStatus = null,
+  positionLifecycleStatus = null,
+} = {}) {
+  const historyStatus = walletMetricsHistoryStatus;
+  const lifecycleStatus = positionLifecycleStatus;
+  const available = [
+    {
+      key: "recent_trade_count",
+      label: "Recent trade count",
+      source: "wallet trade history",
+    },
+    {
+      key: "recent_volume",
+      label: "Recent traded volume",
+      source: "wallet trade history",
+    },
+    {
+      key: "realized_pnl",
+      label: "Realized PnL",
+      source: "wallet trade history",
+    },
+    {
+      key: "unrealized_pnl",
+      label: "Unrealized PnL",
+      source: "live open positions",
+    },
+    {
+      key: "total_pnl",
+      label: "Total PnL",
+      source: "wallet trade history + live open positions",
+    },
+    {
+      key: "win_rate",
+      label: "Win rate",
+      source: "wallet trade history",
+    },
+    {
+      key: "open_positions",
+      label: "Open positions count",
+      source: "wallet-first live positions",
+    },
+    {
+      key: "exposure",
+      label: "Current exposure",
+      source: "wallet-first live positions",
+    },
+    {
+      key: "symbol_concentration",
+      label: "Symbol concentration",
+      source: "wallet trade history",
+    },
+    {
+      key: "recent_activity_score",
+      label: "Recent activity score",
+      source: "live wallet events + open positions",
+    },
+    {
+      key: "live_active_score",
+      label: "Live active score",
+      source: "derived from live activity + exposure",
+    },
+    {
+      key: "freshness_state",
+      label: "Freshness / last update state",
+      source: "live scan timestamps",
+    },
+  ];
+  const unavailable = [];
+
+  if (historyStatus && Number(historyStatus.hourlyFiles || 0) > 0) {
+    available.push({
+      key: "hourly_wallet_snapshots",
+      label: "Hourly wallet snapshots",
+      source: "persisted hourly wallet aggregate snapshot store",
+    });
+  } else {
+    unavailable.push({
+      key: "hourly_wallet_snapshots",
+      label: "Hourly wallet snapshots",
+      reason: "Rolling wallet snapshots are not persisted today.",
+      required: "Hourly aggregate snapshot store.",
+    });
+  }
+
+  if (historyStatus && Number(historyStatus.dailyFiles || 0) > 0) {
+    available.push({
+      key: "daily_wallet_snapshots",
+      label: "Daily wallet snapshots",
+      source: "persisted daily wallet aggregate snapshot store",
+    });
+  } else {
+    unavailable.push({
+      key: "daily_wallet_snapshots",
+      label: "Daily wallet snapshots",
+      reason: "Daily wallet performance aggregates are recomputed from history, not snapshotted.",
+      required: "Daily wallet aggregate snapshot store.",
+    });
+  }
+
+  if (lifecycleStatus && Number(lifecycleStatus.trackedPositions || 0) > 0) {
+    available.push({
+      key: "position_change_history",
+      label: "Position increase / reduce history",
+      source: "observed position lifecycle store",
+      scope: "observed_from_tracking_start",
+    });
+    available.push({
+      key: "position_holding_time",
+      label: "Position holding time",
+      source: "live position age + observed position lifecycle store",
+      scope: "observed_from_tracking_start",
+    });
+    available.push({
+      key: "wallet_holding_time",
+      label: "Wallet holding time",
+      source: "observed position lifecycle store",
+      scope: "observed_from_tracking_start",
+    });
+  } else {
+    unavailable.push({
+      key: "wallet_holding_time",
+      label: "Wallet holding time",
+      reason: "Wallet snapshots do not persist entry/exit duration history.",
+      required: "Wallet-level snapshot history with entry/exit timestamps.",
+    });
+    unavailable.push({
+      key: "position_holding_time",
+      label: "Position holding time",
+      reason: "Position lifecycle events are not persisted historically per wallet.",
+      required: "Explicit position lifecycle history with open/increase/reduce/close events.",
+    });
+    unavailable.push({
+      key: "position_change_history",
+      label: "Position increase / reduce history",
+      reason: "Historical position state transitions are not materialized yet.",
+      required: "Versioned position snapshots or lifecycle event log.",
+    });
+  }
+
+  return {
+    windows: ["24h", "7d", "30d", "all"],
+    available,
+    unavailable,
+    status: {
+      walletMetricsHistory: historyStatus || { enabled: false },
+      positionLifecycle: lifecycleStatus || { enabled: false },
+    },
+  };
 }
 
 function buildKpiComparisonEntry({
@@ -677,6 +953,9 @@ function createWalletTrackingComponent({
   restClient,
   liveRestClientEntries = [],
   globalKpiProvider,
+  solanaLogTriggerMonitor = null,
+  walletMetricsHistoryStore = null,
+  positionLifecycleStore = null,
 }) {
   const liveTradesUpstreamBaseRaw = String(
     process.env.PACIFICA_LIVE_TRADES_UPSTREAM_BASE || ""
@@ -706,6 +985,17 @@ function createWalletTrackingComponent({
     fetchedAt: 0,
     ttlMs: 2000,
     value: null,
+  };
+  const livePositionPriceCache = {
+    fetchedAt: 0,
+    ttlMs: Math.max(
+      1000,
+      Number(process.env.PACIFICA_LIVE_POSITION_PRICE_CACHE_TTL_MS || 2500)
+    ),
+    value: new Map(),
+    inflight: null,
+    stale: false,
+    lastError: null,
   };
   const defaultDataRoot = process.env.PACIFICA_DATA_DIR
     ? path.resolve(process.env.PACIFICA_DATA_DIR)
@@ -862,6 +1152,49 @@ function createWalletTrackingComponent({
     txMatchedByLi: 0,
     running: false,
   };
+  const liveTradeRecentSignatureWallets = new Map();
+  const liveTradeRecentSignatureWalletQueue = [];
+  const liveTradeRecentSignatureWalletMax = Math.max(
+    1000,
+    Number(process.env.PACIFICA_LIVE_TRADE_TRIGGER_SIGNATURE_CACHE_MAX || 20000)
+  );
+  const liveWalletTriggerDedup = new Map();
+  function recordLiveWalletTrigger(trigger) {
+    if (!liveWalletTriggerStore || typeof liveWalletTriggerStore.append !== "function") return;
+    const wallet = String(trigger && trigger.wallet ? trigger.wallet : "").trim();
+    if (!wallet) return;
+    const at = Math.max(0, Number(trigger && (trigger.at || trigger.timestamp) ? trigger.at || trigger.timestamp : Date.now()));
+    const source = String(trigger && trigger.source ? trigger.source : "activity").trim() || "activity";
+    const method = String(trigger && trigger.method ? trigger.method : "").trim() || "activity";
+    const key = `${wallet}:${source}:${method}:${Math.floor(at / 1000)}`;
+    const lastSeen = Number(liveWalletTriggerDedup.get(key) || 0);
+    if (lastSeen && at - lastSeen < 30000) return;
+    liveWalletTriggerDedup.set(key, at);
+    if (liveWalletTriggerDedup.size > 5000) {
+      const cutoff = Date.now() - 10 * 60 * 1000;
+      for (const [dedupeKey, ts] of liveWalletTriggerDedup.entries()) {
+        if (Number(ts || 0) < cutoff) liveWalletTriggerDedup.delete(dedupeKey);
+      }
+    }
+    const signature = String(
+      trigger && (trigger.signature || trigger.txSignature) ? trigger.signature || trigger.txSignature : ""
+    ).trim();
+    if (signature) {
+      liveTradeRecentSignatureWallets.set(signature, {
+        wallet,
+        at,
+        source,
+        method,
+        confidence: String(trigger && trigger.confidence ? trigger.confidence : "unknown").trim() || "unknown",
+      });
+      liveTradeRecentSignatureWalletQueue.push(signature);
+      while (liveTradeRecentSignatureWalletQueue.length > liveTradeRecentSignatureWalletMax) {
+        const evicted = liveTradeRecentSignatureWalletQueue.shift();
+        if (evicted) liveTradeRecentSignatureWallets.delete(evicted);
+      }
+    }
+    liveWalletTriggerStore.append(trigger);
+  }
   if (liveTradeAttributionStore) {
     try {
       liveTradeAttributionStore.load();
@@ -900,6 +1233,68 @@ function createWalletTrackingComponent({
     process.env.PACIFICA_LIVE_WALLET_FIRST_PERSIST_DIR ||
       path.join(defaultDataRoot, "live_positions")
   ).trim();
+  const hotWalletWsEnabled =
+    String(process.env.PACIFICA_HOT_WALLET_WS_ENABLED || "true").toLowerCase() !== "false";
+  const hotWalletWsUrl = String(
+    process.env.PACIFICA_HOT_WALLET_WS_URL || process.env.PACIFICA_WS_URL || "wss://ws.pacifica.fi/ws"
+  ).trim();
+  const hotWalletWsMaxWallets = Math.max(
+    1,
+    Number(process.env.PACIFICA_HOT_WALLET_WS_MAX_WALLETS || 32)
+  );
+  const hotWalletWsInitialWallets = Math.max(
+    1,
+    Math.min(
+      hotWalletWsMaxWallets,
+      Number(process.env.PACIFICA_HOT_WALLET_WS_INITIAL_WALLETS || hotWalletWsMaxWallets)
+    )
+  );
+  const hotWalletWsCapacityStep = Math.max(
+    1,
+    Number(process.env.PACIFICA_HOT_WALLET_WS_CAPACITY_STEP || 4)
+  );
+  const hotWalletWsSoakWindowMs = Math.max(
+    30000,
+    Number(process.env.PACIFICA_HOT_WALLET_WS_SOAK_WINDOW_MS || 3 * 60 * 1000)
+  );
+  const hotWalletWsMaxScaleErrors = Math.max(
+    0,
+    Number(process.env.PACIFICA_HOT_WALLET_WS_MAX_SCALE_ERRORS || 0)
+  );
+  const hotWalletWsMaxScaleReconnects = Math.max(
+    0,
+    Number(process.env.PACIFICA_HOT_WALLET_WS_MAX_SCALE_RECONNECTS || 1)
+  );
+  const hotWalletWsMemoryCeilingMb = Math.max(
+    0,
+    Number(process.env.PACIFICA_HOT_WALLET_WS_MEMORY_CEILING_MB || 0)
+  );
+  const hotWalletWsInactivityMs = Math.max(
+    15000,
+    Number(process.env.PACIFICA_HOT_WALLET_WS_INACTIVITY_MS || 2 * 60 * 1000)
+  );
+  const hotWalletWsOpenPositionHoldMs = Math.max(
+    hotWalletWsInactivityMs,
+    Number(process.env.PACIFICA_HOT_WALLET_WS_OPEN_POSITION_HOLD_MS || 5 * 60 * 1000)
+  );
+  const hotWalletWsTradeHoldMs = Math.max(
+    15000,
+    Number(process.env.PACIFICA_HOT_WALLET_WS_TRADE_HOLD_MS || 45 * 1000)
+  );
+  const hotWalletWsAggressiveEvictMs = Math.max(
+    10000,
+    Number(process.env.PACIFICA_HOT_WALLET_WS_AGGRESSIVE_EVICT_MS || 20 * 1000)
+  );
+  const liveWalletTriggerStoreEnabled =
+    String(process.env.PACIFICA_LIVE_WALLET_TRIGGER_STORE_ENABLED || "true").toLowerCase() !== "false";
+  const liveWalletTriggerFile = String(
+    process.env.PACIFICA_LIVE_WALLET_TRIGGER_FILE ||
+      path.join(liveWalletFirstPersistDir, "wallet_activity_triggers.ndjson")
+  ).trim();
+  const liveWalletTriggerPollMs = Math.max(
+    500,
+    Number(process.env.PACIFICA_LIVE_WALLET_TRIGGER_POLL_MS || 2000)
+  );
   const liveWalletFirstExternalShardsEnabled =
     String(
       process.env.PACIFICA_LIVE_WALLET_FIRST_EXTERNAL_SHARDS || "false"
@@ -1069,11 +1464,93 @@ function createWalletTrackingComponent({
     100,
     Number(process.env.PACIFICA_LIVE_WALLET_FIRST_MAX_WARM_WALLETS || 4000)
   );
-  const liveWalletPositionsMonitor = new WalletFirstLivePositionsMonitor({
+  const liveWalletFirstHotReconcileMaxAgeMs = Math.max(
+    5000,
+    Number(process.env.PACIFICA_LIVE_WALLET_FIRST_HOT_RECONCILE_MAX_AGE_MS || 30 * 1000)
+  );
+  const liveWalletFirstWarmReconcileMaxAgeMs = Math.max(
+    liveWalletFirstHotReconcileMaxAgeMs,
+    Number(process.env.PACIFICA_LIVE_WALLET_FIRST_WARM_RECONCILE_MAX_AGE_MS || 3 * 60 * 1000)
+  );
+  const liveWalletTriggerStore =
+    liveWalletTriggerStoreEnabled && liveWalletFirstPersistDir
+      ? new LiveWalletTriggerStore({
+          filePath: liveWalletTriggerFile,
+          maxEntries: Math.max(
+            5000,
+            Number(process.env.PACIFICA_LIVE_WALLET_TRIGGER_MAX_ENTRIES || 50000)
+          ),
+        })
+      : null;
+  const pacificaPublicActiveCache = {
+    fetchedAt: 0,
+    ttlMs: Math.max(10000, Number(process.env.PACIFICA_PUBLIC_ACTIVE_CACHE_TTL_MS || 60000)),
+    value: null,
+    lastError: null,
+    inflight: null,
+  };
+  const liveActiveWindowMs = Math.max(
+    5 * 60 * 1000,
+    Number(process.env.PACIFICA_LIVE_ACTIVE_WINDOW_MS || 30 * 60 * 1000)
+  );
+  let liveWalletPositionsMonitor = null;
+  const hotWalletWsMonitor = new HotWalletWsMonitor({
+    enabled: hotWalletWsEnabled && liveWalletFirstEnabled && !liveWalletFirstExternalShardsEnabled,
+    wsUrl: hotWalletWsUrl,
+    logger: console,
+    maxWallets: hotWalletWsMaxWallets,
+    initialWallets: hotWalletWsInitialWallets,
+    capacityStep: hotWalletWsCapacityStep,
+    soakWindowMs: hotWalletWsSoakWindowMs,
+    maxScaleErrors: hotWalletWsMaxScaleErrors,
+    maxScaleReconnects: hotWalletWsMaxScaleReconnects,
+    memoryCeilingMb: hotWalletWsMemoryCeilingMb,
+    inactivityMs: hotWalletWsInactivityMs,
+    openPositionHoldMs: hotWalletWsOpenPositionHoldMs,
+    tradeHoldMs: hotWalletWsTradeHoldMs,
+    aggressiveEvictMs: hotWalletWsAggressiveEvictMs,
+    onPositions: (wallet, rows, meta) => {
+      if (
+        liveWalletPositionsMonitor &&
+        typeof liveWalletPositionsMonitor.ingestHotWalletPositions === "function"
+      ) {
+        liveWalletPositionsMonitor.ingestHotWalletPositions(wallet, rows, meta);
+      }
+    },
+    onTrades: (wallet, rows, meta) => {
+      const first = Array.isArray(rows) && rows.length ? rows[0] : null;
+      if (
+        liveWalletPositionsMonitor &&
+        typeof liveWalletPositionsMonitor.ingestHotWalletActivity === "function"
+      ) {
+        liveWalletPositionsMonitor.ingestHotWalletActivity(wallet, "ws_account_trade", {
+          ...meta,
+          symbol: first && first.s ? String(first.s).toUpperCase() : null,
+          side: first && first.ts ? String(first.ts).toLowerCase() : null,
+        });
+      }
+    },
+    onOrderUpdates: (wallet, rows, meta) => {
+      const first = Array.isArray(rows) && rows.length ? rows[0] : null;
+      if (
+        liveWalletPositionsMonitor &&
+        typeof liveWalletPositionsMonitor.ingestHotWalletActivity === "function"
+      ) {
+        liveWalletPositionsMonitor.ingestHotWalletActivity(wallet, "ws_account_order_update", {
+          ...meta,
+          symbol: first && first.s ? String(first.s).toUpperCase() : null,
+          side: first && first.d ? String(first.d).toLowerCase() : null,
+        });
+      }
+    },
+  });
+  liveWalletPositionsMonitor = new WalletFirstLivePositionsMonitor({
     enabled: liveWalletFirstEnabled,
     restClient,
     restClientEntries: effectiveLiveRestClientEntries,
     walletStore,
+    hotWalletWsMonitor,
+    triggerStore: liveWalletTriggerStore,
     logger: console,
     scanIntervalMs: liveWalletFirstScanIntervalMs,
     walletListRefreshMs: liveWalletFirstWalletListRefreshMs,
@@ -1098,6 +1575,9 @@ function createWalletTrackingComponent({
     recentActivityTtlMs: liveWalletFirstRecentActivityTtlMs,
     warmWalletRecentMs: liveWalletFirstWarmWalletRecentMs,
     maxWarmWallets: liveWalletFirstMaxWarmWallets,
+    hotReconcileMaxAgeMs: liveWalletFirstHotReconcileMaxAgeMs,
+    warmReconcileMaxAgeMs: liveWalletFirstWarmReconcileMaxAgeMs,
+    triggerPollMs: liveWalletTriggerPollMs,
     persistDir: liveWalletFirstPersistDir,
     persistEveryMs: Math.max(
       1000,
@@ -1112,7 +1592,7 @@ function createWalletTrackingComponent({
     console.log(
       `[wallet-first-live] enabled clients=${liveWalletFirstClientCount} include_direct=${liveWalletFirstIncludeDirect} wallets_per_pass=${
         liveWalletFirstWalletsPerPass > 0 ? liveWalletFirstWalletsPerPass : "auto"
-      } hot_wallets_per_pass=${liveWalletFirstHotWalletsPerPass} warm_wallets_per_pass=${liveWalletFirstWarmWalletsPerPass} recent_active_wallets_per_pass=${liveWalletFirstRecentActiveWalletsPerPass} target_pass_ms=${liveWalletFirstTargetPassDurationMs} max_concurrency=${liveWalletFirstMaxConcurrency} request_timeout_ms=${liveWalletFirstRequestTimeoutMs} max_fetch_attempts=${liveWalletFirstMaxFetchAttempts} max_inflight_per_client=${liveWalletFirstMaxInFlightPerClient} max_inflight_direct=${liveWalletFirstMaxInFlightDirect} direct_fallback_on_last_attempt=${liveWalletFirstDirectFallbackOnLastAttempt} shard=${liveWalletFirstShardIndex}/${liveWalletFirstShardCount} scan_interval_ms=${liveWalletFirstScanIntervalMs} persist_dir=${liveWalletFirstPersistDir} external_shards=${liveWalletFirstExternalShardsEnabled} force_direct=${liveWalletFirstForceDirect}`
+      } hot_wallets_per_pass=${liveWalletFirstHotWalletsPerPass} warm_wallets_per_pass=${liveWalletFirstWarmWalletsPerPass} recent_active_wallets_per_pass=${liveWalletFirstRecentActiveWalletsPerPass} target_pass_ms=${liveWalletFirstTargetPassDurationMs} max_concurrency=${liveWalletFirstMaxConcurrency} request_timeout_ms=${liveWalletFirstRequestTimeoutMs} max_fetch_attempts=${liveWalletFirstMaxFetchAttempts} max_inflight_per_client=${liveWalletFirstMaxInFlightPerClient} max_inflight_direct=${liveWalletFirstMaxInFlightDirect} direct_fallback_on_last_attempt=${liveWalletFirstDirectFallbackOnLastAttempt} shard=${liveWalletFirstShardIndex}/${liveWalletFirstShardCount} scan_interval_ms=${liveWalletFirstScanIntervalMs} persist_dir=${liveWalletFirstPersistDir} external_shards=${liveWalletFirstExternalShardsEnabled} force_direct=${liveWalletFirstForceDirect} hot_ws_max_wallets=${hotWalletWsMaxWallets} hot_ws_inactivity_ms=${hotWalletWsInactivityMs} hot_ws_trade_hold_ms=${hotWalletWsTradeHoldMs} hot_ws_open_hold_ms=${hotWalletWsOpenPositionHoldMs} hot_ws_aggressive_evict_ms=${hotWalletWsAggressiveEvictMs}`
     );
   } else if (liveTradesUpstreamEnabled) {
     console.log(
@@ -1474,6 +1954,72 @@ function createWalletTrackingComponent({
       }
       return indexerStatusCache.value || localStatus || persistedStatus;
     }
+  }
+
+  async function getLivePositionPriceLookup() {
+    const now = Date.now();
+    if (
+      livePositionPriceCache.value instanceof Map &&
+      livePositionPriceCache.value.size > 0 &&
+      now - Number(livePositionPriceCache.fetchedAt || 0) <= Number(livePositionPriceCache.ttlMs || 0)
+    ) {
+      return livePositionPriceCache.value;
+    }
+
+    if (livePositionPriceCache.inflight) {
+      try {
+        return await livePositionPriceCache.inflight;
+      } catch (_error) {
+        return livePositionPriceCache.value instanceof Map
+          ? livePositionPriceCache.value
+          : new Map();
+      }
+    }
+
+    const fetcher = async () => {
+      if (!restClient || typeof restClient.get !== "function") {
+        return livePositionPriceCache.value instanceof Map
+          ? livePositionPriceCache.value
+          : new Map();
+      }
+      try {
+        const response = await restClient.get("/info/prices", {
+          cost: 1,
+          timeoutMs: 5000,
+          retryMaxAttempts: 1,
+        });
+        const payload =
+          response && response.payload && typeof response.payload === "object"
+            ? response.payload
+            : {};
+        const rows = Array.isArray(payload.data) ? payload.data : [];
+        const next = buildMarketPriceLookup(
+          rows.reduce((acc, row) => {
+            const symbol = String((row && row.symbol) || "").trim().toUpperCase();
+            if (symbol) acc[symbol] = row;
+            return acc;
+          }, {})
+        );
+        if (next.size > 0) {
+          livePositionPriceCache.value = next;
+          livePositionPriceCache.fetchedAt = Date.now();
+          livePositionPriceCache.stale = false;
+          livePositionPriceCache.lastError = null;
+        }
+        return livePositionPriceCache.value;
+      } catch (error) {
+        livePositionPriceCache.stale = true;
+        livePositionPriceCache.lastError = error && error.message ? error.message : "price_fetch_failed";
+        return livePositionPriceCache.value instanceof Map
+          ? livePositionPriceCache.value
+          : new Map();
+      } finally {
+        livePositionPriceCache.inflight = null;
+      }
+    };
+
+    livePositionPriceCache.inflight = fetcher();
+    return livePositionPriceCache.inflight;
   }
 
   function parseWalletListParam(value) {
@@ -3103,10 +3649,524 @@ function createWalletTrackingComponent({
     };
   }
 
-  function buildLiveTradesPayload(options = {}) {
+  async function refreshPacificaPublicActiveCache(force = false) {
+    if (!restClient || typeof restClient.get !== "function") {
+      return pacificaPublicActiveCache.value;
+    }
+    const now = Date.now();
+    if (
+      !force &&
+      pacificaPublicActiveCache.value &&
+      now - Number(pacificaPublicActiveCache.fetchedAt || 0) < pacificaPublicActiveCache.ttlMs
+    ) {
+      return pacificaPublicActiveCache.value;
+    }
+    if (pacificaPublicActiveCache.inflight) {
+      return pacificaPublicActiveCache.inflight;
+    }
+    pacificaPublicActiveCache.inflight = restClient
+      .get("/leaderboard", {
+        query: { limit: 25000 },
+        timeoutMs: Math.max(
+          5000,
+          Number(process.env.PACIFICA_PUBLIC_ACTIVE_TIMEOUT_MS || 12000)
+        ),
+      })
+      .then((response) => {
+        const rows =
+          response &&
+          response.payload &&
+          Array.isArray(response.payload.data)
+            ? response.payload.data
+            : [];
+        const trackedWallets = new Set(
+          (walletStore ? walletStore.list() : [])
+            .map((row) => String((row && row.wallet) || "").trim())
+            .filter(Boolean)
+        );
+        const activeWallets = [];
+        let trackedOverlap = 0;
+        rows.forEach((row) => {
+          const wallet = String((row && row.address) || "").trim();
+          const oiCurrent = Number(row && row.oi_current !== undefined ? row.oi_current : 0);
+          if (!wallet || !Number.isFinite(oiCurrent) || oiCurrent <= 0) return;
+          activeWallets.push(wallet);
+          if (trackedWallets.has(wallet)) trackedOverlap += 1;
+        });
+        pacificaPublicActiveCache.value = {
+          source: "pacifica_leaderboard_oi_current_gt_0",
+          fetchedAt: Date.now(),
+          rowsFetched: rows.length,
+          activeWalletsLowerBound: activeWallets.length,
+          trackedOverlap,
+          untrackedActiveWallets: Math.max(0, activeWallets.length - trackedOverlap),
+        };
+        pacificaPublicActiveCache.fetchedAt = Date.now();
+        pacificaPublicActiveCache.lastError = null;
+        return pacificaPublicActiveCache.value;
+      })
+      .catch((error) => {
+        pacificaPublicActiveCache.lastError = String(
+          error && error.message ? error.message : error || "public_active_fetch_failed"
+        );
+        return pacificaPublicActiveCache.value;
+      })
+      .finally(() => {
+        pacificaPublicActiveCache.inflight = null;
+      });
+    return pacificaPublicActiveCache.inflight;
+  }
+
+  function getPacificaPublicActiveSnapshot() {
+    const now = Date.now();
+    if (
+      !pacificaPublicActiveCache.inflight &&
+      (!pacificaPublicActiveCache.value ||
+        now - Number(pacificaPublicActiveCache.fetchedAt || 0) >= pacificaPublicActiveCache.ttlMs)
+    ) {
+      refreshPacificaPublicActiveCache().catch(() => {});
+    }
+    return {
+      ...(pacificaPublicActiveCache.value || {
+        source: "pacifica_leaderboard_oi_current_gt_0",
+        activeWalletsLowerBound: null,
+        trackedOverlap: null,
+        untrackedActiveWallets: null,
+        rowsFetched: null,
+      }),
+      fetchedAt: pacificaPublicActiveCache.fetchedAt || null,
+      stale:
+        !pacificaPublicActiveCache.fetchedAt ||
+        now - Number(pacificaPublicActiveCache.fetchedAt || 0) >= pacificaPublicActiveCache.ttlMs,
+      lastError: pacificaPublicActiveCache.lastError,
+      inflight: Boolean(pacificaPublicActiveCache.inflight),
+    };
+  }
+
+  function buildLiveActiveWalletRows({ walletRows = [], positions = [], events = [], nowMs = Date.now() }) {
+    const walletMap = new Map();
+    (Array.isArray(walletRows) ? walletRows : []).forEach((row) => {
+      const wallet = String((row && row.wallet) || "").trim();
+      if (!wallet) return;
+      walletMap.set(wallet, row);
+    });
+
+    const positionStats = new Map();
+    (Array.isArray(positions) ? positions : []).forEach((row) => {
+      const wallet = String((row && row.wallet) || "").trim();
+      if (!wallet) return;
+      const current =
+        positionStats.get(wallet) || {
+          wallet,
+          openPositions: 0,
+          positionUsd: 0,
+          lastPositionAt: 0,
+          symbols: new Set(),
+          freshPositions: 0,
+          stalePositions: 0,
+        };
+      current.openPositions += 1;
+      current.positionUsd += Math.max(
+        0,
+        Number(row && row.positionUsd !== undefined ? row.positionUsd : 0) || 0
+      );
+      current.lastPositionAt = Math.max(
+        current.lastPositionAt,
+        Number((row && (row.updatedAt || row.timestamp)) || 0)
+      );
+      const symbol = String((row && row.symbol) || "").trim().toUpperCase();
+      if (symbol) current.symbols.add(symbol);
+      const freshness = String((row && (row.freshness || row.status)) || "").trim().toLowerCase();
+      if (freshness === "fresh") current.freshPositions += 1;
+      else if (freshness === "stale") current.stalePositions += 1;
+      positionStats.set(wallet, current);
+    });
+
+    const fifteenMinutesAgo = nowMs - 15 * 60 * 1000;
+    const oneHourAgo = nowMs - 60 * 60 * 1000;
+    const eventStats = new Map();
+    (Array.isArray(events) ? events : []).forEach((row) => {
+      const wallet = String((row && row.wallet) || "").trim();
+      if (!wallet) return;
+      const timestamp = Number((row && row.timestamp) || 0);
+      if (!Number.isFinite(timestamp) || timestamp <= 0) return;
+      const current =
+        eventStats.get(wallet) || {
+          wallet,
+          lastEventAt: 0,
+          events15m: 0,
+          events1h: 0,
+        };
+      current.lastEventAt = Math.max(current.lastEventAt, timestamp);
+      if (timestamp >= fifteenMinutesAgo) current.events15m += 1;
+      if (timestamp >= oneHourAgo) current.events1h += 1;
+      eventStats.set(wallet, current);
+    });
+
+    const wallets = new Set([
+      ...walletMap.keys(),
+      ...positionStats.keys(),
+      ...eventStats.keys(),
+    ]);
+
+    const rows = [];
+    wallets.forEach((wallet) => {
+      const walletRow = walletMap.get(wallet) || {};
+      const positionRow =
+        positionStats.get(wallet) || {
+          openPositions: 0,
+          positionUsd: 0,
+          lastPositionAt: 0,
+          symbols: new Set(),
+          freshPositions: 0,
+          stalePositions: 0,
+        };
+      const eventRow =
+        eventStats.get(wallet) || {
+          lastEventAt: 0,
+          events15m: 0,
+          events1h: 0,
+        };
+      const d24 = walletRow && walletRow.d24 ? walletRow.d24 : {};
+      const d7 = walletRow && walletRow.d7 ? walletRow.d7 : {};
+      const d30 = walletRow && walletRow.d30 ? walletRow.d30 : {};
+      const all = walletRow && walletRow.all ? walletRow.all : {};
+      const liveScannedAt = Number((walletRow && walletRow.liveScannedAt) || 0);
+      const lastTradeAt = Number((d24 && d24.lastTrade) || 0);
+      const lastActivityAt = Math.max(
+        liveScannedAt,
+        lastTradeAt,
+        Number(positionRow.lastPositionAt || 0),
+        Number(eventRow.lastEventAt || 0)
+      );
+      if (
+        Number(positionRow.openPositions || 0) <= 0 &&
+        Number(eventRow.events1h || 0) <= 0 &&
+        Number((d24 && d24.trades) || 0) <= 0 &&
+        (!lastActivityAt || nowMs - lastActivityAt > liveActiveWindowMs)
+      ) {
+        return;
+      }
+      const ageMs = lastActivityAt > 0 ? Math.max(0, nowMs - lastActivityAt) : null;
+      const freshness =
+        ageMs === null
+          ? "unknown"
+          : ageMs <= 5 * 60 * 1000
+          ? "fresh"
+          : ageMs <= 15 * 60 * 1000
+          ? "warm"
+          : "stale";
+      const activityScore =
+        Number(positionRow.openPositions || 0) * 1_000_000_000 +
+        Number(eventRow.events15m || 0) * 10_000_000 +
+        Number(eventRow.events1h || 0) * 1_000_000 +
+        Math.round(Number(positionRow.positionUsd || 0)) * 10 +
+        Math.max(0, 100_000 - Math.floor((ageMs || 0) / 1000));
+      rows.push({
+        wallet,
+        freshness,
+        openPositions: Number(positionRow.openPositions || 0),
+        positionUsd: Number(Number(positionRow.positionUsd || 0).toFixed(2)),
+        lastActivityAt: lastActivityAt || null,
+        liveScannedAt: liveScannedAt || null,
+        lastTradeAt: lastTradeAt || null,
+        lastPositionAt: Number(positionRow.lastPositionAt || 0) || null,
+        recentEvents15m: Number(eventRow.events15m || 0),
+        recentEvents1h: Number(eventRow.events1h || 0),
+        freshPositions: Number(positionRow.freshPositions || 0),
+        stalePositions: Number(positionRow.stalePositions || 0),
+        symbols: Array.from(positionRow.symbols || []).sort(),
+        d24: {
+          trades: Number((d24 && d24.trades) || 0),
+          volumeUsd: Number(toNum(d24 && d24.volumeUsd, 0).toFixed(2)),
+          pnlUsd: Number(toNum(d24 && d24.pnlUsd, 0).toFixed(2)),
+          winRatePct: Number((d24 && d24.winRatePct) || 0),
+        },
+        d30: {
+          trades: Number((d30 && d30.trades) || 0),
+          volumeUsd: Number(toNum(d30 && d30.volumeUsd, 0).toFixed(2)),
+          pnlUsd: Number(toNum(d30 && d30.pnlUsd, 0).toFixed(2)),
+          winRatePct: Number((d30 && d30.winRatePct) || 0),
+        },
+        d7: {
+          trades: Number((d7 && d7.trades) || 0),
+          volumeUsd: Number(toNum(d7 && d7.volumeUsd, 0).toFixed(2)),
+          pnlUsd: Number(toNum(d7 && d7.pnlUsd, 0).toFixed(2)),
+          winRatePct: Number((d7 && d7.winRatePct) || 0),
+        },
+        all: {
+          trades: Number((all && all.trades) || 0),
+          volumeUsd: Number(toNum(all && all.volumeUsd, 0).toFixed(2)),
+          pnlUsd: Number(toNum(all && all.pnlUsd, 0).toFixed(2)),
+          winRatePct: Number((all && all.winRatePct) || 0),
+        },
+        activityScore,
+      });
+    });
+
+    rows.sort((a, b) => {
+      if (b.activityScore !== a.activityScore) return b.activityScore - a.activityScore;
+      if ((b.lastActivityAt || 0) !== (a.lastActivityAt || 0)) {
+        return Number(b.lastActivityAt || 0) - Number(a.lastActivityAt || 0);
+      }
+      return String(a.wallet).localeCompare(String(b.wallet));
+    });
+    return rows;
+  }
+
+  function summarizeWalletWindow(bucket = {}) {
+    const safeBucket = bucket && typeof bucket === "object" ? bucket : {};
+    return {
+      trades: Number(safeBucket.trades || 0),
+      volumeUsd: Number(toNum(safeBucket.volumeUsd, 0).toFixed(2)),
+      pnlUsd: Number(toNum(safeBucket.pnlUsd, 0).toFixed(2)),
+      winRatePct: Number(toNum(safeBucket.winRatePct, 0).toFixed(2)),
+      feesUsd: Number(
+        toNum(
+          safeBucket.feesPaidUsd !== undefined ? safeBucket.feesPaidUsd : safeBucket.feesUsd,
+          0
+        ).toFixed(2)
+      ),
+      fundingPayoutUsd: Number(toNum(safeBucket.fundingPayoutUsd, 0).toFixed(2)),
+      firstTrade: safeBucket.firstTrade || null,
+      lastTrade: safeBucket.lastTrade || null,
+      symbolVolumes:
+        safeBucket.symbolVolumes && typeof safeBucket.symbolVolumes === "object"
+          ? safeBucket.symbolVolumes
+          : {},
+    };
+  }
+
+  function buildWalletConcentrationRows(symbolVolumes = {}, totalVolumeUsd = 0, limit = 8) {
+    const total = toNum(totalVolumeUsd, 0);
+    return Object.entries(symbolVolumes && typeof symbolVolumes === "object" ? symbolVolumes : {})
+      .map(([symbol, volumeUsd]) => {
+        const volume = toNum(volumeUsd, 0);
+        return {
+          symbol: String(symbol || "").trim().toUpperCase(),
+          volumeUsd: Number(volume.toFixed(2)),
+          sharePct: total > 0 ? Number(((volume / total) * 100).toFixed(2)) : 0,
+        };
+      })
+      .filter((row) => row.symbol && row.volumeUsd > 0)
+      .sort((a, b) => b.volumeUsd - a.volumeUsd)
+      .slice(0, Math.max(1, Number(limit || 8)));
+  }
+
+  function buildWalletFreshnessLabel(lastActivityAt, nowMs = Date.now()) {
+    const ts = Number(lastActivityAt || 0);
+    if (!Number.isFinite(ts) || ts <= 0) return "unknown";
+    const ageMs = Math.max(0, nowMs - ts);
+    if (ageMs <= 5 * 60 * 1000) return "fresh";
+    if (ageMs <= 15 * 60 * 1000) return "warm";
+    return "stale";
+  }
+
+  function mapWalletDetailPositions(rows = [], wallet) {
+    const normalizedWallet = String(wallet || "").trim();
+    return (Array.isArray(rows) ? rows : [])
+      .filter((row) => String((row && row.wallet) || "").trim() === normalizedWallet)
+      .map((row, index) => {
+        const safeRow = row && typeof row === "object" ? row : {};
+        const unrealizedPnlUsd =
+          safeRow.unrealizedPnlUsd !== undefined
+            ? toNum(safeRow.unrealizedPnlUsd, 0)
+            : safeRow.unrealizedPnl !== undefined
+            ? toNum(safeRow.unrealizedPnl, 0)
+            : safeRow.pnl !== undefined
+            ? toNum(safeRow.pnl, 0)
+            : 0;
+        return {
+          id:
+            safeRow.positionKey ||
+            safeRow.historyId ||
+            safeRow.orderId ||
+            safeRow.li ||
+            `${safeRow.symbol || "na"}:${safeRow.side || "na"}:${index}`,
+          wallet: normalizedWallet,
+          symbol: String((safeRow.symbol || "").trim() || "-").toUpperCase(),
+          side: safeRow.side || null,
+          size: Number(
+            toNum(
+              safeRow.size !== undefined
+                ? safeRow.size
+                : safeRow.qty !== undefined
+                ? safeRow.qty
+                : safeRow.amount,
+              0
+            ).toFixed(8)
+          ),
+          positionUsd: Number(
+            toNum(
+              safeRow.positionUsd !== undefined ? safeRow.positionUsd : safeRow.notionalUsd,
+              0
+            ).toFixed(2)
+          ),
+          entry: Number(
+            toNum(
+              safeRow.entry !== undefined ? safeRow.entry : safeRow.entryPrice,
+              0
+            ).toFixed(8)
+          ),
+          mark: Number(
+            toNum(
+              safeRow.mark !== undefined
+                ? safeRow.mark
+                : safeRow.markPrice !== undefined
+                ? safeRow.markPrice
+                : safeRow.currentPrice,
+              0
+            ).toFixed(8)
+          ),
+          unrealizedPnlUsd: Number(unrealizedPnlUsd.toFixed(2)),
+          leverage: Number(
+            toNum(safeRow.leverage, NaN).toFixed(Number.isFinite(toNum(safeRow.leverage, NaN)) ? 4 : 0)
+          ) || null,
+          roe:
+            Number.isFinite(Number(safeRow.roe))
+              ? Number(toNum(safeRow.roe, 0).toFixed(4))
+              : null,
+          liquidationPrice:
+            Number.isFinite(Number(safeRow.liquidationPrice))
+              ? Number(toNum(safeRow.liquidationPrice, 0).toFixed(8))
+              : null,
+          openedAt: safeRow.openedAt || safeRow.createdAt || null,
+          updatedAt: safeRow.updatedAt || safeRow.timestamp || safeRow.lastTradeAt || null,
+          freshness: safeRow.freshness || safeRow.status || "unknown",
+          status: safeRow.status || null,
+          source: safeRow.source || "wallet_first_positions",
+          lifecycle:
+            safeRow.lifecycle && typeof safeRow.lifecycle === "object" ? safeRow.lifecycle : null,
+        };
+      })
+      .sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0));
+  }
+
+  function buildLiveTradeWalletDetailPayload({
+    wallet,
+    livePayload,
+    lifecycleSnapshot = null,
+    supportSummary = null,
+    priceLookup = null,
+  }) {
+    const normalizedWallet = String(wallet || "").trim();
+    const payload = livePayload && typeof livePayload === "object" ? livePayload : {};
+    const walletRows = Array.isArray(payload.walletPerformance) ? payload.walletPerformance : [];
+    const positionsAll = Array.isArray(payload.positions) ? payload.positions : [];
+    const liveActiveRows = Array.isArray(payload.liveActiveWallets) ? payload.liveActiveWallets : [];
+    const record =
+      walletRows.find((row) => String((row && row.wallet) || "").trim() === normalizedWallet) || null;
+    const liveActive =
+      liveActiveRows.find((row) => String((row && row.wallet) || "").trim() === normalizedWallet) ||
+      null;
+    const positions = mapWalletDetailPositions(
+      positionsAll.map((row) => enrichPositionRowWithMarketPrice(row, priceLookup)),
+      normalizedWallet
+    );
+    const d24 = summarizeWalletWindow(record && record.d24);
+    const d7 = summarizeWalletWindow(record && record.d7);
+    const d30 = summarizeWalletWindow(record && record.d30);
+    const all = summarizeWalletWindow(record && record.all);
+    const exposureUsd =
+      liveActive && liveActive.positionUsd !== undefined
+        ? toNum(liveActive.positionUsd, 0)
+        : positions.reduce((sum, row) => sum + toNum(row.positionUsd, 0), 0);
+    const unrealizedPnlUsd = positions.reduce(
+      (sum, row) => sum + toNum(row.unrealizedPnlUsd, 0),
+      0
+    );
+    const lastActivityAt = Math.max(
+      Number((liveActive && liveActive.lastActivityAt) || 0),
+      Number((liveActive && liveActive.lastPositionAt) || 0),
+      Number(all.lastTrade || 0),
+      Number(d30.lastTrade || 0),
+      Number(d7.lastTrade || 0),
+      Number(d24.lastTrade || 0),
+      Number((record && record.updatedAt) || 0)
+    );
+    const freshness = buildWalletFreshnessLabel(lastActivityAt);
+    const concentration = buildWalletConcentrationRows(
+      all.symbolVolumes,
+      all.volumeUsd
+    );
+    const found = Boolean(record) || Boolean(liveActive) || positions.length > 0;
+
+    return {
+      generatedAt: Date.now(),
+      wallet: normalizedWallet,
+      found,
+      summary: {
+        wallet: normalizedWallet,
+        freshness,
+        lastActivityAt: lastActivityAt || null,
+        liveScannedAt: liveActive ? liveActive.liveScannedAt || null : null,
+        liveActiveRank: liveActive ? liveActive.rank || null : null,
+        liveActiveScore: liveActive ? toNum(liveActive.activityScore, 0) : 0,
+        openPositions: liveActive ? Number(liveActive.openPositions || positions.length) : positions.length,
+        exposureUsd: Number(exposureUsd.toFixed(2)),
+        unrealizedPnlUsd: Number(unrealizedPnlUsd.toFixed(2)),
+        recentEvents15m: liveActive ? Number(liveActive.recentEvents15m || 0) : 0,
+        recentEvents1h: liveActive ? Number(liveActive.recentEvents1h || 0) : 0,
+        d24,
+        d7,
+        d30,
+        all,
+        totalPnlUsd: Number((toNum(all.pnlUsd, 0) + unrealizedPnlUsd).toFixed(2)),
+        concentration,
+        lifecycle:
+          lifecycleSnapshot && typeof lifecycleSnapshot === "object" ? lifecycleSnapshot : null,
+      },
+      positions,
+      support: supportSummary || null,
+    };
+  }
+
+  function buildWalletFreshnessDistribution(walletRows = [], nowMs = Date.now()) {
+    const distribution = {
+      fresh5m: 0,
+      fresh15m: 0,
+      stale: 0,
+      unknown: 0,
+    };
+    (Array.isArray(walletRows) ? walletRows : []).forEach((row) => {
+      const timestamp = Number((row && (row.liveScannedAt || row.updatedAt)) || 0);
+      if (!Number.isFinite(timestamp) || timestamp <= 0) {
+        distribution.unknown += 1;
+        return;
+      }
+      const ageMs = Math.max(0, nowMs - timestamp);
+      if (ageMs <= 5 * 60 * 1000) distribution.fresh5m += 1;
+      else if (ageMs <= 15 * 60 * 1000) distribution.fresh15m += 1;
+      else distribution.stale += 1;
+    });
+    return distribution;
+  }
+
+  function buildPositionFreshnessDistribution(positions = []) {
+    const distribution = {
+      fresh: 0,
+      cooling: 0,
+      stale: 0,
+      unknown: 0,
+    };
+    (Array.isArray(positions) ? positions : []).forEach((row) => {
+      const status = String((row && (row.freshness || row.status)) || "").trim().toLowerCase();
+      if (status === "fresh") distribution.fresh += 1;
+      else if (status === "cooling") distribution.cooling += 1;
+      else if (status === "stale") distribution.stale += 1;
+      else distribution.unknown += 1;
+    });
+    return distribution;
+  }
+
+  function buildLiveTradesPayload(options = {}, context = {}) {
     const dashboard = pipeline.getDashboardPayload();
     const market = dashboard.market || {};
     const account = dashboard.account || {};
+    const priceLookup =
+      context.priceLookup instanceof Map && context.priceLookup.size > 0
+        ? context.priceLookup
+        : buildMarketPriceLookup(market.pricesBySymbol || {});
     const retentionPublicTradesPerSymbolRaw = Number(
       process.env.PACIFICA_MAX_PUBLIC_TRADES_PER_SYMBOL || 0
     );
@@ -3121,8 +4181,33 @@ function createWalletTrackingComponent({
     const queryWalletLimit = parseWindowParam(options.walletLimit, 0);
     const queryPositionOffset = parseWindowParam(options.positionOffset, 0);
     const queryPositionLimit = parseWindowParam(options.positionLimit, 0);
+    const queryPositionSortRaw = String(options.positionSort || "activity").trim();
+    const queryPositionSort = {
+      wallet: "wallet",
+      symbol: "symbol",
+      side: "side",
+      size: "size",
+      position: "positionUsd",
+      positionUsd: "positionUsd",
+      entry: "entry",
+      mark: "mark",
+      unrealized: "unrealized",
+      pnl: "unrealized",
+      activity: "activity",
+      opened: "openedAt",
+      openedAt: "openedAt",
+      updated: "updatedAt",
+      updatedAt: "updatedAt",
+    }[queryPositionSortRaw] || "activity";
+    const queryPositionDir =
+      String(options.positionDir || "desc").trim().toLowerCase() === "asc" ? "asc" : "desc";
     const queryAccountTradeOffset = parseWindowParam(options.accountTradeOffset, 0);
     const queryAccountTradeLimit = parseWindowParam(options.accountTradeLimit, 0);
+    const queryLiveActiveOffset = parseWindowParam(options.liveActiveOffset, 0);
+    const queryLiveActiveLimit = parseWindowParam(
+      options.liveActiveLimit,
+      Number(process.env.PACIFICA_LIVE_ACTIVE_DEFAULT_LIMIT || 200)
+    );
     const skipPublicTrades = parseFlagParam(options.skipPublicTrades, false);
 
     const publicTradesBySymbol =
@@ -3240,9 +4325,20 @@ function createWalletTrackingComponent({
 
     const applyTxAttribution = (rowWithWallet) => {
       const next = rowWithWallet && typeof rowWithWallet === "object" ? { ...rowWithWallet } : {};
+      const applyTriggerSignatureWallet = () => {
+        const signature = normalizeTxSignature(next.txSignature);
+        if (!signature || next.wallet) return false;
+        const triggerWallet = liveTradeRecentSignatureWallets.get(signature);
+        if (!triggerWallet || !triggerWallet.wallet) return false;
+        next.wallet = String(triggerWallet.wallet);
+        next.walletSource = "solana_log_trigger_signature";
+        next.walletConfidence = `trigger_signature_${String(triggerWallet.confidence || "unknown")}`;
+        return true;
+      };
       if (next.txSignature) {
         if (!next.txSource) next.txSource = "payload";
         if (!next.txConfidence) next.txConfidence = "hard_payload";
+        applyTriggerSignatureWallet();
         return next;
       }
       const txByHistory =
@@ -3258,6 +4354,7 @@ function createWalletTrackingComponent({
           next.walletSource = "tx_attribution_signer";
           next.walletConfidence = "soft_tx_signer";
         }
+        applyTriggerSignatureWallet();
         return next;
       }
       const txByOrder = getLiveTradeTxAttributionByOrderId(next.orderId);
@@ -3270,6 +4367,7 @@ function createWalletTrackingComponent({
           next.walletSource = "tx_attribution_signer";
           next.walletConfidence = "soft_tx_signer";
         }
+        applyTriggerSignatureWallet();
         return next;
       }
       const txByLi = getLiveTradeTxAttributionByLi(next.li);
@@ -3282,6 +4380,7 @@ function createWalletTrackingComponent({
           next.walletSource = "tx_attribution_signer";
           next.walletConfidence = "soft_tx_signer";
         }
+        applyTriggerSignatureWallet();
         return next;
       }
       if (!next.txSource) next.txSource = "unresolved";
@@ -3336,6 +4435,16 @@ function createWalletTrackingComponent({
       offset: queryPublicOffset,
       limit: queryPublicLimit,
     });
+    publicTradesAll.forEach((row) => {
+      if (!row || !row.wallet) return;
+      recordLiveWalletTrigger({
+        wallet: row.wallet,
+        at: Number(row.timestamp || Date.now()),
+        symbol: row.symbol || null,
+        source: "public_trade_attributed",
+        reason: "public_trade_attributed",
+      });
+    });
 
     const accountTradesAll = Array.isArray(dashboard.trades && dashboard.trades.recent)
       ? dashboard.trades.recent
@@ -3348,6 +4457,7 @@ function createWalletTrackingComponent({
     const liveWalletSnapshot = getLiveWalletSnapshot(
       Math.max(200, queryPublicLimit || 200)
     );
+    const now = Date.now();
     const liveWalletStatus =
       liveWalletSnapshot && liveWalletSnapshot.status && typeof liveWalletSnapshot.status === "object"
         ? liveWalletSnapshot.status
@@ -3358,22 +4468,94 @@ function createWalletTrackingComponent({
       liveWalletSnapshot && Array.isArray(liveWalletSnapshot.positions)
         ? liveWalletSnapshot.positions
         : [];
-    const positionsAll = walletFirstPositionsAll.length
+    const positionsBase = walletFirstPositionsAll.length
       ? walletFirstPositionsAll
       : Array.isArray(dashboard.positions && dashboard.positions.rows)
       ? dashboard.positions.rows
       : [];
+    const positionsAll = Array.isArray(positionsBase)
+      ? positionsBase.map((row) => {
+          const enriched = enrichPositionRowWithMarketPrice(row, priceLookup);
+          const lifecycle =
+            positionLifecycleStore &&
+            typeof positionLifecycleStore.getPositionSummary === "function"
+              ? positionLifecycleStore.getPositionSummary(
+                  enriched && enriched.wallet,
+                  enriched && enriched.positionKey,
+                  enriched,
+                  now
+                )
+              : null;
+          return lifecycle ? { ...enriched, lifecycle } : enriched;
+        })
+      : [];
+    const comparePositionRows = (left, right) => {
+      const numericValueFor = (row, key) => {
+        if (!row || typeof row !== "object") return NaN;
+        if (key === "unrealized") {
+          return toNum(
+            row.unrealizedPnlUsd !== undefined ? row.unrealizedPnlUsd : row.pnl,
+            NaN
+          );
+        }
+        if (key === "activity") {
+          return Math.max(Number(row.updatedAt || 0), Number(row.openedAt || 0));
+        }
+        return toNum(row[key], NaN);
+      };
+      const stringValueFor = (row, key) => {
+        if (!row || typeof row !== "object") return "";
+        if (key === "wallet") {
+          return String(row.wallet || row.walletLabel || row.walletTitle || "").trim().toLowerCase();
+        }
+        return String(row[key] || "").trim().toLowerCase();
+      };
+
+      const numericKeys = new Set([
+        "size",
+        "positionUsd",
+        "entry",
+        "mark",
+        "unrealized",
+        "activity",
+        "openedAt",
+        "updatedAt",
+      ]);
+      if (numericKeys.has(queryPositionSort)) {
+        const leftVal = numericValueFor(left, queryPositionSort);
+        const rightVal = numericValueFor(right, queryPositionSort);
+        const leftMissing = !Number.isFinite(leftVal);
+        const rightMissing = !Number.isFinite(rightVal);
+        if (leftMissing && rightMissing) return Number(right.updatedAt || 0) - Number(left.updatedAt || 0);
+        if (leftMissing) return 1;
+        if (rightMissing) return -1;
+        if (leftVal === rightVal) return Number(right.updatedAt || 0) - Number(left.updatedAt || 0);
+        return queryPositionDir === "asc" ? leftVal - rightVal : rightVal - leftVal;
+      }
+
+      const leftVal = stringValueFor(left, queryPositionSort);
+      const rightVal = stringValueFor(right, queryPositionSort);
+      const cmp = leftVal.localeCompare(rightVal);
+      if (cmp === 0) return Number(right.updatedAt || 0) - Number(left.updatedAt || 0);
+      return queryPositionDir === "asc" ? cmp : -cmp;
+    };
+    positionsAll.sort(comparePositionRows);
     const positionsWindow = applyWindow(positionsAll, {
       offset: queryPositionOffset,
       limit: queryPositionLimit,
     });
 
-    const walletRowsAll = walletStore ? walletStore.list() : [];
-    const walletRowsWindow = applyWindow(walletRowsAll, {
-      offset: queryWalletOffset,
-      limit: queryWalletLimit,
-    });
-    const now = Date.now();
+    const walletRowsBase = walletStore ? walletStore.list() : [];
+    const walletRowsSeed = Array.isArray(walletRowsBase)
+      ? walletRowsBase.map((row) => {
+          const lifecycle =
+            positionLifecycleStore &&
+            typeof positionLifecycleStore.getWalletSummary === "function"
+              ? positionLifecycleStore.getWalletSummary(row && row.wallet)
+              : null;
+          return lifecycle ? { ...row, lifecycle } : row;
+        })
+      : [];
     const oneMinuteAgo = now - 60 * 1000;
     const recentTrades = [];
     for (const row of publicTradesAll) {
@@ -3412,6 +4594,134 @@ function createWalletTrackingComponent({
     const walletFirstEvents = liveWalletSnapshot && Array.isArray(liveWalletSnapshot.events)
       ? liveWalletSnapshot.events
       : [];
+    const liveActiveWalletRows = buildLiveActiveWalletRows({
+      walletRows: walletRowsSeed,
+      positions: positionsAll,
+      events: walletFirstEvents,
+      nowMs: now,
+    });
+    const unrealizedByWallet = new Map();
+    positionsAll.forEach((position) => {
+      const wallet = String((position && position.wallet) || "").trim();
+      if (!wallet) return;
+      unrealizedByWallet.set(
+        wallet,
+        Number(
+          (
+            toNum(unrealizedByWallet.get(wallet), 0) +
+            toNum(position && position.unrealizedPnlUsd, 0)
+          ).toFixed(2)
+        )
+      );
+    });
+    const liveActiveMap = new Map(
+      liveActiveWalletRows
+        .filter((row) => row && row.wallet)
+        .map((row) => [String(row.wallet).trim(), row])
+    );
+    const walletRowsAll = walletRowsSeed.map((row) => {
+      const wallet = String((row && row.wallet) || "").trim();
+      const liveActive = liveActiveMap.get(wallet) || null;
+      const historicalLastActivity = Math.max(
+        Number(row && row.lastActivity ? row.lastActivity : 0),
+        Number(row && row.lastTrade ? row.lastTrade : 0),
+        Number(row && row.updatedAt ? row.updatedAt : 0),
+        Number(row && row.all && row.all.lastTrade ? row.all.lastTrade : 0),
+        Number(row && row.d30 && row.d30.lastTrade ? row.d30.lastTrade : 0),
+        Number(row && row.d7 && row.d7.lastTrade ? row.d7.lastTrade : 0),
+        Number(row && row.d24 && row.d24.lastTrade ? row.d24.lastTrade : 0)
+      );
+      const liveLastActivity = Math.max(
+        Number(liveActive && liveActive.lastActivityAt ? liveActive.lastActivityAt : 0),
+        Number(liveActive && liveActive.lastPositionAt ? liveActive.lastPositionAt : 0),
+        Number(liveActive && liveActive.liveScannedAt ? liveActive.liveScannedAt : 0)
+      );
+      const lastActivity = Math.max(historicalLastActivity, liveLastActivity);
+      const openPositions = Number(liveActive && liveActive.openPositions ? liveActive.openPositions : 0);
+      const exposureUsd = Number(
+        toNum(liveActive && liveActive.positionUsd !== undefined ? liveActive.positionUsd : 0, 0).toFixed(2)
+      );
+      const unrealizedPnlUsd = Number(toNum(unrealizedByWallet.get(wallet), 0).toFixed(2));
+      return {
+        ...row,
+        openPositions,
+        exposureUsd,
+        unrealizedPnlUsd,
+        totalPnlUsd: Number(
+          (
+            toNum(
+              row &&
+                row.all &&
+                row.all.pnlUsd !== undefined
+                ? row.all.pnlUsd
+                : row && row.realizedPnlUsd !== undefined
+                ? row.realizedPnlUsd
+                : row && row.pnlUsd,
+              0
+            ) + unrealizedPnlUsd
+          ).toFixed(2)
+        ),
+        liveActiveRank: liveActive ? liveActive.rank || null : null,
+        liveActiveScore: liveActive ? Number(toNum(liveActive.activityScore, 0).toFixed(2)) : 0,
+        recentEvents15m: liveActive ? Number(liveActive.recentEvents15m || 0) : 0,
+        recentEvents1h: liveActive ? Number(liveActive.recentEvents1h || 0) : 0,
+        lastActivity: lastActivity || null,
+        freshness: buildWalletFreshnessLabel(lastActivity, now),
+      };
+    });
+    const walletRowsWindow = applyWindow(walletRowsAll, {
+      offset: queryWalletOffset,
+      limit: queryWalletLimit,
+    });
+    const liveActiveWalletWindow = applyWindow(liveActiveWalletRows, {
+      offset: queryLiveActiveOffset,
+      limit: queryLiveActiveLimit,
+    });
+    const pacificaPublicActive = getPacificaPublicActiveSnapshot();
+    const positionsWithWallet = positionsAll.filter((row) => Boolean(row && row.wallet)).length;
+    const positionsWalletCoveragePct = positionsAll.length
+      ? Number(((positionsWithWallet / positionsAll.length) * 100).toFixed(2))
+      : 0;
+    const hotWsUtilizationPct =
+      liveWalletStatus && Number(liveWalletStatus.hotWsCapacity || 0) > 0
+        ? Number(
+            (
+              (Number(liveWalletStatus.hotWsActiveWallets || 0) /
+                Math.max(1, Number(liveWalletStatus.hotWsCapacity || 0))) *
+              100
+            ).toFixed(2)
+          )
+        : null;
+    const publicActiveCoveragePct =
+      Number(pacificaPublicActive && pacificaPublicActive.activeWalletsLowerBound) > 0
+        ? Number(
+            (
+              (Number((liveWalletStatus && liveWalletStatus.walletsWithOpenPositions) || 0) /
+                Math.max(1, Number(pacificaPublicActive.activeWalletsLowerBound || 0))) *
+              100
+            ).toFixed(2)
+          )
+        : null;
+    const reconciliationLagMs =
+      liveWalletStatus && liveWalletStatus.lastPassFinishedAt
+        ? Math.max(0, now - Number(liveWalletStatus.lastPassFinishedAt || 0))
+        : null;
+    const walletFreshnessDistribution = buildWalletFreshnessDistribution(walletRowsAll, now);
+    const positionFreshnessDistribution = buildPositionFreshnessDistribution(positionsAll);
+    const walletMetricsHistoryStatus =
+      walletMetricsHistoryStore &&
+      typeof walletMetricsHistoryStore.getStatus === "function"
+        ? walletMetricsHistoryStore.getStatus()
+        : { enabled: false };
+    const positionLifecycleStatus =
+      positionLifecycleStore &&
+      typeof positionLifecycleStore.getStatus === "function"
+        ? positionLifecycleStore.getStatus()
+        : { enabled: false };
+    const walletPerformanceSupport = buildWalletPerformanceSupportSummary({
+      walletMetricsHistoryStatus,
+      positionLifecycleStatus,
+    });
     const recentWalletEvents = walletFirstEvents.filter((row) => {
       const ts = Number(row && row.timestamp ? row.timestamp : 0);
       return ts > 0 && ts >= oneMinuteAgo;
@@ -3485,12 +4795,21 @@ function createWalletTrackingComponent({
         openPositionsHasMore: positionsWindow.hasMore,
         openPositionsOffset: positionsWindow.offset,
         openPositionsLimit: positionsWindow.limit,
+        openPositionsSort: queryPositionSort,
+        openPositionsDir: queryPositionDir,
         indexedWallets: walletRowsWindow.returned,
         indexedWalletsTotal: walletRowsAll.length,
         indexedWalletsWindowed: walletRowsWindow.windowedByQuery,
         indexedWalletsHasMore: walletRowsWindow.hasMore,
         indexedWalletsOffset: walletRowsWindow.offset,
         indexedWalletsLimit: walletRowsWindow.limit,
+        liveActiveWallets: liveActiveWalletWindow.returned,
+        liveActiveWalletsTotal: liveActiveWalletWindow.total,
+        liveActiveWalletsWindowed: liveActiveWalletWindow.windowedByQuery,
+        liveActiveWalletsHasMore: liveActiveWalletWindow.hasMore,
+        liveActiveWalletsOffset: liveActiveWalletWindow.offset,
+        liveActiveWalletsLimit: liveActiveWalletWindow.limit,
+        walletPerformanceSupport,
         wsStatus:
           (dashboard.environment && dashboard.environment.wsStatus) ||
           (dashboard.sync && dashboard.sync.wsStatus) ||
@@ -3513,6 +4832,7 @@ function createWalletTrackingComponent({
           resolvedHistoryCacheSize: liveTradeWalletAttribution.historyToWallet.size,
           resolvedOrderCacheSize: liveTradeWalletAttribution.orderToWallet.size,
           resolvedLiCacheSize: liveTradeWalletAttribution.liToWallet.size,
+          triggerSignatureCacheSize: liveTradeRecentSignatureWallets.size,
           pendingHistoryIds: liveTradeWalletAttribution.pendingHistoryIds.size,
           pendingOrderIds: liveTradeWalletAttribution.pendingOrderIds.size,
           pendingLiIds: liveTradeWalletAttribution.pendingLiIds.size,
@@ -3552,6 +4872,122 @@ function createWalletTrackingComponent({
           : {
               enabled: false,
             },
+        observability: {
+          hotTier: {
+            capacity: Number((liveWalletStatus && liveWalletStatus.hotWsCapacity) || 0),
+            capacityCeiling: Number((liveWalletStatus && liveWalletStatus.hotWsCapacityCeiling) || 0),
+            activeWallets: Number((liveWalletStatus && liveWalletStatus.hotWsActiveWallets) || 0),
+            openConnections: Number((liveWalletStatus && liveWalletStatus.hotWsOpenConnections) || 0),
+            availableSlots: Number((liveWalletStatus && liveWalletStatus.hotWsAvailableSlots) || 0),
+            droppedPromotions: Number(
+              (liveWalletStatus && liveWalletStatus.hotWsDroppedPromotions) || 0
+            ),
+            promotionBacklog: Number(
+              (liveWalletStatus && liveWalletStatus.hotWsPromotionBacklog) || 0
+            ),
+            utilizationPct: hotWsUtilizationPct,
+            scaleEvents: Number((liveWalletStatus && liveWalletStatus.hotWsScaleEvents) || 0),
+            processRssMb:
+              liveWalletStatus && liveWalletStatus.hotWsProcessRssMb !== undefined
+                ? Number(liveWalletStatus.hotWsProcessRssMb)
+                : null,
+            triggerToEventAvgMs:
+              liveWalletStatus && liveWalletStatus.hotWsTriggerToEventAvgMs !== undefined
+                ? Number(liveWalletStatus.hotWsTriggerToEventAvgMs)
+                : null,
+            triggerToEventLastMs:
+              liveWalletStatus && liveWalletStatus.hotWsLastTriggerToEventMs !== undefined
+                ? Number(liveWalletStatus.hotWsLastTriggerToEventMs)
+                : null,
+            reconnectTransitions:
+              liveWalletStatus && liveWalletStatus.hotWsReconnectTransitions !== undefined
+                ? Number(liveWalletStatus.hotWsReconnectTransitions)
+                : null,
+            errorCount:
+              liveWalletStatus && liveWalletStatus.hotWsErrorCount !== undefined
+                ? Number(liveWalletStatus.hotWsErrorCount)
+                : null,
+          },
+          reconciliation: {
+            estimatedSweepSeconds:
+              liveWalletStatus &&
+              liveWalletStatus.estimatedSweepSeconds !== undefined &&
+              liveWalletStatus.estimatedSweepSeconds !== null
+                ? Number(liveWalletStatus.estimatedSweepSeconds)
+                : null,
+            estimatedHotLoopSeconds:
+              liveWalletStatus &&
+              liveWalletStatus.estimatedHotLoopSeconds !== undefined &&
+              liveWalletStatus.estimatedHotLoopSeconds !== null
+                ? Number(liveWalletStatus.estimatedHotLoopSeconds)
+                : null,
+            estimatedWarmLoopSeconds:
+              liveWalletStatus &&
+              liveWalletStatus.estimatedWarmLoopSeconds !== undefined &&
+              liveWalletStatus.estimatedWarmLoopSeconds !== null
+                ? Number(liveWalletStatus.estimatedWarmLoopSeconds)
+                : null,
+            reconciliationLagMs,
+            walletsCoveragePct:
+              liveWalletStatus &&
+              liveWalletStatus.walletsCoveragePct !== undefined &&
+              liveWalletStatus.walletsCoveragePct !== null
+                ? Number(liveWalletStatus.walletsCoveragePct)
+                : null,
+            priorityQueueDepth:
+              liveWalletStatus && liveWalletStatus.priorityQueueDepth !== undefined
+                ? Number(liveWalletStatus.priorityQueueDepth)
+                : null,
+            hotReconcileDueWallets:
+              liveWalletStatus && liveWalletStatus.hotReconcileDueWallets !== undefined
+                ? Number(liveWalletStatus.hotReconcileDueWallets)
+                : null,
+            warmReconcileDueWallets:
+              liveWalletStatus && liveWalletStatus.warmReconcileDueWallets !== undefined
+                ? Number(liveWalletStatus.warmReconcileDueWallets)
+                : null,
+          },
+          freshness: {
+            wallets: walletFreshnessDistribution,
+            positions: positionFreshnessDistribution,
+            lifecycle:
+              liveWalletStatus
+                ? {
+                    hot: Number(liveWalletStatus.lifecycleHotWallets || 0),
+                    warm: Number(liveWalletStatus.lifecycleWarmWallets || 0),
+                    cold: Number(liveWalletStatus.lifecycleColdWallets || 0),
+                    fresh: Number(liveWalletStatus.freshWallets || 0),
+                    cooling: Number(liveWalletStatus.coolingWallets || 0),
+                    stale: Number(liveWalletStatus.staleWallets || 0),
+                  }
+                : null,
+          },
+          publicActiveCoverage: {
+            ...pacificaPublicActive,
+            activeCoveragePct: publicActiveCoveragePct,
+          },
+          openPositionAttributionCoveragePct: positionsWalletCoveragePct,
+          transport:
+            liveWalletStatus
+              ? {
+                  healthyClients: Number(liveWalletStatus.healthyClients || 0),
+                  avgClientLatencyMs: Number(liveWalletStatus.avgClientLatencyMs || 0),
+                  timeoutClients: Number(liveWalletStatus.timeoutClients || 0),
+                  proxyFailingClients: Number(liveWalletStatus.proxyFailingClients || 0),
+                  clientsCooling: Number(liveWalletStatus.clientsCooling || 0),
+                  clientsDisabled: Number(liveWalletStatus.clientsDisabled || 0),
+                  clients429: Number(liveWalletStatus.clients429 || 0),
+                }
+              : null,
+          triggers:
+            solanaLogTriggerMonitor && typeof solanaLogTriggerMonitor.getStatus === "function"
+              ? solanaLogTriggerMonitor.getStatus()
+              : { enabled: false },
+          history: {
+            walletMetrics: walletMetricsHistoryStatus,
+            positionLifecycle: positionLifecycleStatus,
+          },
+        },
       },
       marketContext: {
         fundingChips,
@@ -3568,6 +5004,7 @@ function createWalletTrackingComponent({
       publicTrades: publicTradesWindow.rows,
       accountTrades: accountTradesWindow.rows,
       positions: positionsWindow.rows,
+      liveActiveWallets: liveActiveWalletWindow.rows,
       walletPerformance: walletRowsWindow.rows,
       accountOverview: account.overview || null,
     };
@@ -3595,7 +5032,8 @@ function createWalletTrackingComponent({
       if (
         url.pathname === "/api/live-trades" ||
         url.pathname === "/api/live-trades/attribution-db" ||
-        url.pathname === "/api/live-trades/wallet-first"
+        url.pathname === "/api/live-trades/wallet-first" ||
+        /^\/api\/live-trades\/wallet\/[^/]+$/i.test(String(url.pathname || ""))
       ) {
         return proxyLiveTradesJson(req, res, url);
       }
@@ -3646,37 +5084,45 @@ function createWalletTrackingComponent({
         }
       };
 
-      const pushSnapshot = () => {
+      const pushSnapshot = async () => {
         const skipPublicTrades = parseFlagParam(
           url.searchParams.get("skip_public"),
           parseFlagParam(url.searchParams.get("lite"), false)
         );
+        const priceLookup = await getLivePositionPriceLookup();
         writeEvent("snapshot", {
           type: "snapshot",
           at: Date.now(),
-          payload: buildLiveTradesPayload({
-            publicOffset: parseWindowParam(url.searchParams.get("public_offset"), 0),
-            publicLimit: parseWindowParam(
-              url.searchParams.get("public_limit"),
-              liveDefaultPublicLimit
-            ),
-            walletOffset: parseWindowParam(url.searchParams.get("wallet_offset"), 0),
-            walletLimit: parseWindowParam(
-              url.searchParams.get("wallet_limit"),
-              liveDefaultWalletLimit
-            ),
-            positionOffset: parseWindowParam(url.searchParams.get("position_offset"), 0),
-            positionLimit: parseWindowParam(
-              url.searchParams.get("position_limit"),
-              liveDefaultPositionLimit
-            ),
-            accountTradeOffset: parseWindowParam(url.searchParams.get("account_trade_offset"), 0),
-            accountTradeLimit: parseWindowParam(
-              url.searchParams.get("account_trade_limit"),
-              liveDefaultAccountTradeLimit
-            ),
-            skipPublicTrades,
-          }),
+          payload: buildLiveTradesPayload(
+            {
+              publicOffset: parseWindowParam(url.searchParams.get("public_offset"), 0),
+              publicLimit: parseWindowParam(
+                url.searchParams.get("public_limit"),
+                liveDefaultPublicLimit
+              ),
+              walletOffset: parseWindowParam(url.searchParams.get("wallet_offset"), 0),
+              walletLimit: parseWindowParam(
+                url.searchParams.get("wallet_limit"),
+                liveDefaultWalletLimit
+              ),
+              positionOffset: parseWindowParam(url.searchParams.get("position_offset"), 0),
+              positionLimit: parseWindowParam(
+                url.searchParams.get("position_limit"),
+                liveDefaultPositionLimit
+              ),
+              positionSort: String(url.searchParams.get("position_sort") || "activity").trim(),
+              positionDir: String(url.searchParams.get("position_dir") || "desc").trim(),
+              accountTradeOffset: parseWindowParam(url.searchParams.get("account_trade_offset"), 0),
+              accountTradeLimit: parseWindowParam(
+                url.searchParams.get("account_trade_limit"),
+                liveDefaultAccountTradeLimit
+              ),
+              liveActiveOffset: parseWindowParam(url.searchParams.get("live_active_offset"), 0),
+              liveActiveLimit: parseWindowParam(url.searchParams.get("live_active_limit"), 200),
+              skipPublicTrades,
+            },
+            { priceLookup }
+          ),
         });
       };
 
@@ -3687,8 +5133,10 @@ function createWalletTrackingComponent({
         });
       };
 
-      pushSnapshot();
-      const snapshotTimer = setInterval(pushSnapshot, streamIntervalMs);
+      pushSnapshot().catch(() => null);
+      const snapshotTimer = setInterval(() => {
+        pushSnapshot().catch(() => null);
+      }, streamIntervalMs);
       const heartbeatTimer = setInterval(pushHeartbeat, 10000);
 
       const cleanup = () => {
@@ -4148,33 +5596,96 @@ function createWalletTrackingComponent({
         url.searchParams.get("skip_public"),
         parseFlagParam(url.searchParams.get("lite"), false)
       );
+      const priceLookup = await getLivePositionPriceLookup();
       sendJson(
         res,
         200,
-        buildLiveTradesPayload({
-          publicOffset: parseWindowParam(url.searchParams.get("public_offset"), 0),
-          publicLimit: parseWindowParam(
-            url.searchParams.get("public_limit"),
-            liveDefaultPublicLimit
-          ),
-          walletOffset: parseWindowParam(url.searchParams.get("wallet_offset"), 0),
-          walletLimit: parseWindowParam(
-            url.searchParams.get("wallet_limit"),
-            liveDefaultWalletLimit
-          ),
-          positionOffset: parseWindowParam(url.searchParams.get("position_offset"), 0),
-          positionLimit: parseWindowParam(
-            url.searchParams.get("position_limit"),
-            liveDefaultPositionLimit
-          ),
-          accountTradeOffset: parseWindowParam(url.searchParams.get("account_trade_offset"), 0),
-          accountTradeLimit: parseWindowParam(
-            url.searchParams.get("account_trade_limit"),
-            liveDefaultAccountTradeLimit
-          ),
-          skipPublicTrades,
-        })
+        buildLiveTradesPayload(
+          {
+            publicOffset: parseWindowParam(url.searchParams.get("public_offset"), 0),
+            publicLimit: parseWindowParam(
+              url.searchParams.get("public_limit"),
+              liveDefaultPublicLimit
+            ),
+            walletOffset: parseWindowParam(url.searchParams.get("wallet_offset"), 0),
+            walletLimit: parseWindowParam(
+              url.searchParams.get("wallet_limit"),
+              liveDefaultWalletLimit
+            ),
+            positionOffset: parseWindowParam(url.searchParams.get("position_offset"), 0),
+            positionLimit: parseWindowParam(
+              url.searchParams.get("position_limit"),
+              liveDefaultPositionLimit
+            ),
+            positionSort: String(url.searchParams.get("position_sort") || "activity").trim(),
+            positionDir: String(url.searchParams.get("position_dir") || "desc").trim(),
+            accountTradeOffset: parseWindowParam(url.searchParams.get("account_trade_offset"), 0),
+            accountTradeLimit: parseWindowParam(
+              url.searchParams.get("account_trade_limit"),
+              liveDefaultAccountTradeLimit
+            ),
+            liveActiveOffset: parseWindowParam(url.searchParams.get("live_active_offset"), 0),
+            liveActiveLimit: parseWindowParam(url.searchParams.get("live_active_limit"), 200),
+            skipPublicTrades,
+          },
+          { priceLookup }
+        )
       );
+      return true;
+    }
+
+    if (/^\/api\/live-trades\/wallet\/[^/]+$/i.test(String(url.pathname || "")) && req.method === "GET") {
+      const wallet = decodeURIComponent(String(url.pathname || "").split("/").pop() || "").trim();
+      if (!wallet) {
+        sendJson(res, 400, {
+          generatedAt: Date.now(),
+          error: "wallet_required",
+        });
+        return true;
+      }
+      const walletRows = walletStore ? walletStore.list() : [];
+      const liveSnapshot = getLiveWalletSnapshot(1000);
+      const priceLookup = await getLivePositionPriceLookup();
+      const positionsAll =
+        liveSnapshot && Array.isArray(liveSnapshot.positions) ? liveSnapshot.positions : [];
+      const eventsAll = liveSnapshot && Array.isArray(liveSnapshot.events) ? liveSnapshot.events : [];
+      const liveActiveRows = buildLiveActiveWalletRows({
+        walletRows,
+        positions: positionsAll,
+        events: eventsAll,
+        nowMs: Date.now(),
+      }).map((row, index) => ({
+        ...row,
+        rank: index + 1,
+      }));
+      const walletPerformanceSupport = buildWalletPerformanceSupportSummary({
+        walletMetricsHistoryStatus:
+          walletMetricsHistoryStore &&
+          typeof walletMetricsHistoryStore.getStatus === "function"
+            ? walletMetricsHistoryStore.getStatus()
+            : { enabled: false },
+        positionLifecycleStatus:
+          positionLifecycleStore &&
+          typeof positionLifecycleStore.getStatus === "function"
+            ? positionLifecycleStore.getStatus()
+            : { enabled: false },
+      });
+      const payload = buildLiveTradeWalletDetailPayload({
+        wallet,
+        livePayload: {
+          walletPerformance: walletRows,
+          positions: positionsAll,
+          liveActiveWallets: liveActiveRows,
+        },
+        lifecycleSnapshot: await getLifecycleSnapshot(wallet),
+        supportSummary: walletPerformanceSupport,
+        priceLookup,
+      });
+      if (!payload.found) {
+        sendJson(res, 404, payload);
+        return true;
+      }
+      sendJson(res, 200, payload);
       return true;
     }
 
@@ -4209,6 +5720,10 @@ function createWalletTrackingComponent({
         openPositions: Array.isArray(snapshot.positions) ? snapshot.positions.length : 0,
         positions: Array.isArray(snapshot.positions) ? snapshot.positions : [],
         events: Array.isArray(snapshot.events) ? snapshot.events : [],
+        triggers:
+          solanaLogTriggerMonitor && typeof solanaLogTriggerMonitor.getStatus === "function"
+            ? solanaLogTriggerMonitor.getStatus()
+            : { enabled: false },
       });
       return true;
     }
@@ -4255,9 +5770,73 @@ function createWalletTrackingComponent({
         query: Object.fromEntries(url.searchParams.entries()),
       });
       if (Array.isArray(payload.rows)) {
+        const walletRows = walletStore ? walletStore.list() : [];
+        const liveSnapshot = getLiveWalletSnapshot(600);
+        const priceLookup = await getLivePositionPriceLookup();
+        const livePositions = (
+          liveSnapshot && Array.isArray(liveSnapshot.positions) ? liveSnapshot.positions : []
+        ).map((row) => enrichPositionRowWithMarketPrice(row, priceLookup));
+        const liveActiveRows = buildLiveActiveWalletRows({
+          walletRows,
+          positions: livePositions,
+          events: liveSnapshot && Array.isArray(liveSnapshot.events) ? liveSnapshot.events : [],
+          nowMs: Date.now(),
+        }).map((row, index) => ({
+          ...row,
+          rank: index + 1,
+        }));
+        const liveActiveMap = new Map(
+          liveActiveRows.map((row) => [String(row.wallet || "").trim(), row])
+        );
+        const unrealizedByWallet = new Map();
+        livePositions.forEach((row) => {
+          const wallet = String((row && row.wallet) || "").trim();
+          if (!wallet) return;
+          unrealizedByWallet.set(
+            wallet,
+            Number(
+              (
+                toNum(unrealizedByWallet.get(wallet), 0) +
+                toNum(row && row.unrealizedPnlUsd, 0)
+              ).toFixed(2)
+            )
+          );
+        });
         const lifecycleMap = await getLifecycleMap(payload.rows.map((row) => row.wallet));
         payload.rows = payload.rows.map((row) => ({
           ...row,
+          openPositions: Number((liveActiveMap.get(row.wallet)?.openPositions || 0)),
+          exposureUsd: Number(
+            toNum(liveActiveMap.get(row.wallet)?.positionUsd, 0).toFixed(2)
+          ),
+          liveActiveRank: liveActiveMap.get(row.wallet)?.rank || null,
+          liveActiveScore: Number(
+            toNum(liveActiveMap.get(row.wallet)?.activityScore, 0).toFixed(2)
+          ),
+          recentEvents15m: Number((liveActiveMap.get(row.wallet)?.recentEvents15m || 0)),
+          recentEvents1h: Number((liveActiveMap.get(row.wallet)?.recentEvents1h || 0)),
+          unrealizedPnlUsd: Number(toNum(unrealizedByWallet.get(row.wallet), 0).toFixed(2)),
+          totalPnlUsd: Number(
+            (
+              toNum(row && row.all && row.all.pnlUsd !== undefined ? row.all.pnlUsd : row.pnlUsd, 0) +
+              toNum(unrealizedByWallet.get(row.wallet), 0)
+            ).toFixed(2)
+          ),
+          lastActivity:
+            Math.max(
+              Number(row.lastActivity || 0),
+              Number(liveActiveMap.get(row.wallet)?.lastActivityAt || 0),
+              Number(liveActiveMap.get(row.wallet)?.lastPositionAt || 0),
+              Number(row.updatedAt || 0)
+            ) || null,
+          freshness: buildWalletFreshnessLabel(
+            Math.max(
+              Number(row.lastActivity || 0),
+              Number(liveActiveMap.get(row.wallet)?.lastActivityAt || 0),
+              Number(liveActiveMap.get(row.wallet)?.lastPositionAt || 0),
+              Number(row.updatedAt || 0)
+            ) || 0
+          ),
           lifecycle: lifecycleMap[row.wallet] || null,
         }));
       }
@@ -4325,8 +5904,22 @@ function createWalletTrackingComponent({
     return false;
   }
 
+  function ingestWalletTrigger(trigger) {
+    recordLiveWalletTrigger(trigger);
+    if (
+      liveWalletPositionsMonitor &&
+      typeof liveWalletPositionsMonitor.noteRecentWalletActivity === "function" &&
+      trigger &&
+      trigger.wallet
+    ) {
+      liveWalletPositionsMonitor.noteRecentWalletActivity(trigger.wallet, trigger.at || Date.now());
+    }
+  }
+
   return {
     handleRequest,
+    ingestWalletTrigger,
+    getLiveWalletSnapshot,
   };
 }
 

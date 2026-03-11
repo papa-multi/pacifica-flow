@@ -831,15 +831,93 @@ function buildExchangeOverviewPayload({ state, transport, wallets, timeframe }) 
 }
 
 function buildWalletExplorerPayload({ wallets, query }) {
+  const summarizeBucket = (bucket = {}) => {
+    const safeBucket = bucket && typeof bucket === "object" ? bucket : {};
+    return {
+      trades: Number(safeBucket.trades || 0),
+      volumeUsd: toNum(safeBucket.volumeUsd, 0),
+      pnlUsd: toNum(safeBucket.pnlUsd, 0),
+      winRate: toNum(safeBucket.winRatePct, 0),
+      firstTrade: safeBucket.firstTrade || null,
+      lastTrade: safeBucket.lastTrade || null,
+      feesUsd: toNum(
+        safeBucket.feesPaidUsd !== undefined ? safeBucket.feesPaidUsd : safeBucket.feesUsd,
+        0
+      ),
+      fundingPayoutUsd: toNum(safeBucket.fundingPayoutUsd, 0),
+      symbolVolumes:
+        safeBucket.symbolVolumes && typeof safeBucket.symbolVolumes === "object"
+          ? safeBucket.symbolVolumes
+          : {},
+    };
+  };
   const q = query || {};
   const timeframe = normalizeTimeframe(q.timeframe);
   const search = String(q.q || "").trim().toLowerCase();
   const page = Math.max(1, Number(q.page || 1));
   const pageSize = Math.max(1, Math.min(100, Number(q.pageSize || 20)));
+  const requestedSort = String(q.sort || "volumeUsd").trim();
+  const sortKey = {
+    trades: "trades",
+    volume: "volumeUsd",
+    volumeUsd: "volumeUsd",
+    totalWins: "totalWins",
+    totalLosses: "totalLosses",
+    pnl: "pnlUsd",
+    pnlUsd: "pnlUsd",
+    winRate: "winRate",
+    firstTrade: "firstTrade",
+    lastTrade: "lastTrade",
+  }[requestedSort] || "volumeUsd";
+  const sortDir = String(q.dir || "desc").trim().toLowerCase() === "asc" ? "asc" : "desc";
+
+  const compareWalletRows = (left, right) => {
+    const numericKeys = new Set([
+      "trades",
+      "volumeUsd",
+      "totalWins",
+      "totalLosses",
+      "pnlUsd",
+      "winRate",
+      "firstTrade",
+      "lastTrade",
+    ]);
+    const leftRaw = left ? left[sortKey] : null;
+    const rightRaw = right ? right[sortKey] : null;
+    const leftMissing = leftRaw === null || leftRaw === undefined || leftRaw === "";
+    const rightMissing = rightRaw === null || rightRaw === undefined || rightRaw === "";
+    if (leftMissing && rightMissing) return String(left?.wallet || "").localeCompare(String(right?.wallet || ""));
+    if (leftMissing) return 1;
+    if (rightMissing) return -1;
+
+    if (numericKeys.has(sortKey)) {
+      const a = toNum(leftRaw, 0);
+      const b = toNum(rightRaw, 0);
+      if (a === b) return String(left?.wallet || "").localeCompare(String(right?.wallet || ""));
+      return sortDir === "asc" ? a - b : b - a;
+    }
+
+    const a = String(leftRaw || "");
+    const b = String(rightRaw || "");
+    const cmp = a.localeCompare(b);
+    if (cmp === 0) return String(left?.wallet || "").localeCompare(String(right?.wallet || ""));
+    return sortDir === "asc" ? cmp : -cmp;
+  };
 
   const rows = normalizeArray(wallets)
     .map((record) => {
       const bucket = pickBucket(record, timeframe) || {};
+      const d24 = summarizeBucket(record && record.d24);
+      const d7 = summarizeBucket(record && record.d7);
+      const d30 = summarizeBucket(record && record.d30);
+      const all = summarizeBucket(record && record.all);
+      const lastActivity = Math.max(
+        Number(d24.lastTrade || 0),
+        Number(d7.lastTrade || 0),
+        Number(d30.lastTrade || 0),
+        Number(all.lastTrade || 0),
+        Number((record && record.updatedAt) || 0)
+      );
       return {
         wallet: record.wallet,
         trades: Number(bucket.trades || 0),
@@ -851,10 +929,15 @@ function buildWalletExplorerPayload({ wallets, query }) {
         firstTrade: bucket.firstTrade || null,
         lastTrade: bucket.lastTrade || null,
         updatedAt: record.updatedAt || null,
+        lastActivity: lastActivity || null,
+        d24,
+        d7,
+        d30,
+        all,
       };
     })
     .filter((row) => !search || String(row.wallet || "").toLowerCase().includes(search))
-    .sort((a, b) => b.volumeUsd - a.volumeUsd)
+    .sort(compareWalletRows)
     .map((row, idx) => ({
       ...row,
       rank: idx + 1,
@@ -870,6 +953,38 @@ function buildWalletExplorerPayload({ wallets, query }) {
     volumeUsd: toFixed(row.volumeUsd, 2),
     pnlUsd: toFixed(row.pnlUsd, 2),
     winRate: toFixed(row.winRate, 2),
+    d24: {
+      ...row.d24,
+      volumeUsd: toFixed(row.d24.volumeUsd, 2),
+      pnlUsd: toFixed(row.d24.pnlUsd, 2),
+      winRate: toFixed(row.d24.winRate, 2),
+      feesUsd: toFixed(row.d24.feesUsd, 2),
+      fundingPayoutUsd: toFixed(row.d24.fundingPayoutUsd, 2),
+    },
+    d7: {
+      ...row.d7,
+      volumeUsd: toFixed(row.d7.volumeUsd, 2),
+      pnlUsd: toFixed(row.d7.pnlUsd, 2),
+      winRate: toFixed(row.d7.winRate, 2),
+      feesUsd: toFixed(row.d7.feesUsd, 2),
+      fundingPayoutUsd: toFixed(row.d7.fundingPayoutUsd, 2),
+    },
+    d30: {
+      ...row.d30,
+      volumeUsd: toFixed(row.d30.volumeUsd, 2),
+      pnlUsd: toFixed(row.d30.pnlUsd, 2),
+      winRate: toFixed(row.d30.winRate, 2),
+      feesUsd: toFixed(row.d30.feesUsd, 2),
+      fundingPayoutUsd: toFixed(row.d30.fundingPayoutUsd, 2),
+    },
+    all: {
+      ...row.all,
+      volumeUsd: toFixed(row.all.volumeUsd, 2),
+      pnlUsd: toFixed(row.all.pnlUsd, 2),
+      winRate: toFixed(row.all.winRate, 2),
+      feesUsd: toFixed(row.all.feesUsd, 2),
+      fundingPayoutUsd: toFixed(row.all.fundingPayoutUsd, 2),
+    },
   }));
 
   return {
@@ -879,6 +994,8 @@ function buildWalletExplorerPayload({ wallets, query }) {
       q: search,
       page,
       pageSize,
+      sort: sortKey,
+      dir: sortDir,
     },
     total,
     page,

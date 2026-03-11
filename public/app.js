@@ -22,6 +22,8 @@ const state = {
   walletSearch: "",
   walletPage: 1,
   walletPageSize: 20,
+  walletSortKey: "volumeUsd",
+  walletSortDir: "desc",
   selectedWallet: null
 };
 const tickerState = {
@@ -144,6 +146,17 @@ function fmtTime(ts) {
   const num = Number(ts);
   if (!Number.isFinite(num) || num <= 0) return "-";
   return new Date(num).toLocaleString();
+}
+function fmtTimeShort(ts) {
+  const num = Number(ts);
+  if (!Number.isFinite(num) || num <= 0) return "-";
+  return new Date(num).toLocaleString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit"
+  });
 }
 function fmtAgo(ts) {
   const num = Number(ts);
@@ -1501,53 +1514,6 @@ async function postJson(url, payload = {}, options = {}) {
   }
   return data;
 }
-function renderStatusBars() {
-  var _ex$sync, _ref8, _indexer$liveGroupSiz, _indexer$liveStaleWal, _indexer$successfulSc, _indexer$failedScans, _indexer$liveAverageA, _indexer$priorityQueu, _indexer$liveQueueSiz, _indexer$restClients$, _indexer$restClients, _indexer$liveQueueSiz2, _indexer$priorityQueu2, _indexer$backlogMode$, _indexer$backlogMode, _indexer$backlogMode2;
-  const ex = state.exchange || {};
-  const indexer = (ex === null || ex === void 0 ? void 0 : ex.indexer) || null;
-  const progress = getIndexerBreakdown(indexer);
-  const wsStatus = (ex === null || ex === void 0 ? void 0 : (_ex$sync = ex.sync) === null || _ex$sync === void 0 ? void 0 : _ex$sync.wsStatus) || "unknown";
-  const generatedAt = Number((ex === null || ex === void 0 ? void 0 : ex.generatedAt) || 0);
-  const liveGroup = Number((_ref8 = (_indexer$liveGroupSiz = indexer === null || indexer === void 0 ? void 0 : indexer.liveGroupSize) !== null && _indexer$liveGroupSiz !== void 0 ? _indexer$liveGroupSiz : progress.liveTracking) !== null && _ref8 !== void 0 ? _ref8 : 0);
-  const staleWallets = Number((_indexer$liveStaleWal = indexer === null || indexer === void 0 ? void 0 : indexer.liveStaleWallets) !== null && _indexer$liveStaleWal !== void 0 ? _indexer$liveStaleWal : 0);
-  const staleRatio = liveGroup > 0 ? staleWallets / liveGroup : 0;
-  const successfulScans = Number((_indexer$successfulSc = indexer === null || indexer === void 0 ? void 0 : indexer.successfulScans) !== null && _indexer$successfulSc !== void 0 ? _indexer$successfulSc : 0);
-  const failedScans = Number((_indexer$failedScans = indexer === null || indexer === void 0 ? void 0 : indexer.failedScans) !== null && _indexer$failedScans !== void 0 ? _indexer$failedScans : 0);
-  const scanAttempts = successfulScans + failedScans;
-  const refreshSuccessPct = scanAttempts > 0 ? successfulScans / scanAttempts * 100 : 0;
-  const avgAgeMs = Number((_indexer$liveAverageA = indexer === null || indexer === void 0 ? void 0 : indexer.liveAverageAgeMs) !== null && _indexer$liveAverageA !== void 0 ? _indexer$liveAverageA : 0);
-  const queuePressure = Number((_indexer$priorityQueu = indexer === null || indexer === void 0 ? void 0 : indexer.priorityQueueSize) !== null && _indexer$priorityQueu !== void 0 ? _indexer$priorityQueu : 0) + Number((_indexer$liveQueueSiz = indexer === null || indexer === void 0 ? void 0 : indexer.liveQueueSize) !== null && _indexer$liveQueueSiz !== void 0 ? _indexer$liveQueueSiz : 0);
-  const topError = Array.isArray(indexer === null || indexer === void 0 ? void 0 : indexer.topErrorReasons) && indexer.topErrorReasons.length ? indexer.topErrorReasons[0] : null;
-  const activeEgress = Number((_indexer$restClients$ = indexer === null || indexer === void 0 ? void 0 : (_indexer$restClients = indexer.restClients) === null || _indexer$restClients === void 0 ? void 0 : _indexer$restClients.count) !== null && _indexer$restClients$ !== void 0 ? _indexer$restClients$ : 0);
-  setText("ops-freshness-state", staleRatio > 0.45 ? "degraded" : staleRatio > 0.2 ? "warming" : "healthy");
-  setText("ops-health-state", refreshSuccessPct >= 85 ? "stable" : refreshSuccessPct >= 70 ? "warning" : "critical");
-  setText("ops-queue-pressure", fmt(queuePressure, 0));
-  setText("ops-active-egress", fmt(activeEgress, 0));
-  setText("ops-top-error", topError ? `${topError.reason} (${fmt(topError.count, 0)})` : "none");
-  const liveQueue = Number((_indexer$liveQueueSiz2 = indexer === null || indexer === void 0 ? void 0 : indexer.liveQueueSize) !== null && _indexer$liveQueueSiz2 !== void 0 ? _indexer$liveQueueSiz2 : 0);
-  const backfillQueue = Number((_indexer$priorityQueu2 = indexer === null || indexer === void 0 ? void 0 : indexer.priorityQueueSize) !== null && _indexer$priorityQueu2 !== void 0 ? _indexer$priorityQueu2 : 0);
-  const liveQueueTarget = Math.max(liveGroup || 1, 1500);
-  const backfillQueueTarget = Math.max(Number((_indexer$backlogMode$ = indexer === null || indexer === void 0 ? void 0 : (_indexer$backlogMode = indexer.backlogMode) === null || _indexer$backlogMode === void 0 ? void 0 : _indexer$backlogMode.thresholdWallets) !== null && _indexer$backlogMode$ !== void 0 ? _indexer$backlogMode$ : 2000), 2000);
-  const liveFill = clamp(liveQueue / liveQueueTarget * 100, 0, 100);
-  const backfillFill = clamp(backfillQueue / backfillQueueTarget * 100, 0, 100);
-  const liveQueueFillNode = el("ops-live-queue-fill");
-  if (liveQueueFillNode) liveQueueFillNode.style.width = `${liveFill}%`;
-  const backfillQueueFillNode = el("ops-backfill-queue-fill");
-  if (backfillQueueFillNode) backfillQueueFillNode.style.width = `${backfillFill}%`;
-  setText("ops-live-queue-label", `${fmt(liveQueue, 0)} / ${fmt(liveQueueTarget, 0)}`);
-  setText("ops-backfill-queue-label", `${fmt(backfillQueue, 0)} / ${fmt(backfillQueueTarget, 0)}`);
-  setText("ops-queue-mode", indexer !== null && indexer !== void 0 && (_indexer$backlogMode2 = indexer.backlogMode) !== null && _indexer$backlogMode2 !== void 0 && _indexer$backlogMode2.active ? "backlog mode" : "normal");
-  const anomalies = [];
-  if (staleRatio > 0.35) anomalies.push(`Stale ratio elevated (${fmt(staleRatio * 100, 1)}%).`);
-  if (refreshSuccessPct < 75) anomalies.push(`Refresh success low (${fmt(refreshSuccessPct, 1)}%).`);
-  if (backfillQueue > backfillQueueTarget * 0.6) anomalies.push(`Backfill queue pressure high (${fmt(backfillQueue, 0)}).`);
-  if ((topError === null || topError === void 0 ? void 0 : topError.count) > 0) anomalies.push(`Top error: ${topError.reason} (${fmt(topError.count, 0)}).`);
-  const anomalyList = el("ops-anomaly-list");
-  if (anomalyList) {
-    anomalyList.innerHTML = anomalies.length ? anomalies.slice(0, 5).map(item => `<li><span class="anomaly-time">now</span><span class="anomaly-msg">${escapeHtml(item)}</span></li>`).join("") : "<li><span class='anomaly-time'>now</span><span class='anomaly-msg'>No active anomalies.</span></li>";
-  }
-  setText("ops-anomaly-count", fmt(anomalies.length, 0));
-}
 function renderIndexerProgressPanel() {
   const ex = state.exchange || {};
   const indexer = ex.indexer || null;
@@ -2479,14 +2445,14 @@ function buildTidalReasonChips(row, isMomentumLeader) {
   return chips.slice(0, 3);
 }
 function renderExchange() {
-  var _indexer$successfulSc2, _indexer$failedScans2, _periodChanges$24h, _periodChanges$30d, _periodChanges$24h2, _periodChanges$30d2, _periodChanges$24h3, _periodChanges$30d3, _periodChanges$24h4, _periodChanges$30d4, _payload$source, _payload$source2, _payload$source3, _payload$source4, _payload$source5;
+  var _indexer$successfulSc, _indexer$failedScans, _periodChanges$24h, _periodChanges$30d, _periodChanges$24h2, _periodChanges$30d2, _periodChanges$24h3, _periodChanges$30d3, _periodChanges$24h4, _periodChanges$30d4, _payload$source, _payload$source2, _payload$source3;
   const payload = state.exchange || {};
   const kpis = payload.kpis || {};
   const periodChanges = payload.kpiPeriodChanges || {};
   const indexer = payload.indexer || {};
   const progress = getIndexerBreakdown(indexer);
-  const successfulScans = Number((_indexer$successfulSc2 = indexer === null || indexer === void 0 ? void 0 : indexer.successfulScans) !== null && _indexer$successfulSc2 !== void 0 ? _indexer$successfulSc2 : 0);
-  const failedScans = Number((_indexer$failedScans2 = indexer === null || indexer === void 0 ? void 0 : indexer.failedScans) !== null && _indexer$failedScans2 !== void 0 ? _indexer$failedScans2 : 0);
+  const successfulScans = Number((_indexer$successfulSc = indexer === null || indexer === void 0 ? void 0 : indexer.successfulScans) !== null && _indexer$successfulSc !== void 0 ? _indexer$successfulSc : 0);
+  const failedScans = Number((_indexer$failedScans = indexer === null || indexer === void 0 ? void 0 : indexer.failedScans) !== null && _indexer$failedScans !== void 0 ? _indexer$failedScans : 0);
   const scanAttempts = successfulScans + failedScans;
   const kpiRows = [{
     key: "Active Accounts",
@@ -2502,7 +2468,7 @@ function renderExchange() {
     periodChanges: [getKpiPeriodChangeDisplay("24H", periodChanges === null || periodChanges === void 0 ? void 0 : (_periodChanges$24h3 = periodChanges["24h"]) === null || _periodChanges$24h3 === void 0 ? void 0 : _periodChanges$24h3.totalVolumeUsd), getKpiPeriodChangeDisplay("30D", periodChanges === null || periodChanges === void 0 ? void 0 : (_periodChanges$30d3 = periodChanges["30d"]) === null || _periodChanges$30d3 === void 0 ? void 0 : _periodChanges$30d3.totalVolumeUsd)]
   }, {
     key: "Total Fees",
-    value: `$${fmt(kpis.totalFeesUsd, 2)}`,
+    value: `$${fmt(kpis.totalFeesUsd, 0)}`,
     periodChanges: [getKpiPeriodChangeDisplay("24H", periodChanges === null || periodChanges === void 0 ? void 0 : (_periodChanges$24h4 = periodChanges["24h"]) === null || _periodChanges$24h4 === void 0 ? void 0 : _periodChanges$24h4.totalFeesUsd), getKpiPeriodChangeDisplay("30D", periodChanges === null || periodChanges === void 0 ? void 0 : (_periodChanges$30d4 = periodChanges["30d"]) === null || _periodChanges$30d4 === void 0 ? void 0 : _periodChanges$30d4.totalFeesUsd)]
   }, {
     key: "Open Interest",
@@ -2610,10 +2576,7 @@ function renderExchange() {
   state.volumeRankPage = Math.max(1, Math.min(totalPages, Number(state.volumeRankPage || 1)));
   const pageStart = (state.volumeRankPage - 1) * pageSize;
   const pageRows = rankedRows.slice(pageStart, pageStart + pageSize);
-  const rankSourceLabel = String((payload === null || payload === void 0 ? void 0 : (_payload$source4 = payload.source) === null || _payload$source4 === void 0 ? void 0 : _payload$source4.volumeRankSource) || "n/a").replace(/^\/api\//, "").split(":")[0];
-  const rankWindowLabel = String((payload === null || payload === void 0 ? void 0 : (_payload$source5 = payload.source) === null || _payload$source5 === void 0 ? void 0 : _payload$source5.volumeRankWindowUsed) || state.timeframe || "24h").toUpperCase();
   setText("tidal-last-updated", `updated ${fmtAgo(payload.generatedAt)}`);
-  setText("tidal-source-tag", `source ${rankWindowLabel} · ${rankSourceLabel || "n/a"}`);
   document.querySelectorAll("#volume-sort-toggle .sort-mode-btn").forEach(btn => {
     btn.classList.toggle("active", btn.dataset.sortMode === state.volumeSort);
   });
@@ -2668,55 +2631,104 @@ function renderWallets() {
   const rows = Array.isArray(payload.rows) ? payload.rows : [];
   setText("wallet-total-label", `${payload.total || 0} wallets`);
   setText("wallet-page-label", `Page ${payload.page || 1} / ${payload.pages || 1}`);
+  syncWalletSortHeaders();
   const body = el("wallet-table-body");
   if (body) {
-    body.innerHTML = rows.map(row => {
-      var _row$lifecycle;
-      const lifecycleStage = (row === null || row === void 0 ? void 0 : (_row$lifecycle = row.lifecycle) === null || _row$lifecycle === void 0 ? void 0 : _row$lifecycle.lifecycleStage) || "unknown";
-      const stageLabel = String(lifecycleStage).replace(/_/g, " ");
-      return `<tr>
-          <td>${row.rank}</td>
-          <td class="wallet-cell" title="${row.wallet}">${row.wallet}</td>
-          <td>${fmt(row.trades, 0)}</td>
-          <td>$${fmtCompact(row.volumeUsd)}</td>
-          <td>${fmt(row.totalWins, 0)}</td>
-          <td>${fmt(row.totalLosses, 0)}</td>
-          <td class="${toNum(row.pnlUsd, 0) >= 0 ? "good" : "bad"}">${fmtSigned(row.pnlUsd, 2)}</td>
-          <td>${fmt(row.winRate, 2)}%</td>
-          <td>${fmtTime(row.firstTrade)}</td>
-          <td>${fmtTime(row.lastTrade)}</td>
-          <td><span class="muted-pill">${stageLabel}</span></td>
-          <td><button class="btn-ghost inspect-btn" data-wallet="${row.wallet}">Inspect</button></td>
-        </tr>`;
-    }).join("");
+    body.innerHTML = rows.length ? rows.map(row => {
+      const pnlUsd = toNum(row === null || row === void 0 ? void 0 : row.pnlUsd, NaN);
+      const firstTrade = (row === null || row === void 0 ? void 0 : row.firstTrade) || null;
+      const lastTrade = (row === null || row === void 0 ? void 0 : row.lastTrade) || (row === null || row === void 0 ? void 0 : row.lastActivity) || (row === null || row === void 0 ? void 0 : row.updatedAt) || null;
+      const fmtMoney = value => Number.isFinite(value) ? `${value > 0 ? "+" : value < 0 ? "-" : ""}$${fmt(Math.abs(value), 2)}` : "-";
+      return `<tr class="wallet-list-row" data-wallet="${row.wallet}">
+              <td class="wallet-cell" title="${row.wallet}">${row.wallet}</td>
+              <td>${fmt(row.trades || 0, 0)}</td>
+              <td>${Number.isFinite(toNum(row.volumeUsd, NaN)) ? `$${fmtCompact(row.volumeUsd)}` : "-"}</td>
+              <td>${fmt(row.totalWins || 0, 0)}</td>
+              <td>${fmt(row.totalLosses || 0, 0)}</td>
+              <td class="${pnlUsd >= 0 ? "good" : "bad"}">${fmtMoney(pnlUsd)}</td>
+              <td>${Number.isFinite(toNum(row.winRate, NaN)) ? `${fmt(row.winRate, 2)}%` : "-"}</td>
+              <td title="${escapeHtml(fmtTime(firstTrade))}">${escapeHtml(fmtTimeShort(firstTrade))}</td>
+              <td title="${escapeHtml(fmtTime(lastTrade))}">${escapeHtml(fmtTimeShort(lastTrade))}</td>
+              <td><button class="btn-ghost inspect-btn" data-wallet="${row.wallet}">Inspect</button></td>
+            </tr>`;
+    }).join("") : "<tr><td colspan='10' class='muted'>No wallets match the current filters.</td></tr>";
   }
   const prevBtn = el("wallet-prev-btn");
   const nextBtn = el("wallet-next-btn");
   if (prevBtn) prevBtn.disabled = (payload.page || 1) <= 1;
   if (nextBtn) nextBtn.disabled = (payload.page || 1) >= (payload.pages || 1);
 }
+function syncWalletSortHeaders() {
+  document.querySelectorAll("[data-wallet-sort-key]").forEach(btn => {
+    const key = String(btn.dataset.walletSortKey || "");
+    const isActive = key === state.walletSortKey;
+    const direction = isActive ? state.walletSortDir : "";
+    btn.classList.toggle("active", isActive);
+    btn.dataset.sortDir = direction;
+    btn.setAttribute("aria-pressed", isActive ? "true" : "false");
+    btn.setAttribute("aria-label", `${btn.dataset.sortLabel || key} sort ${direction || "off"}`);
+    const indicator = btn.querySelector("[data-wallet-sort-indicator]");
+    if (indicator) {
+      indicator.textContent = isActive ? direction === "asc" ? "↑" : "↓" : "↑↓";
+    }
+  });
+}
 function renderWalletProfile() {
   const profile = state.walletProfile;
   const kpiWrap = el("wallet-profile-kpis");
   const symbolsBody = el("wallet-profile-symbols");
+  const positionsBody = el("wallet-profile-positions");
+  const closeBtn = el("wallet-profile-close");
+  const panel = el("wallet-profile-panel");
+  const subtitle = el("wallet-profile-subtitle");
+  const appLayout = document.querySelector(".app-layout");
+  if (closeBtn && !closeBtn.dataset.bound) {
+    closeBtn.dataset.bound = "true";
+    closeBtn.addEventListener("click", () => {
+      state.selectedWallet = null;
+      state.walletProfile = null;
+      renderWalletProfile();
+    });
+  }
   if (!profile || !profile.found || !profile.summary) {
     setText("wallet-profile-id", "Select a wallet");
-    if (kpiWrap) kpiWrap.innerHTML = "<div class='muted'>No wallet selected.</div>";
+    setText("wallet-profile-subtitle", "Wallet summary, live posture, and concentration.");
+    if (kpiWrap) {
+      kpiWrap.innerHTML = `<div class='muted'>${profile && profile.error ? escapeHtml(profile.error) : "No wallet selected."}</div>`;
+    }
     if (symbolsBody) symbolsBody.innerHTML = "";
+    if (positionsBody) positionsBody.innerHTML = "";
+    if (panel) panel.hidden = true;
+    if (appLayout) appLayout.classList.remove("wallet-drawer-open");
     return;
   }
+  if (panel) panel.hidden = false;
+  if (appLayout) appLayout.classList.add("wallet-drawer-open");
   setText("wallet-profile-id", profile.wallet);
+  setText("wallet-profile-subtitle", `${String(profile.summary.freshness || "unknown")} • ${fmt(profile.summary.openPositions || 0, 0)} open positions`);
   const s = profile.summary;
   if (kpiWrap) {
-    var _profile$lifecycle;
-    const lifecycleStage = (profile === null || profile === void 0 ? void 0 : (_profile$lifecycle = profile.lifecycle) === null || _profile$lifecycle === void 0 ? void 0 : _profile$lifecycle.lifecycleStage) || "unknown";
-    kpiWrap.innerHTML = [["Rank", `#${s.rank || "-"}`], ["Trades", fmt(s.trades, 0)], ["Volume", `$${fmtCompact(s.volumeUsd)}`], ["PnL", fmtSigned(s.pnlUsd, 2)], ["Win Rate", `${fmt(s.winRate, 2)}%`], ["First Trade", fmtTime(s.firstTrade)], ["Last Trade", fmtTime(s.lastTrade)], ["Fees", `$${fmtCompact(s.feesUsd)}`], ["Stage", String(lifecycleStage).replace(/_/g, " ")]].map(([label, value]) => `<div class="profile-kpi"><div>${label}</div><strong>${value}</strong></div>`).join("");
+    var _s$d, _s$d2, _s$d3, _s$all;
+    kpiWrap.innerHTML = [["24H Realized", fmtSigned((_s$d = s.d24) === null || _s$d === void 0 ? void 0 : _s$d.pnlUsd, 2)], ["7D Realized", fmtSigned((_s$d2 = s.d7) === null || _s$d2 === void 0 ? void 0 : _s$d2.pnlUsd, 2)], ["30D Realized", fmtSigned((_s$d3 = s.d30) === null || _s$d3 === void 0 ? void 0 : _s$d3.pnlUsd, 2)], ["All-Time Realized", fmtSigned((_s$all = s.all) === null || _s$all === void 0 ? void 0 : _s$all.pnlUsd, 2)], ["Wallet Unrealized", fmtSigned(s.unrealizedPnlUsd, 2)], ["Open Positions", fmt(s.openPositions, 0)], ["Exposure", `$${fmtCompact(s.exposureUsd)}`], ["Last Activity", fmtTime(s.lastActivityAt)]].map(([label, value]) => `<div class="profile-kpi"><div>${label}</div><strong>${value}</strong></div>`).join("");
+  }
+  if (positionsBody) {
+    const rows = Array.isArray(profile.positions) ? profile.positions : [];
+    positionsBody.innerHTML = rows.length ? rows.map(row => `<tr>
+          <td>${row.symbol}</td>
+          <td>${String(row.side || "-").toUpperCase()}</td>
+          <td>$${fmtCompact(row.positionUsd)}</td>
+          <td>${Number.isFinite(toNum(row.entry, NaN)) ? fmt(row.entry, 4) : "-"}</td>
+          <td>${Number.isFinite(toNum(row.mark, NaN)) ? fmt(row.mark, 4) : "-"}</td>
+          <td class="${toNum(row.unrealizedPnlUsd, 0) >= 0 ? "good" : "bad"}">${fmtSigned(row.unrealizedPnlUsd, 2)}</td>
+          <td>${fmtTime(row.updatedAt)}</td>
+        </tr>`).join("") : "<tr><td colspan='7' class='muted'>No open positions tracked.</td></tr>";
   }
   if (symbolsBody) {
-    const rows = Array.isArray(profile.symbolBreakdown) ? profile.symbolBreakdown : [];
+    const rows = Array.isArray(s.concentration) ? s.concentration : [];
     symbolsBody.innerHTML = rows.map(row => `<tr>
           <td>${row.symbol}</td>
-          <td>$${row.volumeCompact}</td>
+          <td>$${fmtCompact(row.volumeUsd)}</td>
+          <td>${fmt(row.sharePct, 2)}%</td>
         </tr>`).join("");
   }
 }
@@ -2725,6 +2737,11 @@ function applyView(nextView, options = {}) {
   const skipRoute = Boolean(options.skipRoute);
   const replaceRoute = Boolean(options.replaceRoute);
   state.view = nextView;
+  if (nextView !== "wallets" && state.selectedWallet) {
+    state.selectedWallet = null;
+    state.walletProfile = null;
+    renderWalletProfile();
+  }
   document.querySelectorAll(".tab-btn").forEach(btn => {
     btn.classList.toggle("active", btn.dataset.view === nextView);
   });
@@ -2754,7 +2771,6 @@ async function refreshExchange() {
       }
     }
     state.exchange = data;
-    renderStatusBars();
     renderExchange();
     renderIndexerProgressPanel();
     return data;
@@ -2816,7 +2832,9 @@ async function refreshWallets() {
       timeframe: state.timeframe,
       q: state.walletSearch,
       page: String(state.walletPage),
-      pageSize: String(state.walletPageSize)
+      pageSize: String(state.walletPageSize),
+      sort: state.walletSortKey,
+      dir: state.walletSortDir
     });
     const data = await fetchJson(`/api/wallets?${params.toString()}`);
     state.wallets = data;
@@ -2828,11 +2846,15 @@ async function inspectWallet(wallet) {
   if (!wallet) return;
   state.selectedWallet = wallet;
   return runSingleFlight("walletProfile", async () => {
-    const params = new URLSearchParams({
-      wallet,
-      timeframe: state.timeframe
-    });
-    state.walletProfile = await fetchJson(`/api/wallets/profile?${params.toString()}`);
+    try {
+      state.walletProfile = await fetchJson(`/api/live-trades/wallet/${encodeURIComponent(wallet)}`);
+    } catch (error) {
+      state.walletProfile = {
+        wallet,
+        found: false,
+        error: error && error.message ? error.message : "wallet_detail_unavailable"
+      };
+    }
     renderWalletProfile();
     return state.walletProfile;
   });
@@ -2928,9 +2950,24 @@ function bindEvents() {
     const target = event.target;
     if (!(target instanceof HTMLElement)) return;
     const btn = target.closest(".inspect-btn");
-    if (!btn) return;
-    const wallet = btn.getAttribute("data-wallet");
+    const row = target.closest(".wallet-list-row");
+    const wallet = (btn === null || btn === void 0 ? void 0 : btn.getAttribute("data-wallet")) || (row === null || row === void 0 ? void 0 : row.getAttribute("data-wallet"));
+    if (!wallet) return;
     await inspectWallet(wallet);
+  });
+  document.querySelectorAll("[data-wallet-sort-key]").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      const nextKey = String(btn.dataset.walletSortKey || "").trim();
+      if (!nextKey) return;
+      if (state.walletSortKey === nextKey) {
+        state.walletSortDir = state.walletSortDir === "asc" ? "desc" : "asc";
+      } else {
+        state.walletSortKey = nextKey;
+        state.walletSortDir = "desc";
+      }
+      state.walletPage = 1;
+      await refreshWallets();
+    });
   });
   (_el13 = el("volume-filter")) === null || _el13 === void 0 ? void 0 : _el13.addEventListener("input", event => {
     state.volumeFilter = String(event.target.value || "");

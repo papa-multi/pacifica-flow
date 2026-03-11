@@ -112,10 +112,36 @@ function mergeShardSnapshots(snapshots = [], options = {}) {
   let warmWallets = 0;
   let estimatedHotLoopSeconds = 0;
   let estimatedWarmLoopSeconds = 0;
+  let hotWsActiveWallets = 0;
+  let hotWsOpenConnections = 0;
+  let hotWsDroppedPromotions = 0;
+  let hotWsCapacity = 0;
+  let hotWsAvailableSlots = 0;
+  let hotWsCapacityCeiling = 0;
+  let hotWsPromotionBacklog = 0;
+  let hotWsTriggerToEventAvgMs = 0;
+  let hotWsLastTriggerToEventMs = 0;
+  let hotWsReconnectTransitions = 0;
+  let hotWsErrorCount = 0;
+  let hotWsScaleEvents = 0;
+  let hotWsProcessRssMb = 0;
   let requestTimeoutMs = 0;
   let maxFetchAttempts = 0;
   let maxInFlightPerClient = 0;
   let maxInFlightDirect = 0;
+  let healthyClients = 0;
+  let avgClientLatencyMs = 0;
+  let timeoutClients = 0;
+  let proxyFailingClients = 0;
+  let lifecycleHotWallets = 0;
+  let lifecycleWarmWallets = 0;
+  let lifecycleColdWallets = 0;
+  let staleWallets = 0;
+  let freshWallets = 0;
+  let coolingWallets = 0;
+  let priorityQueueDepth = 0;
+  let hotReconcileDueWallets = 0;
+  let warmReconcileDueWallets = 0;
   let scanIntervalMs = 0;
   let staleMs = 0;
   let coolingMs = 0;
@@ -180,6 +206,31 @@ function mergeShardSnapshots(snapshots = [], options = {}) {
       estimatedWarmLoopSeconds,
       Math.max(0, Number(status.estimatedWarmLoopSeconds || 0))
     );
+    hotWsActiveWallets += Math.max(0, Number(status.hotWsActiveWallets || 0));
+    hotWsOpenConnections += Math.max(0, Number(status.hotWsOpenConnections || 0));
+    hotWsDroppedPromotions += Math.max(0, Number(status.hotWsDroppedPromotions || 0));
+    hotWsCapacity += Math.max(0, Number(status.hotWsCapacity || 0));
+    hotWsAvailableSlots += Math.max(0, Number(status.hotWsAvailableSlots || 0));
+    hotWsCapacityCeiling += Math.max(0, Number(status.hotWsCapacityCeiling || 0));
+    hotWsPromotionBacklog += Math.max(0, Number(status.hotWsPromotionBacklog || 0));
+    hotWsTriggerToEventAvgMs = Math.max(
+      hotWsTriggerToEventAvgMs,
+      Math.max(0, Number(status.hotWsTriggerToEventAvgMs || 0))
+    );
+    hotWsLastTriggerToEventMs = Math.max(
+      hotWsLastTriggerToEventMs,
+      Math.max(0, Number(status.hotWsLastTriggerToEventMs || 0))
+    );
+    hotWsReconnectTransitions += Math.max(
+      0,
+      Number(status.hotWsReconnectTransitions || 0)
+    );
+    hotWsErrorCount += Math.max(0, Number(status.hotWsErrorCount || 0));
+    hotWsScaleEvents += Math.max(0, Number(status.hotWsScaleEvents || 0));
+    hotWsProcessRssMb = Math.max(
+      hotWsProcessRssMb,
+      Math.max(0, Number(status.hotWsProcessRssMb || 0))
+    );
     requestTimeoutMs = Math.max(
       requestTimeoutMs,
       Math.max(0, Number(status.requestTimeoutMs || 0))
@@ -196,6 +247,22 @@ function mergeShardSnapshots(snapshots = [], options = {}) {
       maxInFlightDirect,
       Math.max(0, Number(status.maxInFlightDirect || 0))
     );
+    healthyClients += Math.max(0, Number(status.healthyClients || 0));
+    avgClientLatencyMs = Math.max(
+      avgClientLatencyMs,
+      Math.max(0, Number(status.avgClientLatencyMs || 0))
+    );
+    timeoutClients += Math.max(0, Number(status.timeoutClients || 0));
+    proxyFailingClients += Math.max(0, Number(status.proxyFailingClients || 0));
+    lifecycleHotWallets += Math.max(0, Number(status.lifecycleHotWallets || 0));
+    lifecycleWarmWallets += Math.max(0, Number(status.lifecycleWarmWallets || 0));
+    lifecycleColdWallets += Math.max(0, Number(status.lifecycleColdWallets || 0));
+    staleWallets += Math.max(0, Number(status.staleWallets || 0));
+    freshWallets += Math.max(0, Number(status.freshWallets || 0));
+    coolingWallets += Math.max(0, Number(status.coolingWallets || 0));
+    priorityQueueDepth += Math.max(0, Number(status.priorityQueueDepth || 0));
+    hotReconcileDueWallets += Math.max(0, Number(status.hotReconcileDueWallets || 0));
+    warmReconcileDueWallets += Math.max(0, Number(status.warmReconcileDueWallets || 0));
     scanIntervalMs = Math.max(
       scanIntervalMs,
       Math.max(0, Number(status.scanIntervalMs || 0))
@@ -328,12 +395,38 @@ function mergeShardSnapshots(snapshots = [], options = {}) {
       targetPassDurationMs,
       recentActiveWallets,
       warmWallets,
+      hotWsActiveWallets,
+      hotWsOpenConnections,
+      hotWsDroppedPromotions,
+      hotWsCapacity,
+      hotWsAvailableSlots,
+      hotWsCapacityCeiling,
+      hotWsPromotionBacklog,
+      hotWsTriggerToEventAvgMs: hotWsTriggerToEventAvgMs || null,
+      hotWsLastTriggerToEventMs: hotWsLastTriggerToEventMs || null,
+      hotWsReconnectTransitions,
+      hotWsErrorCount,
+      hotWsScaleEvents,
+      hotWsProcessRssMb: hotWsProcessRssMb || null,
       estimatedHotLoopSeconds: estimatedHotLoopSeconds || null,
       estimatedWarmLoopSeconds: estimatedWarmLoopSeconds || null,
       requestTimeoutMs,
       maxFetchAttempts,
       maxInFlightPerClient,
       maxInFlightDirect,
+      healthyClients,
+      avgClientLatencyMs: avgClientLatencyMs || null,
+      timeoutClients,
+      proxyFailingClients,
+      lifecycleHotWallets,
+      lifecycleWarmWallets,
+      lifecycleColdWallets,
+      staleWallets,
+      freshWallets,
+      coolingWallets,
+      priorityQueueDepth,
+      hotReconcileDueWallets,
+      warmReconcileDueWallets,
       directFallbackOnLastAttempt,
       scanIntervalMs,
       staleMs,

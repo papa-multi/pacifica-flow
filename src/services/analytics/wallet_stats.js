@@ -171,6 +171,13 @@ function buildWalletRecord({ wallet, trades = [], funding = [], computedAt = Dat
     sinceTs: now - 30 * DAY_MS,
   });
 
+  const d7 = aggregateBucket({
+    trades: normalizedTrades,
+    funding: normalizedFunding,
+    now,
+    sinceTs: now - 7 * DAY_MS,
+  });
+
   const d24 = aggregateBucket({
     trades: normalizedTrades,
     funding: normalizedFunding,
@@ -183,6 +190,7 @@ function buildWalletRecord({ wallet, trades = [], funding = [], computedAt = Dat
     updatedAt: now,
     all,
     d30,
+    d7,
     d24,
   };
 }

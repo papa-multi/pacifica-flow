@@ -31,7 +31,11 @@ const { CollectionStore } = require("./src/services/creator/collection_store");
 const { WalletExplorerStore } = require("./src/services/analytics/wallet_explorer_store");
 const { buildWalletRecordFromState } = require("./src/services/analytics/wallet_stats");
 const { ExchangeWalletIndexer } = require("./src/services/indexer/exchange_wallet_indexer");
+const { SolanaLogsTriggerMonitor, deriveRpcWsUrl } = require("./src/services/indexer/solana_logs_trigger_monitor");
 const { createWalletSource } = require("./src/services/indexer/wallet_source");
+const { LiveWalletTriggerStore } = require("./src/services/analytics/live_wallet_trigger_store");
+const { WalletMetricsHistoryStore } = require("./src/services/analytics/wallet_metrics_history_store");
+const { PositionLifecycleStore } = require("./src/services/analytics/position_lifecycle_store");
 
 const PORT = Number(process.env.PORT || 3200);
 const HOST = process.env.HOST || "0.0.0.0";
@@ -502,6 +506,11 @@ const DATA_ROOT = process.env.PACIFICA_DATA_DIR
 const PIPELINE_DATA_DIR = path.join(DATA_ROOT, "pipeline");
 const CREATOR_DATA_DIR = path.join(DATA_ROOT, "creator");
 const INDEXER_DATA_DIR = path.join(DATA_ROOT, "indexer");
+const LIVE_POSITIONS_DATA_DIR = path.join(DATA_ROOT, "live_positions");
+const LIVE_WALLET_TRIGGER_FILE = String(
+  process.env.PACIFICA_LIVE_WALLET_TRIGGER_FILE ||
+    path.join(LIVE_POSITIONS_DATA_DIR, "wallet_activity_triggers.ndjson")
+).trim();
 
 const SNAPSHOT_REFRESH_MS = Math.max(
   10000,
@@ -1202,6 +1211,7 @@ function makeBootstrapper({ restClient, pipeline, logger = console }) {
 async function main() {
   ensureDir(DATA_ROOT);
   ensureDir(PIPELINE_DATA_DIR);
+  ensureDir(LIVE_POSITIONS_DATA_DIR);
   ensureDir(CREATOR_DATA_DIR);
   ensureDir(INDEXER_DATA_DIR);
 
@@ -1696,6 +1706,31 @@ async function main() {
     },
     logger: console,
   });
+  const liveWalletTriggerStore = new LiveWalletTriggerStore({
+    filePath: LIVE_WALLET_TRIGGER_FILE,
+    maxEntries: Math.max(
+      5000,
+      Number(process.env.PACIFICA_LIVE_WALLET_TRIGGER_MAX_ENTRIES || 50000)
+    ),
+  });
+  const solanaLogTriggerMonitor = new SolanaLogsTriggerMonitor({
+    enabled:
+      String(process.env.PACIFICA_SOLANA_LOG_TRIGGER_ENABLED || "true").toLowerCase() !== "false",
+    rpcUrl: deriveRpcWsUrl(process.env.SOLANA_WS_URL || SOLANA_RPC_URL),
+    rpcClient: solanaRpcClient,
+    triggerStore: liveWalletTriggerStore,
+    logger: console,
+    programIds: ONCHAIN_PROGRAM_IDS,
+    maxConcurrentTx: Math.max(1, Number(process.env.PACIFICA_SOLANA_LOG_TRIGGER_MAX_CONCURRENCY || 4)),
+    maxWalletCandidates: Math.max(
+      1,
+      Number(process.env.PACIFICA_SOLANA_LOG_TRIGGER_MAX_WALLET_CANDIDATES || 6)
+    ),
+    txTimeoutMs: Math.max(1000, Number(process.env.PACIFICA_SOLANA_LOG_TRIGGER_TX_TIMEOUT_MS || 10000)),
+    includeErroredTx:
+      String(process.env.PACIFICA_SOLANA_LOG_TRIGGER_INCLUDE_ERRORED_TX || "false").toLowerCase() ===
+      "true",
+  });
 
   const pipeline = new PacificaPipelineService({
     dataDir: PIPELINE_DATA_DIR,
@@ -1725,6 +1760,38 @@ async function main() {
     filePath: path.join(INDEXER_DATA_DIR, "wallets.json"),
   });
   walletStore.load();
+  const walletMetricsHistoryStore = new WalletMetricsHistoryStore({
+    baseDir: path.join(DATA_ROOT, "indexer", "wallet_metrics_history"),
+    retentionHourly: Math.max(
+      24,
+      Number(process.env.PACIFICA_WALLET_METRICS_HISTORY_RETENTION_HOURLY || 24 * 14)
+    ),
+    retentionDaily: Math.max(
+      14,
+      Number(process.env.PACIFICA_WALLET_METRICS_HISTORY_RETENTION_DAILY || 180)
+    ),
+  });
+  walletMetricsHistoryStore.load();
+  const positionLifecycleStore = new PositionLifecycleStore({
+    dataDir: path.join(DATA_ROOT, "indexer"),
+    filePath: path.join(DATA_ROOT, "indexer", "position_lifecycle_state.json"),
+    flushIntervalMs: Math.max(
+      1000,
+      Number(process.env.PACIFICA_POSITION_LIFECYCLE_FLUSH_MS || 15000)
+    ),
+    maxBufferedEvents: Math.max(
+      1,
+      Number(process.env.PACIFICA_POSITION_LIFECYCLE_MAX_BUFFERED || 200)
+    ),
+    retentionClosedMs: Math.max(
+      24 * 60 * 60 * 1000,
+      Number(
+        process.env.PACIFICA_POSITION_LIFECYCLE_RETENTION_MS ||
+          180 * 24 * 60 * 60 * 1000
+      )
+    ),
+  });
+  positionLifecycleStore.load();
 
   const walletSource = createWalletSource({
     filePath: WALLET_SOURCE_FILE,
@@ -1882,6 +1949,9 @@ async function main() {
     walletStore,
     walletIndexer,
     restClient,
+    solanaLogTriggerMonitor,
+    walletMetricsHistoryStore,
+    positionLifecycleStore,
     liveRestClientEntries: indexerRestClientEntries.map((entry) => ({
       id: entry.id,
       client: entry.client,
@@ -1940,6 +2010,43 @@ async function main() {
   let apiUsageTimer = null;
   let onchainTimer = null;
   let globalKpiTimer = null;
+  let walletMetricsHistoryTimer = null;
+  let positionLifecycleTimer = null;
+
+  async function captureWalletMetricsHistory(force = false) {
+    if (
+      !ENABLE_API ||
+      !walletMetricsHistoryStore ||
+      typeof walletTrackingComponent.getLiveWalletSnapshot !== "function"
+    ) {
+      return;
+    }
+    const snapshot = walletTrackingComponent.getLiveWalletSnapshot(400);
+    walletMetricsHistoryStore.capture({
+      walletRows: walletStore ? walletStore.list() : [],
+      positions:
+        snapshot && Array.isArray(snapshot.positions) ? snapshot.positions : [],
+      nowMs: Date.now(),
+      force,
+    });
+  }
+
+  async function ingestPositionLifecycle(force = false) {
+    if (
+      !ENABLE_API ||
+      !positionLifecycleStore ||
+      typeof walletTrackingComponent.getLiveWalletSnapshot !== "function"
+    ) {
+      return;
+    }
+    const snapshot = walletTrackingComponent.getLiveWalletSnapshot(400);
+    positionLifecycleStore.ingest({
+      positions:
+        snapshot && Array.isArray(snapshot.positions) ? snapshot.positions : [],
+      nowMs: Date.now(),
+      force,
+    });
+  }
 
   server.listen(PORT, HOST, () => {
     console.log(`[pacifica-flow] service=${SERVICE} listening on http://${HOST}:${PORT}`);
@@ -2014,6 +2121,11 @@ async function main() {
     console.log(
       `[pacifica-flow] onchain=${ONCHAIN_ENABLED ? "enabled" : "disabled"} rpc=${SOLANA_RPC_URL}`
     );
+    console.log(
+      `[pacifica-flow] solana_log_trigger=${
+        solanaLogTriggerMonitor && solanaLogTriggerMonitor.getStatus().enabled ? "enabled" : "disabled"
+      } ws=${solanaLogTriggerMonitor ? solanaLogTriggerMonitor.getStatus().wsUrl || "(none)" : "(none)"} trigger_file=${LIVE_WALLET_TRIGGER_FILE}`
+    );
     if (ONCHAIN_ENABLED) {
       console.log(
         `[pacifica-flow] onchain_mode=${ONCHAIN_MODE} programs=${ONCHAIN_PROGRAM_IDS.join(",")} start_ms=${ONCHAIN_START_TIME_MS} end_ms=${ONCHAIN_END_TIME_MS || "(none)"}`
@@ -2068,11 +2180,31 @@ async function main() {
     console.log(
       `[onchain-runner] step ok scanned_programs=${result.scannedPrograms || 0} new_wallets=${(result.newWallets || []).length} pending_tx=${result.pendingTransactions || 0} progress_pct=${progress}`
     );
+    if (
+      walletTrackingComponent &&
+      typeof walletTrackingComponent.ingestWalletTrigger === "function" &&
+      Array.isArray(result.newWallets)
+    ) {
+      const triggerAt = Date.now();
+      result.newWallets.forEach((wallet) => {
+        if (!wallet) return;
+        walletTrackingComponent.ingestWalletTrigger({
+          wallet,
+          at: triggerAt,
+          source: "onchain_discovery",
+          reason: "onchain_discovery",
+        });
+      });
+    }
   }
 
   (async () => {
     if (ENABLE_LIVE && WS_ENABLED) {
       liveHost.start();
+    }
+
+    if (ENABLE_API && solanaLogTriggerMonitor && solanaLogTriggerMonitor.getStatus().enabled) {
+      solanaLogTriggerMonitor.start();
     }
 
     if (ENABLE_API && INDEXER_ENABLED && INDEXER_RUNNER_ENABLED) {
@@ -2123,6 +2255,19 @@ async function main() {
         console.warn(`[global-kpi] initial refresh failed: ${error.message}`);
       }
     }
+
+    if (ENABLE_API) {
+      try {
+        await ingestPositionLifecycle(true);
+      } catch (error) {
+        console.warn(`[position-lifecycle] initial ingest failed: ${error.message}`);
+      }
+      try {
+        await captureWalletMetricsHistory(true);
+      } catch (error) {
+        console.warn(`[wallet-metrics-history] initial capture failed: ${error.message}`);
+      }
+    }
   })();
 
   if (SNAPSHOT_ENABLED) {
@@ -2157,6 +2302,24 @@ async function main() {
     }, GLOBAL_KPI_REFRESH_MS);
   }
 
+  if (ENABLE_API) {
+    positionLifecycleTimer = setInterval(async () => {
+      try {
+        await ingestPositionLifecycle(false);
+      } catch (error) {
+        console.warn(`[position-lifecycle] ${error.message}`);
+      }
+    }, Math.max(5000, Number(process.env.PACIFICA_POSITION_LIFECYCLE_INGEST_MS || 10000)));
+
+    walletMetricsHistoryTimer = setInterval(async () => {
+      try {
+        await captureWalletMetricsHistory(false);
+      } catch (error) {
+        console.warn(`[wallet-metrics-history] ${error.message}`);
+      }
+    }, Math.max(60000, Number(process.env.PACIFICA_WALLET_METRICS_HISTORY_CAPTURE_MS || 300000)));
+  }
+
   if (ENABLE_API && ONCHAIN_ENABLED && ONCHAIN_RUNNER_ENABLED) {
     onchainTimer = setInterval(async () => {
       try {
@@ -2185,10 +2348,15 @@ async function main() {
     clearInterval(apiUsageTimer);
     clearInterval(onchainTimer);
     clearInterval(globalKpiTimer);
+    clearInterval(walletMetricsHistoryTimer);
+    clearInterval(positionLifecycleTimer);
 
     try {
       if (ENABLE_LIVE && WS_ENABLED) liveHost.stop();
       if (ENABLE_API && INDEXER_ENABLED && INDEXER_RUNNER_ENABLED) walletIndexer.stop();
+      if (solanaLogTriggerMonitor) solanaLogTriggerMonitor.stop();
+      if (walletMetricsHistoryStore) walletMetricsHistoryStore.stop();
+      if (positionLifecycleStore) positionLifecycleStore.stop();
       pipeline.flushAll();
     } catch (_error) {
       // ignore
