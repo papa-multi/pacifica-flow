@@ -165,34 +165,50 @@ function fmtAgo(ts) {
   return `${Math.round(diff / 86400000)}d ago`;
 }
 
-function getKpiComparisonDisplay(entry = {}) {
+function getKpiPeriodChangeDisplay(periodLabel, entry = {}) {
   const trend = String(entry?.trend || "flat").toLowerCase();
   const deltaPct = toNum(entry?.deltaPct, NaN);
-  const comparisonLabel = String(entry?.comparisonLabel || "snapshot");
+  const comparisonLabelRaw = String(entry?.comparisonLabel || "").trim();
+  const comparisonLabel =
+    comparisonLabelRaw === "vs 30d avg/day"
+      ? "vs 30D avg/day"
+      : comparisonLabelRaw === "vs lifetime 30d run rate"
+        ? "vs lifetime run rate"
+        : comparisonLabelRaw;
 
-  if (Number.isFinite(deltaPct)) {
-    const badgeClass = trend === "up" ? "up" : trend === "down" ? "down" : "flat";
-    const icon = trend === "up" ? "▲" : trend === "down" ? "▼" : "●";
+  if (
+    !Number.isFinite(deltaPct) &&
+    comparisonLabel === "active accounts" &&
+    Number.isFinite(toNum(entry?.currentValue, NaN))
+  ) {
     return {
-      badgeClass,
-      badgeText: `${icon} ${fmtSignedPct(deltaPct, 1)}`,
-      labelText: comparisonLabel,
+      periodLabel,
+      tone: "info",
+      valueText: fmt(toNum(entry.currentValue, 0), 0),
     };
   }
 
-  if (trend === "up" || trend === "down") {
-    const icon = trend === "up" ? "▲" : "▼";
+  if (Number.isFinite(deltaPct)) {
     return {
-      badgeClass: trend,
-      badgeText: `${icon} ${comparisonLabel}`,
-      labelText: "comparison pending",
+      periodLabel,
+      tone: trend === "up" ? "up" : trend === "down" ? "down" : "flat",
+      valueText: fmtSignedPct(deltaPct, 1),
+    };
+  }
+
+  const activeMatch = comparisonLabel.match(/^(\d+)\s+active/i);
+  if (activeMatch) {
+    return {
+      periodLabel,
+      tone: "info",
+      valueText: fmt(activeMatch[1], 0),
     };
   }
 
   return {
-    badgeClass: "flat",
-    badgeText: "● steady",
-    labelText: comparisonLabel,
+    periodLabel,
+    tone: "na",
+    valueText: "N/A",
   };
 }
 
@@ -1068,11 +1084,6 @@ function renderVolumeChart(container, series, presentation = null) {
       wrap.appendChild(bar);
     }
 
-    const label = document.createElement("div");
-    label.className = `bar-label${shouldShowAxisLabel(index, data.length) ? "" : " dim"}`;
-    label.textContent =
-      shouldShowAxisLabel(index, data.length) && !useEventLane ? formatChartLabel(item, "axis") : "";
-    wrap.appendChild(label);
     bars.appendChild(wrap);
   });
 
@@ -1721,18 +1732,6 @@ function renderStatusBars() {
     ? indexer.topErrorReasons[0]
     : null;
   const activeEgress = Number(indexer?.restClients?.count ?? 0);
-  const alertCount =
-    Number(staleRatio > 0.35) +
-    Number(refreshSuccessPct < 70) +
-    Number(queuePressure > 2000) +
-    Number(progress.failedBackfill > 0) +
-    Number(Boolean(indexer?.lastError));
-
-  setText("exchange-live-label", wsStatus === "open" ? "LIVE" : "SYNCING");
-  setText("status-refresh-age", `Data age: ${fmtAgo(generatedAt)}`);
-  setText("status-latency", `Latency: ${fmtDurationMs(avgAgeMs)}`);
-  setText("status-alerts", `Alerts: ${fmt(alertCount, 0)}`);
-
   setText(
     "ops-freshness-state",
     staleRatio > 0.45 ? "degraded" : staleRatio > 0.2 ? "warming" : "healthy"
@@ -2810,7 +2809,7 @@ function buildTidalReasonChips(row, isMomentumLeader) {
 function renderExchange() {
   const payload = state.exchange || {};
   const kpis = payload.kpis || {};
-  const comparisons = payload.kpiComparisons && payload.kpiComparisons.metrics ? payload.kpiComparisons.metrics : {};
+  const periodChanges = payload.kpiPeriodChanges || {};
   const indexer = payload.indexer || {};
   const progress = getIndexerBreakdown(indexer);
   const successfulScans = Number(indexer?.successfulScans ?? 0);
@@ -2819,29 +2818,41 @@ function renderExchange() {
 
   const kpiRows = [
     {
-      key: "Total Accounts",
-      value: fmt(kpis.totalAccounts || 0, 0),
-      comparison: getKpiComparisonDisplay(comparisons.totalAccounts),
+      key: "Active Accounts",
+      value: fmt(kpis.activeAccounts || 0, 0),
+      periodChanges: [
+        getKpiPeriodChangeDisplay("24H", periodChanges?.["24h"]?.totalAccounts),
+        getKpiPeriodChangeDisplay("30D", periodChanges?.["30d"]?.totalAccounts),
+      ],
     },
     {
       key: "Total Trades",
       value: fmt(kpis.totalTrades || 0, 0),
-      comparison: getKpiComparisonDisplay(comparisons.totalTrades),
+      periodChanges: [
+        getKpiPeriodChangeDisplay("24H", periodChanges?.["24h"]?.totalTrades),
+        getKpiPeriodChangeDisplay("30D", periodChanges?.["30d"]?.totalTrades),
+      ],
     },
     {
       key: "Total Volume",
       value: `$${fmtCompact(kpis.totalVolumeUsd)}`,
-      comparison: getKpiComparisonDisplay(comparisons.totalVolumeUsd),
+      periodChanges: [
+        getKpiPeriodChangeDisplay("24H", periodChanges?.["24h"]?.totalVolumeUsd),
+        getKpiPeriodChangeDisplay("30D", periodChanges?.["30d"]?.totalVolumeUsd),
+      ],
     },
     {
       key: "Total Fees",
       value: `$${fmt(kpis.totalFeesUsd, 2)}`,
-      comparison: getKpiComparisonDisplay(comparisons.totalFeesUsd),
+      periodChanges: [
+        getKpiPeriodChangeDisplay("24H", periodChanges?.["24h"]?.totalFeesUsd),
+        getKpiPeriodChangeDisplay("30D", periodChanges?.["30d"]?.totalFeesUsd),
+      ],
     },
     {
       key: "Open Interest",
       value: `$${fmtCompact(kpis.openInterestAtEnd)}`,
-      comparison: getKpiComparisonDisplay(comparisons.openInterestAtEnd),
+      periodChanges: [],
     },
   ];
 
@@ -2852,13 +2863,22 @@ function renderExchange() {
         (row) => `<article class="kpi-card">
             <div class="kpi-title">${escapeHtml(row.key)}</div>
             <div class="kpi-value">${row.value}</div>
-            <div class="kpi-delta-row">
-              <span class="kpi-delta-badge ${escapeHtml(row.comparison?.badgeClass || "flat")}">${escapeHtml(
-                row.comparison?.badgeText || "● steady"
-              )}</span>
-              <span class="kpi-delta-label">${escapeHtml(row.comparison?.labelText || "snapshot")}</span>
-            </div>
-            ${row.meta ? `<div class="kpi-meta">${escapeHtml(row.meta)}</div>` : ""}
+            ${
+              Array.isArray(row.periodChanges) && row.periodChanges.length
+                ? `<div class="kpi-change-grid">
+              ${row.periodChanges
+                .map(
+                  (change) => `<div class="kpi-change-item ${escapeHtml(change?.tone || "flat")}">
+                    <span class="kpi-change-period">${escapeHtml(change?.periodLabel || "-")}</span>
+                    <span class="kpi-change-value ${escapeHtml(change?.tone || "flat")}">${escapeHtml(
+                      change?.valueText || "steady"
+                    )}</span>
+                  </div>`
+                )
+                .join("")}
+            </div>`
+                : ""
+            }
           </article>`
       )
       .join("");
@@ -3058,36 +3078,6 @@ function renderExchange() {
   const volumeNext = el("volume-next-btn");
   if (volumePrev) volumePrev.disabled = state.volumeRankPage <= 1;
   if (volumeNext) volumeNext.disabled = state.volumeRankPage >= totalPages;
-}
-
-async function runTerminalSearch() {
-  const input = el("terminal-search-input");
-  const raw = input ? String(input.value || "").trim() : "";
-  if (!raw) return;
-
-  const looksLikeWallet = raw.length >= 32;
-  if (looksLikeWallet) {
-    applyView("wallets");
-    state.walletSearch = raw;
-    state.walletPage = 1;
-    const walletSearchInput = el("wallet-search");
-    if (walletSearchInput) walletSearchInput.value = raw;
-    await refreshWallets();
-    return;
-  }
-
-  const normalized = raw.toUpperCase();
-  const rankRows = Array.isArray(state.exchange?.volumeRank) ? state.exchange.volumeRank : [];
-  const matchedSymbol = rankRows.find((row) => String(row?.symbol || "").toUpperCase() === normalized)?.symbol;
-  const resolved = matchedSymbol || resolveCanonicalTokenSymbol(normalized);
-  if (resolved) {
-    applyView("exchange");
-    state.volumeFilter = String(resolved).toUpperCase();
-    state.volumeRankPage = 1;
-    const filterInput = el("volume-filter");
-    if (filterInput) filterInput.value = state.volumeFilter;
-    renderExchange();
-  }
 }
 
 function renderWallets() {
@@ -3328,16 +3318,6 @@ function bindEvents() {
       state.walletPage = 1;
       await refreshAll();
     });
-  });
-
-  el("terminal-search-btn")?.addEventListener("click", async () => {
-    await runTerminalSearch();
-  });
-
-  el("terminal-search-input")?.addEventListener("keydown", async (event) => {
-    if (event.key !== "Enter") return;
-    event.preventDefault();
-    await runTerminalSearch();
   });
 
   el("apply-account-btn")?.addEventListener("click", async () => {

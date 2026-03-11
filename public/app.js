@@ -155,31 +155,37 @@ function fmtAgo(ts) {
   if (diff < 86400000) return `${Math.round(diff / 3600000)}h ago`;
   return `${Math.round(diff / 86400000)}d ago`;
 }
-function getKpiComparisonDisplay(entry = {}) {
+function getKpiPeriodChangeDisplay(periodLabel, entry = {}) {
   const trend = String((entry === null || entry === void 0 ? void 0 : entry.trend) || "flat").toLowerCase();
   const deltaPct = toNum(entry === null || entry === void 0 ? void 0 : entry.deltaPct, NaN);
-  const comparisonLabel = String((entry === null || entry === void 0 ? void 0 : entry.comparisonLabel) || "snapshot");
-  if (Number.isFinite(deltaPct)) {
-    const badgeClass = trend === "up" ? "up" : trend === "down" ? "down" : "flat";
-    const icon = trend === "up" ? "▲" : trend === "down" ? "▼" : "●";
+  const comparisonLabelRaw = String((entry === null || entry === void 0 ? void 0 : entry.comparisonLabel) || "").trim();
+  const comparisonLabel = comparisonLabelRaw === "vs 30d avg/day" ? "vs 30D avg/day" : comparisonLabelRaw === "vs lifetime 30d run rate" ? "vs lifetime run rate" : comparisonLabelRaw;
+  if (!Number.isFinite(deltaPct) && comparisonLabel === "active accounts" && Number.isFinite(toNum(entry === null || entry === void 0 ? void 0 : entry.currentValue, NaN))) {
     return {
-      badgeClass,
-      badgeText: `${icon} ${fmtSignedPct(deltaPct, 1)}`,
-      labelText: comparisonLabel
+      periodLabel,
+      tone: "info",
+      valueText: fmt(toNum(entry.currentValue, 0), 0)
     };
   }
-  if (trend === "up" || trend === "down") {
-    const icon = trend === "up" ? "▲" : "▼";
+  if (Number.isFinite(deltaPct)) {
     return {
-      badgeClass: trend,
-      badgeText: `${icon} ${comparisonLabel}`,
-      labelText: "comparison pending"
+      periodLabel,
+      tone: trend === "up" ? "up" : trend === "down" ? "down" : "flat",
+      valueText: fmtSignedPct(deltaPct, 1)
+    };
+  }
+  const activeMatch = comparisonLabel.match(/^(\d+)\s+active/i);
+  if (activeMatch) {
+    return {
+      periodLabel,
+      tone: "info",
+      valueText: fmt(activeMatch[1], 0)
     };
   }
   return {
-    badgeClass: "flat",
-    badgeText: "● steady",
-    labelText: comparisonLabel
+    periodLabel,
+    tone: "na",
+    valueText: "N/A"
   };
 }
 function syncTimeframeButtons() {
@@ -947,10 +953,6 @@ function renderVolumeChart(container, series, presentation = null) {
       bar.appendChild(tooltip);
       wrap.appendChild(bar);
     }
-    const label = document.createElement("div");
-    label.className = `bar-label${shouldShowAxisLabel(index, data.length) ? "" : " dim"}`;
-    label.textContent = shouldShowAxisLabel(index, data.length) && !useEventLane ? formatChartLabel(item, "axis") : "";
-    wrap.appendChild(label);
     bars.appendChild(wrap);
   });
   attachLineHoverOverlay(bars, hoverPoints);
@@ -1517,11 +1519,6 @@ function renderStatusBars() {
   const queuePressure = Number((_indexer$priorityQueu = indexer === null || indexer === void 0 ? void 0 : indexer.priorityQueueSize) !== null && _indexer$priorityQueu !== void 0 ? _indexer$priorityQueu : 0) + Number((_indexer$liveQueueSiz = indexer === null || indexer === void 0 ? void 0 : indexer.liveQueueSize) !== null && _indexer$liveQueueSiz !== void 0 ? _indexer$liveQueueSiz : 0);
   const topError = Array.isArray(indexer === null || indexer === void 0 ? void 0 : indexer.topErrorReasons) && indexer.topErrorReasons.length ? indexer.topErrorReasons[0] : null;
   const activeEgress = Number((_indexer$restClients$ = indexer === null || indexer === void 0 ? void 0 : (_indexer$restClients = indexer.restClients) === null || _indexer$restClients === void 0 ? void 0 : _indexer$restClients.count) !== null && _indexer$restClients$ !== void 0 ? _indexer$restClients$ : 0);
-  const alertCount = Number(staleRatio > 0.35) + Number(refreshSuccessPct < 70) + Number(queuePressure > 2000) + Number(progress.failedBackfill > 0) + Number(Boolean(indexer === null || indexer === void 0 ? void 0 : indexer.lastError));
-  setText("exchange-live-label", wsStatus === "open" ? "LIVE" : "SYNCING");
-  setText("status-refresh-age", `Data age: ${fmtAgo(generatedAt)}`);
-  setText("status-latency", `Latency: ${fmtDurationMs(avgAgeMs)}`);
-  setText("status-alerts", `Alerts: ${fmt(alertCount, 0)}`);
   setText("ops-freshness-state", staleRatio > 0.45 ? "degraded" : staleRatio > 0.2 ? "warming" : "healthy");
   setText("ops-health-state", refreshSuccessPct >= 85 ? "stable" : refreshSuccessPct >= 70 ? "warning" : "critical");
   setText("ops-queue-pressure", fmt(queuePressure, 0));
@@ -2482,50 +2479,48 @@ function buildTidalReasonChips(row, isMomentumLeader) {
   return chips.slice(0, 3);
 }
 function renderExchange() {
-  var _indexer$successfulSc2, _indexer$failedScans2, _payload$source, _payload$source2, _payload$source3, _payload$source4, _payload$source5;
+  var _indexer$successfulSc2, _indexer$failedScans2, _periodChanges$24h, _periodChanges$30d, _periodChanges$24h2, _periodChanges$30d2, _periodChanges$24h3, _periodChanges$30d3, _periodChanges$24h4, _periodChanges$30d4, _payload$source, _payload$source2, _payload$source3, _payload$source4, _payload$source5;
   const payload = state.exchange || {};
   const kpis = payload.kpis || {};
-  const comparisons = payload.kpiComparisons && payload.kpiComparisons.metrics ? payload.kpiComparisons.metrics : {};
+  const periodChanges = payload.kpiPeriodChanges || {};
   const indexer = payload.indexer || {};
   const progress = getIndexerBreakdown(indexer);
   const successfulScans = Number((_indexer$successfulSc2 = indexer === null || indexer === void 0 ? void 0 : indexer.successfulScans) !== null && _indexer$successfulSc2 !== void 0 ? _indexer$successfulSc2 : 0);
   const failedScans = Number((_indexer$failedScans2 = indexer === null || indexer === void 0 ? void 0 : indexer.failedScans) !== null && _indexer$failedScans2 !== void 0 ? _indexer$failedScans2 : 0);
   const scanAttempts = successfulScans + failedScans;
   const kpiRows = [{
-    key: "Total Accounts",
-    value: fmt(kpis.totalAccounts || 0, 0),
-    comparison: getKpiComparisonDisplay(comparisons.totalAccounts)
+    key: "Active Accounts",
+    value: fmt(kpis.activeAccounts || 0, 0),
+    periodChanges: [getKpiPeriodChangeDisplay("24H", periodChanges === null || periodChanges === void 0 ? void 0 : (_periodChanges$24h = periodChanges["24h"]) === null || _periodChanges$24h === void 0 ? void 0 : _periodChanges$24h.totalAccounts), getKpiPeriodChangeDisplay("30D", periodChanges === null || periodChanges === void 0 ? void 0 : (_periodChanges$30d = periodChanges["30d"]) === null || _periodChanges$30d === void 0 ? void 0 : _periodChanges$30d.totalAccounts)]
   }, {
     key: "Total Trades",
     value: fmt(kpis.totalTrades || 0, 0),
-    comparison: getKpiComparisonDisplay(comparisons.totalTrades)
+    periodChanges: [getKpiPeriodChangeDisplay("24H", periodChanges === null || periodChanges === void 0 ? void 0 : (_periodChanges$24h2 = periodChanges["24h"]) === null || _periodChanges$24h2 === void 0 ? void 0 : _periodChanges$24h2.totalTrades), getKpiPeriodChangeDisplay("30D", periodChanges === null || periodChanges === void 0 ? void 0 : (_periodChanges$30d2 = periodChanges["30d"]) === null || _periodChanges$30d2 === void 0 ? void 0 : _periodChanges$30d2.totalTrades)]
   }, {
     key: "Total Volume",
     value: `$${fmtCompact(kpis.totalVolumeUsd)}`,
-    comparison: getKpiComparisonDisplay(comparisons.totalVolumeUsd)
+    periodChanges: [getKpiPeriodChangeDisplay("24H", periodChanges === null || periodChanges === void 0 ? void 0 : (_periodChanges$24h3 = periodChanges["24h"]) === null || _periodChanges$24h3 === void 0 ? void 0 : _periodChanges$24h3.totalVolumeUsd), getKpiPeriodChangeDisplay("30D", periodChanges === null || periodChanges === void 0 ? void 0 : (_periodChanges$30d3 = periodChanges["30d"]) === null || _periodChanges$30d3 === void 0 ? void 0 : _periodChanges$30d3.totalVolumeUsd)]
   }, {
     key: "Total Fees",
     value: `$${fmt(kpis.totalFeesUsd, 2)}`,
-    comparison: getKpiComparisonDisplay(comparisons.totalFeesUsd)
+    periodChanges: [getKpiPeriodChangeDisplay("24H", periodChanges === null || periodChanges === void 0 ? void 0 : (_periodChanges$24h4 = periodChanges["24h"]) === null || _periodChanges$24h4 === void 0 ? void 0 : _periodChanges$24h4.totalFeesUsd), getKpiPeriodChangeDisplay("30D", periodChanges === null || periodChanges === void 0 ? void 0 : (_periodChanges$30d4 = periodChanges["30d"]) === null || _periodChanges$30d4 === void 0 ? void 0 : _periodChanges$30d4.totalFeesUsd)]
   }, {
     key: "Open Interest",
     value: `$${fmtCompact(kpis.openInterestAtEnd)}`,
-    comparison: getKpiComparisonDisplay(comparisons.openInterestAtEnd)
+    periodChanges: []
   }];
   const kpiContainer = el("exchange-kpis");
   if (kpiContainer) {
-    kpiContainer.innerHTML = kpiRows.map(row => {
-      var _row$comparison, _row$comparison2, _row$comparison3;
-      return `<article class="kpi-card">
+    kpiContainer.innerHTML = kpiRows.map(row => `<article class="kpi-card">
             <div class="kpi-title">${escapeHtml(row.key)}</div>
             <div class="kpi-value">${row.value}</div>
-            <div class="kpi-delta-row">
-              <span class="kpi-delta-badge ${escapeHtml(((_row$comparison = row.comparison) === null || _row$comparison === void 0 ? void 0 : _row$comparison.badgeClass) || "flat")}">${escapeHtml(((_row$comparison2 = row.comparison) === null || _row$comparison2 === void 0 ? void 0 : _row$comparison2.badgeText) || "● steady")}</span>
-              <span class="kpi-delta-label">${escapeHtml(((_row$comparison3 = row.comparison) === null || _row$comparison3 === void 0 ? void 0 : _row$comparison3.labelText) || "snapshot")}</span>
-            </div>
-            ${row.meta ? `<div class="kpi-meta">${escapeHtml(row.meta)}</div>` : ""}
-          </article>`;
-    }).join("");
+            ${Array.isArray(row.periodChanges) && row.periodChanges.length ? `<div class="kpi-change-grid">
+              ${row.periodChanges.map(change => `<div class="kpi-change-item ${escapeHtml((change === null || change === void 0 ? void 0 : change.tone) || "flat")}">
+                    <span class="kpi-change-period">${escapeHtml((change === null || change === void 0 ? void 0 : change.periodLabel) || "-")}</span>
+                    <span class="kpi-change-value ${escapeHtml((change === null || change === void 0 ? void 0 : change.tone) || "flat")}">${escapeHtml((change === null || change === void 0 ? void 0 : change.valueText) || "steady")}</span>
+                  </div>`).join("")}
+            </div>` : ""}
+          </article>`).join("");
   }
   syncTimeframeButtons();
   renderMarketsTicker(payload);
@@ -2667,34 +2662,6 @@ function renderExchange() {
   const volumeNext = el("volume-next-btn");
   if (volumePrev) volumePrev.disabled = state.volumeRankPage <= 1;
   if (volumeNext) volumeNext.disabled = state.volumeRankPage >= totalPages;
-}
-async function runTerminalSearch() {
-  var _state$exchange11, _rankRows$find;
-  const input = el("terminal-search-input");
-  const raw = input ? String(input.value || "").trim() : "";
-  if (!raw) return;
-  const looksLikeWallet = raw.length >= 32;
-  if (looksLikeWallet) {
-    applyView("wallets");
-    state.walletSearch = raw;
-    state.walletPage = 1;
-    const walletSearchInput = el("wallet-search");
-    if (walletSearchInput) walletSearchInput.value = raw;
-    await refreshWallets();
-    return;
-  }
-  const normalized = raw.toUpperCase();
-  const rankRows = Array.isArray((_state$exchange11 = state.exchange) === null || _state$exchange11 === void 0 ? void 0 : _state$exchange11.volumeRank) ? state.exchange.volumeRank : [];
-  const matchedSymbol = (_rankRows$find = rankRows.find(row => String((row === null || row === void 0 ? void 0 : row.symbol) || "").toUpperCase() === normalized)) === null || _rankRows$find === void 0 ? void 0 : _rankRows$find.symbol;
-  const resolved = matchedSymbol || resolveCanonicalTokenSymbol(normalized);
-  if (resolved) {
-    applyView("exchange");
-    state.volumeFilter = String(resolved).toUpperCase();
-    state.volumeRankPage = 1;
-    const filterInput = el("volume-filter");
-    if (filterInput) filterInput.value = state.volumeFilter;
-    renderExchange();
-  }
 }
 function renderWallets() {
   const payload = state.wallets || {};
@@ -2892,7 +2859,7 @@ async function loadInitialWallet() {
   }
 }
 function bindEvents() {
-  var _el4, _el5, _el6, _el7, _el8, _el9, _el10, _el11, _el12, _el13, _el14, _el15, _el16, _el17, _el18, _el19, _el20, _el21;
+  var _el4, _el5, _el6, _el7, _el8, _el9, _el10, _el11, _el12, _el13, _el14, _el15, _el16, _el17, _el18, _el19;
   document.querySelectorAll(".tab-btn").forEach(btn => {
     btn.addEventListener("click", () => applyView(btn.dataset.view));
   });
@@ -2906,28 +2873,20 @@ function bindEvents() {
       await refreshAll();
     });
   });
-  (_el4 = el("terminal-search-btn")) === null || _el4 === void 0 ? void 0 : _el4.addEventListener("click", async () => {
-    await runTerminalSearch();
-  });
-  (_el5 = el("terminal-search-input")) === null || _el5 === void 0 ? void 0 : _el5.addEventListener("keydown", async event => {
-    if (event.key !== "Enter") return;
-    event.preventDefault();
-    await runTerminalSearch();
-  });
-  (_el6 = el("apply-account-btn")) === null || _el6 === void 0 ? void 0 : _el6.addEventListener("click", async () => {
+  (_el4 = el("apply-account-btn")) === null || _el4 === void 0 ? void 0 : _el4.addEventListener("click", async () => {
     await setTrackedWallet();
   });
-  (_el7 = el("refresh-all-btn")) === null || _el7 === void 0 ? void 0 : _el7.addEventListener("click", async () => {
+  (_el5 = el("refresh-all-btn")) === null || _el5 === void 0 ? void 0 : _el5.addEventListener("click", async () => {
     await postJson("/api/snapshot/refresh", {});
     await postJson("/api/indexer/discover", {}).catch(() => null);
     await postJson("/api/indexer/scan", {}).catch(() => null);
     await refreshAll();
   });
-  (_el8 = el("wallet-refresh-btn")) === null || _el8 === void 0 ? void 0 : _el8.addEventListener("click", async () => {
+  (_el6 = el("wallet-refresh-btn")) === null || _el6 === void 0 ? void 0 : _el6.addEventListener("click", async () => {
     await refreshWallets();
     if (state.selectedWallet) await inspectWallet(state.selectedWallet);
   });
-  (_el9 = el("wallet-reindex-btn")) === null || _el9 === void 0 ? void 0 : _el9.addEventListener("click", async () => {
+  (_el7 = el("wallet-reindex-btn")) === null || _el7 === void 0 ? void 0 : _el7.addEventListener("click", async () => {
     const confirmed = window.confirm("Reindex from zero for all discovered wallets?\n\nThis keeps the discovered wallet registry, but clears per-wallet indexing progress/history.");
     if (!confirmed) return;
     try {
@@ -2946,26 +2905,26 @@ function bindEvents() {
       window.alert(`Reindex reset failed: ${error.message}`);
     }
   });
-  (_el10 = el("wallet-search")) === null || _el10 === void 0 ? void 0 : _el10.addEventListener("input", async event => {
+  (_el8 = el("wallet-search")) === null || _el8 === void 0 ? void 0 : _el8.addEventListener("input", async event => {
     state.walletSearch = event.target.value || "";
     state.walletPage = 1;
     await refreshWallets();
   });
-  (_el11 = el("wallet-page-size")) === null || _el11 === void 0 ? void 0 : _el11.addEventListener("change", async event => {
+  (_el9 = el("wallet-page-size")) === null || _el9 === void 0 ? void 0 : _el9.addEventListener("change", async event => {
     state.walletPageSize = Number(event.target.value || 20);
     state.walletPage = 1;
     await refreshWallets();
   });
-  (_el12 = el("wallet-prev-btn")) === null || _el12 === void 0 ? void 0 : _el12.addEventListener("click", async () => {
+  (_el10 = el("wallet-prev-btn")) === null || _el10 === void 0 ? void 0 : _el10.addEventListener("click", async () => {
     state.walletPage = Math.max(1, state.walletPage - 1);
     await refreshWallets();
   });
-  (_el13 = el("wallet-next-btn")) === null || _el13 === void 0 ? void 0 : _el13.addEventListener("click", async () => {
+  (_el11 = el("wallet-next-btn")) === null || _el11 === void 0 ? void 0 : _el11.addEventListener("click", async () => {
     const pages = state.wallets && state.wallets.pages ? state.wallets.pages : 1;
     state.walletPage = Math.min(pages, state.walletPage + 1);
     await refreshWallets();
   });
-  (_el14 = el("wallet-table-body")) === null || _el14 === void 0 ? void 0 : _el14.addEventListener("click", async event => {
+  (_el12 = el("wallet-table-body")) === null || _el12 === void 0 ? void 0 : _el12.addEventListener("click", async event => {
     const target = event.target;
     if (!(target instanceof HTMLElement)) return;
     const btn = target.closest(".inspect-btn");
@@ -2973,7 +2932,7 @@ function bindEvents() {
     const wallet = btn.getAttribute("data-wallet");
     await inspectWallet(wallet);
   });
-  (_el15 = el("volume-filter")) === null || _el15 === void 0 ? void 0 : _el15.addEventListener("input", event => {
+  (_el13 = el("volume-filter")) === null || _el13 === void 0 ? void 0 : _el13.addEventListener("input", event => {
     state.volumeFilter = String(event.target.value || "");
     state.volumeRankPage = 1;
     renderExchange();
@@ -2987,21 +2946,21 @@ function bindEvents() {
       renderExchange();
     });
   });
-  (_el16 = el("volume-prev-btn")) === null || _el16 === void 0 ? void 0 : _el16.addEventListener("click", () => {
+  (_el14 = el("volume-prev-btn")) === null || _el14 === void 0 ? void 0 : _el14.addEventListener("click", () => {
     state.volumeRankPage = Math.max(1, state.volumeRankPage - 1);
     renderExchange();
   });
-  (_el17 = el("volume-next-btn")) === null || _el17 === void 0 ? void 0 : _el17.addEventListener("click", () => {
-    var _state$exchange12;
-    const totalRows = Math.max(0, Number(state.volumeRankFilteredTotal || (Array.isArray((_state$exchange12 = state.exchange) === null || _state$exchange12 === void 0 ? void 0 : _state$exchange12.volumeRank) ? state.exchange.volumeRank.length : 0)));
+  (_el15 = el("volume-next-btn")) === null || _el15 === void 0 ? void 0 : _el15.addEventListener("click", () => {
+    var _state$exchange11;
+    const totalRows = Math.max(0, Number(state.volumeRankFilteredTotal || (Array.isArray((_state$exchange11 = state.exchange) === null || _state$exchange11 === void 0 ? void 0 : _state$exchange11.volumeRank) ? state.exchange.volumeRank.length : 0)));
     const totalPages = Math.max(1, Math.ceil(totalRows / Math.max(1, state.volumeRankPageSize)));
     state.volumeRankPage = Math.min(totalPages, state.volumeRankPage + 1);
     renderExchange();
   });
-  (_el18 = el("seriesDaily")) === null || _el18 === void 0 ? void 0 : _el18.addEventListener("click", () => updateSeriesToggle("daily"));
-  (_el19 = el("seriesWeekly")) === null || _el19 === void 0 ? void 0 : _el19.addEventListener("click", () => updateSeriesToggle("weekly"));
-  (_el20 = el("seriesMonthly")) === null || _el20 === void 0 ? void 0 : _el20.addEventListener("click", () => updateSeriesToggle("monthly"));
-  (_el21 = el("chartCumulative")) === null || _el21 === void 0 ? void 0 : _el21.addEventListener("click", () => updateChartType("line"));
+  (_el16 = el("seriesDaily")) === null || _el16 === void 0 ? void 0 : _el16.addEventListener("click", () => updateSeriesToggle("daily"));
+  (_el17 = el("seriesWeekly")) === null || _el17 === void 0 ? void 0 : _el17.addEventListener("click", () => updateSeriesToggle("weekly"));
+  (_el18 = el("seriesMonthly")) === null || _el18 === void 0 ? void 0 : _el18.addEventListener("click", () => updateSeriesToggle("monthly"));
+  (_el19 = el("chartCumulative")) === null || _el19 === void 0 ? void 0 : _el19.addEventListener("click", () => updateChartType("line"));
   const volumeChart = el("volumeChart");
   if (volumeChart) {
     volumeChart.addEventListener("wheel", handleChartWheel, {

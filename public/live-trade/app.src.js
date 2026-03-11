@@ -12,6 +12,7 @@ if (typeof window !== "undefined") {
 const state = {
   payload: null,
   payloadSignature: "",
+  activeView: "positions",
   rows: {
     positions: [],
     wallets: [],
@@ -54,6 +55,19 @@ const state = {
     lastEventAt: 0,
     lastErrorAt: 0,
     lastError: null,
+  },
+};
+
+const VIEW_CONFIG = {
+  positions: {
+    kicker: "Live positions",
+    title: "Positions",
+    subtitle: "Live open positions across tracked wallets, refreshed in one focused trading surface.",
+  },
+  wallets: {
+    kicker: "Wallet intelligence",
+    title: "Wallet Performance",
+    subtitle: "Tracked wallet quality, pnl, and activity in a calmer analytical view.",
   },
 };
 
@@ -914,10 +928,9 @@ function renderPositionsTable(rows) {
     { key: "wallet", label: "Wallet", align: "left" },
     { key: "symbol", label: "Symbol", align: "left" },
     { key: "side", label: "Side", align: "left" },
-    { key: "usd", label: "Position USD", align: "right" },
+    { key: "usd", label: "Position", align: "right" },
     { key: "entryLast", label: "Entry / Last", align: "right" },
     { key: "pnl", label: "PnL", align: "right" },
-    { key: "tx", label: "Tx / Ref", align: "left" },
     { key: "status", label: "Status", align: "left" },
     { key: "updated", label: "Updated", align: "left" },
   ];
@@ -936,44 +949,16 @@ function renderPositionsTable(rows) {
       const side = normalizeSide(row.side);
       const sideClass = side.includes("long") || side === "buy" ? "up" : side.includes("short") || side === "sell" ? "down" : "flat";
       const statusClass = row.status === "unresolved" ? "warn" : row.freshness === "fresh" ? "fresh" : row.freshness === "stale" ? "stale" : "cool";
-      const attributionTier = String(row.walletConfidence || "unresolved")
-        .trim()
-        .toLowerCase();
-      const attributionClass =
-        attributionTier === "hard_history_id" ||
-        attributionTier === "hard_order_id" ||
-        attributionTier === "hard_payload"
-          ? "fresh"
-          : attributionTier === "fallback_li"
-          ? "cool"
-          : "warn";
-      const attributionLabel = attributionTier.replaceAll("_", " ");
-      const txTier = String(row.txConfidence || "unresolved")
-        .trim()
-        .toLowerCase();
-      const txClass =
-        txTier === "hard_payload" || txTier === "hard_wallet_history"
-          ? "fresh"
-          : txTier === "soft_onchain_log_match"
-          ? "cool"
-          : "warn";
-      const txLabel = txTier.replaceAll("_", " ");
       const sizeText = Number.isFinite(n(row.size, NaN)) ? fmtNum(row.size, 4) : "-";
       const usdText = Number.isFinite(n(row.positionUsd, NaN)) ? fmtUsd(row.positionUsd, 2) : "Partial";
       const entryText = Number.isFinite(n(row.entry, NaN)) ? fmtNum(row.entry, 6) : "Partial";
       const markText = Number.isFinite(n(row.mark, NaN)) ? fmtNum(row.mark, 6) : "Partial";
       const pnlText = Number.isFinite(n(row.pnl, NaN)) ? fmtSignedUsd(row.pnl, 2) : "Partial";
-      const tradeRefType = String(row.tradeRefType || "").replaceAll("_", " ");
-      const txPrimary = row.txSignature
-        ? `<span class="mono">${escapeHtml(shortTx(row.txSignature))}</span>`
-        : row.tradeRef
-        ? `<span class="mono">${escapeHtml(tradeRefType || "ref")}: ${escapeHtml(row.tradeRef)}</span>`
-        : "<span>-</span>";
-      const txSecondary = row.txSignature
-        ? `<small title="${escapeHtml(row.txSignature)}">${escapeHtml(row.txSource || "payload")}</small>`
-        : row.tradeRef
-        ? `<small>${escapeHtml(row.txSource || "reference_only")}</small>`
-        : `<small>unresolved</small>`;
+      const secondaryStatus = !row.walletResolved
+        ? badge("warn", "unresolved")
+        : row.trackedWallet
+        ? badge("tracked", "tracked")
+        : "";
       return `<tr>
         <td class="left mono" data-col="time">${escapeHtml(fmtTs(row.timestamp))}</td>
         <td class="left" data-col="wallet">${renderWalletCell(row)}</td>
@@ -987,11 +972,7 @@ function renderPositionsTable(rows) {
         </td>
         <td class="right mono" data-col="entryLast">${escapeHtml(entryText)} / ${escapeHtml(markText)}</td>
         <td class="right mono ${n(row.pnl, 0) >= 0 ? "up" : "down"}" data-col="pnl">${escapeHtml(pnlText)}</td>
-        <td class="left" data-col="tx"><div class="lt-cell-stack">${txPrimary}${txSecondary}</div></td>
-        <td class="left" data-col="status">${badge(statusClass, row.status || "-")} ${badge(
-          attributionClass,
-          attributionLabel
-        )} ${badge(txClass, txLabel)}</td>
+        <td class="left" data-col="status">${badge(statusClass, row.status || "-")} ${secondaryStatus}</td>
         <td class="left mono" data-col="updated">${escapeHtml(fmtAgo(row.updatedAt || row.timestamp))}</td>
       </tr>`;
     })
@@ -1023,7 +1004,6 @@ function renderWalletsTable(rows) {
     { key: "realized", label: "Realized PnL", align: "right" },
     { key: "unrealized", label: "Unrealized PnL", align: "right" },
     { key: "winrate", label: "Win Rate", align: "right" },
-    { key: "fees", label: "Fees", align: "right" },
     { key: "activity", label: "Last Activity", align: "left" },
     { key: "fresh", label: "Freshness", align: "left" },
   ];
@@ -1044,7 +1024,6 @@ function renderWalletsTable(rows) {
       const volume = Number.isFinite(n(row.totalVolumeUsd, NaN)) ? fmtUsd(row.totalVolumeUsd, 2) : "Partial";
       const realized = Number.isFinite(n(row.realizedPnlUsd, NaN)) ? fmtSignedUsd(row.realizedPnlUsd, 2) : "Partial";
       const unrealized = Number.isFinite(n(row.unrealizedPnlUsd, NaN)) ? fmtSignedUsd(row.unrealizedPnlUsd, 2) : "Partial";
-      const fees = Number.isFinite(n(row.feesPaidUsd, NaN)) ? fmtUsd(row.feesPaidUsd, 2) : "Partial";
       const winRate = Number.isFinite(n(row.winRate, NaN)) ? fmtPct(row.winRate, 2) : "Partial";
       return `<tr>
         <td class="left" data-col="wallet">${renderWalletCell(row)}</td>
@@ -1053,7 +1032,6 @@ function renderWalletsTable(rows) {
         <td class="right mono ${n(row.realizedPnlUsd, 0) >= 0 ? "up" : "down"}" data-col="realized">${escapeHtml(realized)}</td>
         <td class="right mono ${n(row.unrealizedPnlUsd, 0) >= 0 ? "up" : "down"}" data-col="unrealized">${escapeHtml(unrealized)}</td>
         <td class="right mono" data-col="winrate">${escapeHtml(winRate)}</td>
-        <td class="right mono" data-col="fees">${escapeHtml(fees)}</td>
         <td class="left mono" data-col="activity">${escapeHtml(fmtTs(row.lastActivity))}</td>
         <td class="left" data-col="fresh">${badge(freshClass, row.freshness || "unknown")}</td>
       </tr>`;
@@ -1094,20 +1072,50 @@ function renderFilterMeta(positionsCount, walletsCount) {
   if (walletSummary) {
     const summary = state.payload?.summary || {};
     const posTotal = payloadPositionsTotal(state.payload);
-    const posWindowed = Boolean(
-      summary.openPositionsWindowed !== undefined
-        ? summary.openPositionsWindowed
-        : summary.publicTradesWindowed !== undefined
-        ? summary.publicTradesWindowed
-        : summary.publicTradesCapped
-    );
     const walletTotal = payloadWalletsTotal(state.payload);
-    const walletWindowed = Boolean(
-      summary.indexedWalletsWindowed !== undefined ? summary.indexedWalletsWindowed : summary.indexedWalletsCapped
-    );
-    const posLabel = `${fmtInt(positionsCount)}/${fmtInt(posTotal)}${posWindowed ? " paged" : ""}`;
-    const walletLabel = `${fmtInt(walletsCount)}/${fmtInt(walletTotal)}${walletWindowed ? " paged" : ""}`;
-    walletSummary.textContent = `Rows: positions ${posLabel} • wallets ${walletLabel}`;
+    const posLabel = `${fmtInt(positionsCount)} shown • ${fmtInt(posTotal)} tracked live`;
+    const walletLabel = `${fmtInt(walletsCount)} shown • ${fmtInt(walletTotal)} tracked wallets`;
+    walletSummary.textContent = `${posLabel} • ${walletLabel}`;
+  }
+}
+
+function renderActiveView(positionsCount, walletsCount) {
+  const activeView = state.activeView === "wallets" ? "wallets" : "positions";
+  const inactiveView = activeView === "positions" ? "wallets" : "positions";
+  const activePanel = el(`lt-view-${activeView}`);
+  const inactivePanel = el(`lt-view-${inactiveView}`);
+  const activeButton = el(`lt-view-${activeView}-btn`);
+  const inactiveButton = el(`lt-view-${inactiveView}-btn`);
+  const config = VIEW_CONFIG[activeView] || VIEW_CONFIG.positions;
+  const activeCount = activeView === "positions" ? positionsCount : walletsCount;
+
+  if (activePanel) {
+    activePanel.hidden = false;
+    activePanel.classList.add("is-active");
+  }
+  if (inactivePanel) {
+    inactivePanel.hidden = true;
+    inactivePanel.classList.remove("is-active");
+  }
+
+  if (activeButton) {
+    activeButton.classList.add("active");
+    activeButton.setAttribute("aria-selected", "true");
+  }
+  if (inactiveButton) {
+    inactiveButton.classList.remove("active");
+    inactiveButton.setAttribute("aria-selected", "false");
+  }
+
+  const kicker = el("lt-stage-kicker");
+  if (kicker) kicker.textContent = config.kicker;
+  const title = el("lt-stage-title");
+  if (title) title.textContent = config.title;
+  const subtitle = el("lt-stage-subtitle");
+  if (subtitle) subtitle.textContent = config.subtitle;
+  const activeCountNode = el("lt-active-view-count");
+  if (activeCountNode) {
+    activeCountNode.textContent = `${fmtInt(activeCount)} ${activeView === "positions" ? "rows" : "wallets"}`;
   }
 }
 
@@ -1128,7 +1136,7 @@ function renderHealth(payload) {
   const liveEl = el("lt-live-state");
   if (liveEl) {
     liveEl.textContent = status.label;
-    liveEl.className = `lt-pill lt-pill-live ${status.className}`;
+    liveEl.className = `lt-status-value lt-status-value-live ${status.className}`;
   }
 
   const generatedAt = tsMs(payload?.generatedAt);
@@ -1136,6 +1144,9 @@ function renderHealth(payload) {
   const marketLastEventAt = tsMs(payload?.marketContext?.lastEventAt);
   const eventAt = Math.max(generatedAt, syncUpdatedAt, marketLastEventAt, state.stream.lastEventAt || 0);
   const freshness = state.stream.lastPayloadAt ? Date.now() - state.stream.lastPayloadAt : null;
+  const walletFirst = asObject(payload?.summary?.walletFirstLive);
+  const openPositionsTotal = payloadPositionsTotal(payload);
+  const indexedWalletsTotal = payloadWalletsTotal(payload);
 
   const scope = String(payload?.summary?.streamScope || "exchange_wide_public_trades").replace(/_/g, " ");
   const windowed =
@@ -1146,14 +1157,14 @@ function renderHealth(payload) {
   const retentionLabel = Number.isFinite(retention) && retention > 0 ? ` • retention ${fmtInt(retention)}/symbol` : "";
 
   const lastEventNode = el("lt-last-event");
-  if (lastEventNode) lastEventNode.textContent = `Last Event: ${eventAt ? fmtTs(eventAt) : "-"}`;
+  if (lastEventNode) lastEventNode.textContent = eventAt ? fmtTs(eventAt) : "-";
 
   const freshNode = el("lt-freshness");
-  if (freshNode) freshNode.textContent = `Freshness: ${freshness === null ? "-" : `${fmtInt(freshness)} ms`}`;
+  if (freshNode) freshNode.textContent = freshness === null ? "-" : `${fmtInt(freshness)} ms`;
 
   const streamNode = el("lt-stream-health");
   if (streamNode) {
-    streamNode.textContent = `Stream: ${state.stream.source} • ${state.stream.connection} • ${scope}${windowed}${retentionLabel}`;
+    streamNode.textContent = `${state.stream.source} • ${state.stream.connection} • ${scope}${windowed}${retentionLabel}`;
   }
 
   const connNode = el("lt-conn");
@@ -1163,7 +1174,25 @@ function renderHealth(payload) {
       payload?.summary?.wsStatus ||
       payload?.environment?.wsStatus ||
       (state.stream.connection === "open" ? "open" : state.stream.connection || "unknown");
-    connNode.textContent = `Connection: ${wsStatus || "unknown"}`;
+    connNode.textContent = `${wsStatus || "unknown"} • ${fmtInt(n(payload?.marketContext?.eventsPerMin, 0))} ev/min`;
+  }
+
+  const latencyNode = el("lt-latency");
+  if (latencyNode) {
+    const lastPassMs = n(walletFirst.lastPassDurationMs, NaN);
+    const hotLoopSec = n(walletFirst.estimatedHotLoopSeconds, NaN);
+    if (Number.isFinite(lastPassMs) && Number.isFinite(hotLoopSec)) {
+      latencyNode.textContent = `Loop latency ${fmtInt(lastPassMs)} ms • hot ${fmtInt(hotLoopSec)}s`;
+    } else if (Number.isFinite(lastPassMs)) {
+      latencyNode.textContent = `Loop latency ${fmtInt(lastPassMs)} ms`;
+    } else {
+      latencyNode.textContent = "Loop latency -";
+    }
+  }
+
+  const coverageNode = el("lt-coverage");
+  if (coverageNode) {
+    coverageNode.textContent = `${fmtInt(openPositionsTotal)} positions • ${fmtInt(indexedWalletsTotal)} wallets`;
   }
 
   const attributionNode = el("lt-attribution");
@@ -1185,7 +1214,7 @@ function renderHealth(payload) {
     const hasBreakdown =
       hardPayload > 0 || hardHistory > 0 || hardOrder > 0 || fallbackLi > 0 || unresolved > 0;
     if (!hasBreakdown && !Number.isFinite(coverage)) {
-      attributionNode.textContent = "Attribution: -";
+      attributionNode.textContent = "Attribution unavailable";
     } else {
       const coverageText = Number.isFinite(coverage) ? `${fmtNum(coverage, 2)}%` : "-";
       const txAttribution = asObject(payload?.summary?.txAttribution);
@@ -1197,11 +1226,9 @@ function renderHealth(payload) {
         ? txCoverageSummaryRaw
         : NaN;
       const txCoverageText = Number.isFinite(txCoverage) ? `${fmtNum(txCoverage, 2)}%` : "-";
-      attributionNode.textContent = `Attribution: wallet ${coverageText} • tx ${txCoverageText} • hard(h:${fmtInt(
-        hardHistory
-      )} o:${fmtInt(hardOrder)} p:${fmtInt(hardPayload)}) • li:${fmtInt(
-        fallbackLi
-      )} • unresolved:${fmtInt(unresolved)}`;
+      attributionNode.textContent = `Wallet ${coverageText} • tx ${txCoverageText} • hard ${fmtInt(
+        hardHistory + hardOrder + hardPayload
+      )} • li ${fmtInt(fallbackLi)} • unresolved ${fmtInt(unresolved)}`;
     }
   }
 
@@ -1217,12 +1244,10 @@ function renderHealth(payload) {
     const total24h = Math.max(0, Math.floor(n(growth.totalUpserts24h, wallet24h + tx24h)));
     const rate = n(growth.ratePerHour, NaN);
     if (!db.enabled) {
-      attributionGrowthNode.textContent = "Attribution growth: db disabled";
+      attributionGrowthNode.textContent = "DB disabled";
     } else {
       const rateText = Number.isFinite(rate) ? fmtNum(rate, 2) : "-";
-      attributionGrowthNode.textContent = `Attribution growth: +${fmtInt(total1h)}/1h (+${fmtInt(
-        wallet1h
-      )} wallet, +${fmtInt(tx1h)} tx) • +${fmtInt(total24h)}/24h • rate ${rateText}/h`;
+      attributionGrowthNode.textContent = `+${fmtInt(total1h)}/1h • +${fmtInt(total24h)}/24h • ${rateText}/h`;
     }
   }
 }
@@ -1259,20 +1284,21 @@ function render(options = {}) {
 
   const posCountNode = el("lt-positions-row-count");
   if (posCountNode) {
-    posCountNode.textContent = `${fmtInt(positionsFiltered.length)} shown / ${fmtInt(
+    posCountNode.textContent = `${fmtInt(positionsFiltered.length)} shown • ${fmtInt(
       positionsWindow.totalRows
     )} total`;
   }
 
   const walletCountNode = el("lt-wallets-row-count");
   if (walletCountNode) {
-    walletCountNode.textContent = `${fmtInt(walletsFiltered.length)} shown / ${fmtInt(
+    walletCountNode.textContent = `${fmtInt(walletsFiltered.length)} shown • ${fmtInt(
       walletsWindow.totalRows
     )} total`;
   }
 
   renderHealth(payload);
   renderFilterMeta(positionsFiltered.length, walletsFiltered.length);
+  renderActiveView(positionsFiltered.length, walletsFiltered.length);
   renderPositionsTable(positionsFiltered);
   renderWalletsTable(walletsFiltered);
   renderPagination("positions", positionsWindow);
@@ -1464,6 +1490,16 @@ function readNumber(id, options = {}) {
 }
 
 function wireEvents() {
+  el("lt-view-positions-btn")?.addEventListener("click", () => {
+    state.activeView = "positions";
+    render();
+  });
+
+  el("lt-view-wallets-btn")?.addEventListener("click", () => {
+    state.activeView = "wallets";
+    render();
+  });
+
   el("lt-search")?.addEventListener("input", (event) => {
     state.search = String(event.target.value || "");
     resetPagination();

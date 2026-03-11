@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>PacificaFlow | Exchange Intelligence</title>
-    <link rel="stylesheet" href="/styles.css?v=20260310-perf1" />
+    <link rel="stylesheet" href="/styles.css?v=20260311-layoutpro1" />
   </head>
   <body>
     <div id="pf-runtime-error" class="lt-runtime-error" hidden></div>
@@ -20,9 +20,11 @@
     <div class="app-layout">
       <aside class="sidebar">
         <a class="brand sidebar-brand" href="/">
-          <img src="/assets/logo.svg" alt="PacificaFlow logo" />
+          <span class="brand-mark">
+            <img src="/assets/logo-pacifica.png" alt="Pacifica logo" />
+          </span>
           <span class="brand-stack">
-            <strong class="brand-title">PacificaFlow</strong>
+            <strong class="brand-wordmark-text">PacificaFlow</strong>
             <span class="brand-sub">Exchange Intelligence Console</span>
           </span>
         </a>
@@ -45,35 +47,14 @@
 
       <main class="shell">
         <div class="shell-container">
-          <header class="command-bar card" id="command-bar">
-            <div class="command-bar-left">
-              <div class="terminal-search-wrap">
-                <input id="terminal-search-input" type="search" placeholder="Search wallet / symbol" />
-                <button id="terminal-search-btn" class="btn-ghost" type="button">Go</button>
-              </div>
-              <select id="terminal-exchange-select" aria-label="Exchange selector">
-                <option value="pacifica" selected>Pacifica</option>
-              </select>
-            </div>
-            <div class="command-bar-center">
-              <div class="timeframe-group" id="timeframe-group">
-                <button class="chip-btn active" data-timeframe="all">All</button>
-                <button class="chip-btn" data-timeframe="24h">24h</button>
-                <button class="chip-btn" data-timeframe="30d">30d</button>
-              </div>
-            </div>
-            <div class="command-bar-right">
-              <span class="trust-pill trust-pill-live">
-                <span class="live-dot"></span>
-                <span id="exchange-live-label">LIVE</span>
-              </span>
-              <span class="trust-pill" id="status-refresh-age">Data age: -</span>
-              <span class="trust-pill" id="status-latency">Latency: -</span>
-              <span class="trust-pill" id="status-alerts">Alerts: -</span>
-            </div>
-          </header>
-
           <section id="exchange-view" class="view active">
+            <section class="exchange-topline">
+              <div class="exchange-topline-copy">
+                <p class="exchange-topline-kicker">Exchange Overview</p>
+                <h1>Pacifica Market Intelligence</h1>
+              </div>
+            </section>
+
             <div class="markets-ticker card" id="marketsTicker" hidden>
               <div class="markets-ticker-viewport" aria-live="polite" aria-label="Pacifica markets ticker">
                 <div class="markets-ticker-track" id="marketsTickerTrack"></div>
@@ -83,18 +64,8 @@
             <section class="kpi-stage">
               <div class="kpi-stage-head">
                 <div class="kpi-stage-copy">
-                  <p class="kpi-stage-kicker">Protocol Monitor</p>
                   <h2>Exchange Metrics</h2>
                 </div>
-                <div class="kpi-stage-controls">
-                  <span class="kpi-stage-period-label">Period</span>
-                  <div class="timeframe-group kpi-timeframe-group" id="kpi-timeframe-group">
-                    <button class="chip-btn" data-timeframe="all">All</button>
-                    <button class="chip-btn" data-timeframe="24h">24h</button>
-                    <button class="chip-btn" data-timeframe="30d">30d</button>
-                  </div>
-                </div>
-                <div class="kpi-stage-meta" id="kpi-context-label">Source: -</div>
               </div>
               <section class="kpi-grid" id="exchange-kpis"></section>
             </section>
@@ -103,7 +74,6 @@
               <div class="chart-stage-head">
                 <div class="chart-stage-title">
                   <h2 id="chartTitle">Trading Volume</h2>
-                  <p class="chart-stage-note" id="analytics-note">Exchange-wide volume history.</p>
                   <div class="analytics-legend" id="analytics-legend" hidden></div>
                 </div>
                 <div class="chart-toggle-group" aria-label="Trading volume chart controls">
@@ -366,7 +336,7 @@
       })();
     </script>
     <script
-      src="/app.js?v=20260310-rootfix8"
+      src="/app.js?v=20260311-chartclean1"
       onload="window.__PF_APP_SCRIPT_NETWORK_OK = true;"
       onerror="window.__PF_APP_SCRIPT_NETWORK_OK = false; if (window.__PF_APP_SHOW_RUNTIME_ERROR) { window.__PF_APP_SHOW_RUNTIME_ERROR('frontend bundle failed to load from /app.js'); }"
     ></script>

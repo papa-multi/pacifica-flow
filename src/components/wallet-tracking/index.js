@@ -339,9 +339,9 @@ function buildExchangeKpiComparisons({
           trend: "flat",
           deltaAbs: null,
           deltaPct: null,
-          comparisonLabel: `${toNum(window24h.activeAccounts, 0)} active in 24h`,
+          comparisonLabel: "active accounts",
           baselineValue: null,
-          currentValue: toNum(allWallets.totalAccounts, 0),
+          currentValue: toNum(window24h.activeAccounts, 0),
           comparisonAvailable: false,
         },
         totalTrades: buildKpiComparisonEntry({
@@ -366,7 +366,7 @@ function buildExchangeKpiComparisons({
           trend: "flat",
           deltaAbs: null,
           deltaPct: null,
-          comparisonLabel: "live snapshot",
+          comparisonLabel: "historical delta unavailable",
           baselineValue: null,
           currentValue: toNum(openInterestUsd, 0),
           comparisonAvailable: false,
@@ -396,9 +396,9 @@ function buildExchangeKpiComparisons({
           trend: "flat",
           deltaAbs: null,
           deltaPct: null,
-          comparisonLabel: `${toNum(window30d.activeAccounts, 0)} active in 30d`,
+          comparisonLabel: "active accounts",
           baselineValue: null,
-          currentValue: toNum(allWallets.totalAccounts, 0),
+          currentValue: toNum(window30d.activeAccounts, 0),
           comparisonAvailable: false,
         },
         totalTrades: buildKpiComparisonEntry({
@@ -423,7 +423,7 @@ function buildExchangeKpiComparisons({
           trend: "flat",
           deltaAbs: null,
           deltaPct: null,
-          comparisonLabel: "live snapshot",
+          comparisonLabel: "historical delta unavailable",
           baselineValue: null,
           currentValue: toNum(openInterestUsd, 0),
           comparisonAvailable: false,
@@ -439,9 +439,9 @@ function buildExchangeKpiComparisons({
         trend: "flat",
         deltaAbs: null,
         deltaPct: null,
-        comparisonLabel: "tracked set",
+        comparisonLabel: "active accounts",
         baselineValue: null,
-        currentValue: toNum(allWallets.totalAccounts, 0),
+        currentValue: toNum(allWallets.activeAccounts, 0),
         comparisonAvailable: false,
       },
       totalTrades: {
@@ -475,7 +475,7 @@ function buildExchangeKpiComparisons({
         trend: "flat",
         deltaAbs: null,
         deltaPct: null,
-        comparisonLabel: "live snapshot",
+        comparisonLabel: "historical delta unavailable",
         baselineValue: null,
         currentValue: toNum(openInterestUsd, 0),
         comparisonAvailable: false,
@@ -3998,15 +3998,38 @@ function createWalletTrackingComponent({
           walletCoverageDays,
           volumeCoverageDays,
         });
+        const kpiPeriodChanges = {
+          "24h": buildExchangeKpiComparisons({
+            timeframe: "24h",
+            walletWindows: walletWindowMetrics,
+            volumeWindows: volumeWindowMetrics,
+            openInterestUsd: truth.openInterestAtEnd,
+            walletCoverageDays,
+            volumeCoverageDays,
+          }).metrics,
+          "30d": buildExchangeKpiComparisons({
+            timeframe: "30d",
+            walletWindows: walletWindowMetrics,
+            volumeWindows: volumeWindowMetrics,
+            openInterestUsd: truth.openInterestAtEnd,
+            walletCoverageDays,
+            volumeCoverageDays,
+          }).metrics,
+        };
 
         payload.kpis.totalVolumeUsd = toFixed(selectedTotalVolume, 2);
         payload.kpis.totalVolumeCompact = toCompact(payload.kpis.totalVolumeUsd);
+        payload.kpis.activeAccounts = Math.max(
+          0,
+          Number((walletWindowMetrics[timeframe] && walletWindowMetrics[timeframe].activeAccounts) || 0)
+        );
         payload.kpis.protocolCumulativeVolumeUsd = toFixed(
           historicalTotal !== null ? historicalTotal : 0,
           2
         );
         payload.kpis.openInterestAtEnd = toFixed(truth.openInterestAtEnd, 2);
         payload.kpiComparisons = kpiComparisons;
+        payload.kpiPeriodChanges = kpiPeriodChanges;
         payload.volumeRank = selectedRank;
         payload.source = {
           ...(payload.source || {}),

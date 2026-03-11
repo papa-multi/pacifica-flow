@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>PacificaFlow Live Trade</title>
     <link rel="stylesheet" href="/theme.css?v=20260310-perf1" />
-    <link rel="stylesheet" href="/live-trade/styles.css?v=20260310-perf1" />
+    <link rel="stylesheet" href="/live-trade/styles.css?v=20260311-chartclean1" />
   </head>
   <body class="lt-body">
     <div class="lt-bg" aria-hidden="true">
@@ -15,165 +15,155 @@
 
     <div class="lt-app">
       <div id="lt-runtime-error" class="lt-runtime-error" hidden></div>
-      <header class="lt-command-header">
-        <div class="lt-title-block">
-          <div class="lt-brand">
-            <img src="/assets/logo.svg" alt="PacificaFlow logo" />
-            <div>
-              <h1>Live Trade Monitor</h1>
-              <p>Real-time wallet, trade, and position intelligence</p>
+      <section class="lt-workbench">
+        <div class="lt-workbench-top">
+          <div class="lt-mode-switch" role="tablist" aria-label="Live trade views">
+            <button id="lt-view-positions-btn" class="lt-mode-btn active" type="button" role="tab" aria-selected="true" data-view="positions">
+              <span class="lt-mode-title">Positions</span>
+              <span id="lt-positions-row-count" class="lt-mode-meta">0 rows</span>
+            </button>
+            <button id="lt-view-wallets-btn" class="lt-mode-btn" type="button" role="tab" aria-selected="false" data-view="wallets">
+              <span class="lt-mode-title">Wallet Performance</span>
+              <span id="lt-wallets-row-count" class="lt-mode-meta">0 rows</span>
+            </button>
+          </div>
+
+          <section class="lt-filter-bar">
+            <div class="lt-filter-grid lt-filter-grid-basic">
+              <label>
+                Wallet
+                <input id="lt-filter-wallet" type="text" placeholder="Wallet contains..." />
+              </label>
+              <label>
+                Symbol
+                <select id="lt-filter-symbol">
+                  <option value="">All</option>
+                </select>
+              </label>
+              <label>
+                Side
+                <select id="lt-filter-side">
+                  <option value="">All</option>
+                </select>
+              </label>
+              <label>
+                Min Position USD
+                <input id="lt-filter-min-usd" type="number" min="0" step="100" placeholder="0" />
+              </label>
+              <label>
+                Max Position USD
+                <input id="lt-filter-max-usd" type="number" min="0" step="100" placeholder="No cap" />
+              </label>
+              <button id="lt-reset-filters" class="lt-btn lt-btn-ghost">Reset filters</button>
             </div>
-          </div>
+
+            <details class="lt-filter-advanced">
+              <summary>Advanced filters</summary>
+              <div class="lt-filter-grid lt-filter-grid-advanced">
+                <label>
+                  Freshness
+                  <select id="lt-filter-freshness">
+                    <option value="">All</option>
+                    <option value="fresh">Fresh</option>
+                    <option value="cooling">Cooling</option>
+                    <option value="stale">Stale</option>
+                    <option value="unknown">Unknown</option>
+                    <option value="unresolved">Unresolved</option>
+                  </select>
+                </label>
+                <label>
+                  Min PnL USD
+                  <input id="lt-filter-min-pnl" type="number" step="10" placeholder="No floor" />
+                </label>
+                <label>
+                  Max PnL USD
+                  <input id="lt-filter-max-pnl" type="number" step="10" placeholder="No cap" />
+                </label>
+              </div>
+              <div class="lt-filter-toggles">
+                <label class="lt-checkbox">
+                  <input id="lt-filter-tracked" type="checkbox" />
+                  <span>Tracked wallets only</span>
+                </label>
+              </div>
+            </details>
+
+            <div class="lt-filter-meta">
+              <span class="lt-pill" id="lt-filter-summary">Filters: none</span>
+            </div>
+          </section>
         </div>
 
-        <div class="lt-command-controls">
-          <select id="lt-exchange-select" aria-label="Exchange selector">
-            <option value="pacifica">Pacifica</option>
-          </select>
-          <input id="lt-search" type="search" placeholder="Search symbol / wallet / side" />
-          <button id="lt-refresh-btn" class="lt-btn">Refresh</button>
-          <button id="lt-pause-btn" class="lt-btn lt-btn-alt" aria-pressed="false">Pause Stream</button>
-        </div>
+        <section class="lt-stage" aria-live="polite">
+          <header class="lt-stage-head">
+            <div class="lt-stage-copy">
+              <span id="lt-stage-kicker" class="lt-stage-kicker">Live view</span>
+              <h2 id="lt-stage-title">Positions</h2>
+              <p id="lt-stage-subtitle">Live open positions across tracked wallets.</p>
+            </div>
+            <div class="lt-stage-meta">
+              <span id="lt-active-view-count" class="lt-pill">0 rows</span>
+              <span id="lt-wallet-summary" class="lt-pill">Rows: positions 0/0 • wallets 0/0</span>
+            </div>
+          </header>
 
-        <div class="lt-health-strip">
-          <span class="lt-pill lt-pill-live" id="lt-live-state">LIVE</span>
-          <span class="lt-pill" id="lt-last-event">Last Event: -</span>
-          <span class="lt-pill" id="lt-freshness">Freshness: -</span>
-          <span class="lt-pill" id="lt-stream-health">Stream: -</span>
-          <span class="lt-pill" id="lt-conn">Connection: -</span>
-          <span class="lt-pill" id="lt-attribution">Attribution: -</span>
-          <span class="lt-pill" id="lt-attribution-growth">Attribution growth: -</span>
-        </div>
-      </header>
+          <div id="lt-view-positions" class="lt-view is-active" data-view="positions">
+            <div class="lt-table-wrap">
+              <table id="lt-positions-table">
+                <thead id="lt-positions-head"></thead>
+                <tbody id="lt-positions-body"></tbody>
+              </table>
+            </div>
+            <footer class="lt-pagination">
+              <div class="lt-pagination-left">
+                <label>
+                  Rows/page
+                  <select id="lt-positions-page-size">
+                    <option value="50">50</option>
+                    <option value="100" selected>100</option>
+                    <option value="250">250</option>
+                    <option value="500">500</option>
+                    <option value="1000">1000</option>
+                  </select>
+                </label>
+                <span id="lt-positions-page-window" class="lt-pill">0-0 of 0</span>
+              </div>
+              <div class="lt-pagination-right">
+                <button id="lt-positions-page-prev" class="lt-btn lt-btn-ghost" type="button">Previous</button>
+                <span id="lt-positions-page-info" class="lt-pill">Page 1 / 1</span>
+                <button id="lt-positions-page-next" class="lt-btn lt-btn-ghost" type="button">Next</button>
+              </div>
+            </footer>
+          </div>
 
-      <section class="lt-filter-bar">
-        <div class="lt-filter-grid lt-filter-grid-basic">
-          <label>
-            Wallet
-            <input id="lt-filter-wallet" type="text" placeholder="Wallet contains..." />
-          </label>
-          <label>
-            Symbol
-            <select id="lt-filter-symbol">
-              <option value="">All</option>
-            </select>
-          </label>
-          <label>
-            Side
-            <select id="lt-filter-side">
-              <option value="">All</option>
-            </select>
-          </label>
-          <label>
-            Min Position USD
-            <input id="lt-filter-min-usd" type="number" min="0" step="100" placeholder="0" />
-          </label>
-          <label>
-            Max Position USD
-            <input id="lt-filter-max-usd" type="number" min="0" step="100" placeholder="No cap" />
-          </label>
-          <button id="lt-reset-filters" class="lt-btn lt-btn-ghost">Reset filters</button>
-        </div>
-
-        <details class="lt-filter-advanced">
-          <summary>Advanced filters</summary>
-          <div class="lt-filter-grid lt-filter-grid-advanced">
-            <label>
-              Freshness
-              <select id="lt-filter-freshness">
-                <option value="">All</option>
-                <option value="fresh">Fresh</option>
-                <option value="cooling">Cooling</option>
-                <option value="stale">Stale</option>
-                <option value="unknown">Unknown</option>
-                <option value="unresolved">Unresolved</option>
-              </select>
-            </label>
-            <label>
-              Min PnL USD
-              <input id="lt-filter-min-pnl" type="number" step="10" placeholder="No floor" />
-            </label>
-            <label>
-              Max PnL USD
-              <input id="lt-filter-max-pnl" type="number" step="10" placeholder="No cap" />
-            </label>
+          <div id="lt-view-wallets" class="lt-view" data-view="wallets" hidden>
+            <div class="lt-table-wrap">
+              <table id="lt-wallets-table">
+                <thead id="lt-wallets-head"></thead>
+                <tbody id="lt-wallets-body"></tbody>
+              </table>
+            </div>
+            <footer class="lt-pagination">
+              <div class="lt-pagination-left">
+                <label>
+                  Rows/page
+                  <select id="lt-wallets-page-size">
+                    <option value="50">50</option>
+                    <option value="100" selected>100</option>
+                    <option value="250">250</option>
+                    <option value="500">500</option>
+                  </select>
+                </label>
+                <span id="lt-wallets-page-window" class="lt-pill">0-0 of 0</span>
+              </div>
+              <div class="lt-pagination-right">
+                <button id="lt-wallets-page-prev" class="lt-btn lt-btn-ghost" type="button">Previous</button>
+                <span id="lt-wallets-page-info" class="lt-pill">Page 1 / 1</span>
+                <button id="lt-wallets-page-next" class="lt-btn lt-btn-ghost" type="button">Next</button>
+              </div>
+            </footer>
           </div>
-          <div class="lt-filter-toggles">
-            <label class="lt-checkbox">
-              <input id="lt-filter-tracked" type="checkbox" />
-              <span>Tracked wallets only</span>
-            </label>
-          </div>
-        </details>
-      </section>
-      <section class="lt-filter-meta">
-        <span class="lt-pill" id="lt-filter-summary">Filters: none</span>
-        <span class="lt-pill" id="lt-wallet-summary">Wallet filter: all</span>
-      </section>
-
-      <section class="lt-terminal" aria-live="polite">
-        <header class="lt-terminal-head">
-          <h2>Positions</h2>
-          <span id="lt-positions-row-count" class="lt-pill">0 rows</span>
-        </header>
-        <div class="lt-table-wrap">
-          <table id="lt-positions-table">
-            <thead id="lt-positions-head"></thead>
-            <tbody id="lt-positions-body"></tbody>
-          </table>
-        </div>
-        <footer class="lt-pagination">
-          <div class="lt-pagination-left">
-            <label>
-              Rows/page
-              <select id="lt-positions-page-size">
-                <option value="50">50</option>
-                <option value="100" selected>100</option>
-                <option value="250">250</option>
-                <option value="500">500</option>
-                <option value="1000">1000</option>
-              </select>
-            </label>
-            <span id="lt-positions-page-window" class="lt-pill">0-0 of 0</span>
-          </div>
-          <div class="lt-pagination-right">
-            <button id="lt-positions-page-prev" class="lt-btn lt-btn-ghost" type="button">Previous</button>
-            <span id="lt-positions-page-info" class="lt-pill">Page 1 / 1</span>
-            <button id="lt-positions-page-next" class="lt-btn lt-btn-ghost" type="button">Next</button>
-          </div>
-        </footer>
-      </section>
-
-      <section class="lt-terminal" aria-live="polite">
-        <header class="lt-terminal-head">
-          <h2>Wallet Performance</h2>
-          <span id="lt-wallets-row-count" class="lt-pill">0 rows</span>
-        </header>
-        <div class="lt-table-wrap">
-          <table id="lt-wallets-table">
-            <thead id="lt-wallets-head"></thead>
-            <tbody id="lt-wallets-body"></tbody>
-          </table>
-        </div>
-        <footer class="lt-pagination">
-          <div class="lt-pagination-left">
-            <label>
-              Rows/page
-              <select id="lt-wallets-page-size">
-                <option value="50">50</option>
-                <option value="100" selected>100</option>
-                <option value="250">250</option>
-                <option value="500">500</option>
-              </select>
-            </label>
-            <span id="lt-wallets-page-window" class="lt-pill">0-0 of 0</span>
-          </div>
-          <div class="lt-pagination-right">
-            <button id="lt-wallets-page-prev" class="lt-btn lt-btn-ghost" type="button">Previous</button>
-            <span id="lt-wallets-page-info" class="lt-pill">Page 1 / 1</span>
-            <button id="lt-wallets-page-next" class="lt-btn lt-btn-ghost" type="button">Next</button>
-          </div>
-        </footer>
+        </section>
       </section>
     </div>
 
@@ -221,7 +211,7 @@
       })();
     </script>
     <script
-      src="/live-trade/app.js?v=20260310-livefix7"
+      src="/live-trade/app.js?v=20260311-liveux1"
       onload="window.__PF_LIVE_TRADE_SCRIPT_NETWORK_OK = true;"
       onerror="window.__PF_LIVE_TRADE_SCRIPT_NETWORK_OK = false; if (window.__PF_SHOW_LIVE_TRADE_RUNTIME_ERROR) { window.__PF_SHOW_LIVE_TRADE_RUNTIME_ERROR('frontend bundle failed to load from /live-trade/app.js'); }"
     ></script>
