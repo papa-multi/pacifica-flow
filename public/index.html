@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>PacificaFlow | Exchange Intelligence</title>
-    <link rel="stylesheet" href="/styles.css?v=20260311-walletsort1" />
+    <link rel="stylesheet" href="/styles.css?v=20260312-uiaudit1" />
   </head>
   <body>
     <div id="pf-runtime-error" class="lt-runtime-error" hidden></div>
@@ -140,7 +140,7 @@
 
           </section>
 
-          <section id="wallets-view" class="view">
+          <section id="wallets-view" class="view" hidden aria-hidden="true">
             <header class="view-header">
               <div class="view-header-copy">
                 <p class="view-kicker">Pacifica Intelligence</p>
@@ -152,15 +152,27 @@
             </header>
 
             <section class="panel controls-panel wallet-controls">
-              <input id="wallet-search" placeholder="Search wallet" />
+              <input id="wallet-search" placeholder="Search wallet or symbol" />
               <select id="wallet-page-size">
                 <option value="20">20 / page</option>
                 <option value="50">50 / page</option>
                 <option value="100">100 / page</option>
               </select>
               <button id="wallet-refresh-btn" class="btn-ghost">Refresh</button>
-              <button id="wallet-reindex-btn" class="btn-danger">Reindex From Zero</button>
+              <button
+                id="wallet-filter-btn"
+                class="btn-ghost"
+                type="button"
+                aria-haspopup="dialog"
+                aria-controls="wallet-filter-modal"
+                aria-expanded="false"
+              >
+                Filters
+              </button>
+              <button id="wallet-clear-filters-btn" class="btn-ghost" hidden>Clear all</button>
             </section>
+
+            <section id="wallet-filter-summary" class="wallet-filter-summary" hidden></section>
 
             <section class="panel">
               <div class="panel-header">
@@ -177,6 +189,7 @@
                       <th><button class="table-sort-btn" type="button" data-wallet-sort-key="totalWins" data-wallet-sort-label="Total Wins">Total Wins <span data-wallet-sort-indicator>↑↓</span></button></th>
                       <th><button class="table-sort-btn" type="button" data-wallet-sort-key="totalLosses" data-wallet-sort-label="Total Losses">Total Losses <span data-wallet-sort-indicator>↑↓</span></button></th>
                       <th><button class="table-sort-btn" type="button" data-wallet-sort-key="pnlUsd" data-wallet-sort-label="PnL">PnL <span data-wallet-sort-indicator>↑↓</span></button></th>
+                      <th><button class="table-sort-btn" type="button" data-wallet-sort-key="openPositions" data-wallet-sort-label="Open Positions">Open Positions <span data-wallet-sort-indicator>↑↓</span></button></th>
                       <th><button class="table-sort-btn" type="button" data-wallet-sort-key="winRate" data-wallet-sort-label="Win Rate">Win Rate <span data-wallet-sort-indicator>↑↓</span></button></th>
                       <th><button class="table-sort-btn" type="button" data-wallet-sort-key="firstTrade" data-wallet-sort-label="First Trade">First Trade <span data-wallet-sort-indicator>↑↓</span></button></th>
                       <th><button class="table-sort-btn" type="button" data-wallet-sort-key="lastTrade" data-wallet-sort-label="Last Trade">Last Trade <span data-wallet-sort-indicator>↑↓</span></button></th>
@@ -192,62 +205,189 @@
                 <button id="wallet-next-btn" class="btn-ghost">Next</button>
               </div>
             </section>
+
+            <section id="wallet-profile-panel" class="panel detail-card wallet-detail-card">
+              <div class="panel-header wallet-detail-card-head">
+                <h2>Wallet Details</h2>
+                <button id="wallet-profile-close-btn" class="btn-ghost" type="button" hidden>Close</button>
+              </div>
+              <p id="wallet-profile-empty-copy" class="muted wallet-detail-card-copy">
+                Select a wallet to inspect top symbols and open positions.
+              </p>
+              <div id="wallet-profile-body"></div>
+            </section>
           </section>
         </div>
       </main>
-
-      <aside id="wallet-profile-panel" class="wallet-detail-drawer" hidden>
-        <div class="wallet-detail-head">
-          <div class="wallet-detail-copy">
-            <span class="view-kicker">Wallet Detail</span>
-            <h3 id="wallet-profile-id">Select a wallet</h3>
-            <p id="wallet-profile-subtitle" class="view-subtitle">Wallet summary, live posture, and concentration.</p>
-          </div>
-          <button id="wallet-profile-close" class="btn-ghost" type="button">Close</button>
-        </div>
-        <div class="wallet-detail-body">
-          <div class="profile-kpis" id="wallet-profile-kpis"></div>
-          <section class="wallet-detail-section">
-            <div class="panel-header">
-              <h2>OPEN POSITIONS</h2>
-            </div>
-            <div class="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Symbol</th>
-                    <th>Side</th>
-                    <th>Position USD</th>
-                    <th>Entry</th>
-                    <th>Mark</th>
-                    <th>Unrealized</th>
-                    <th>Updated</th>
-                  </tr>
-                </thead>
-                <tbody id="wallet-profile-positions"></tbody>
-              </table>
-            </div>
-          </section>
-          <section class="wallet-detail-section">
-            <div class="panel-header">
-              <h2>CONCENTRATION</h2>
-            </div>
-            <div class="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Symbol</th>
-                    <th>Volume</th>
-                    <th>Share</th>
-                  </tr>
-                </thead>
-                <tbody id="wallet-profile-symbols"></tbody>
-              </table>
-            </div>
-          </section>
-        </div>
-      </aside>
     </div>
+
+    <div id="wallet-filter-modal" class="filter-modal-backdrop" hidden>
+      <section
+        class="filter-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="wallet-filter-modal-title"
+        aria-hidden="true"
+        tabindex="-1"
+      >
+        <div class="filter-modal-head">
+          <div>
+            <p class="view-kicker">Wallet Explorer</p>
+            <h2 id="wallet-filter-modal-title">Smart Filters</h2>
+          </div>
+          <button id="wallet-filter-close-btn" class="btn-ghost" type="button">Close</button>
+        </div>
+        <div class="filter-modal-groups">
+          <details class="filter-group" data-wallet-filter-group="activity">
+            <summary class="filter-group-summary">
+              <span class="filter-group-title">Wallet Activity</span>
+              <span class="filter-group-meta">
+                <span class="filter-group-count" data-wallet-filter-group-count="activity">0</span>
+                <span class="filter-group-chevron">+</span>
+              </span>
+            </summary>
+            <section class="filter-card">
+              <label>
+                Symbols
+                <input id="wallet-filter-symbols" list="wallet-symbol-options" placeholder="BTC, ETH, SOL" />
+              </label>
+              <label>
+                Side
+                <select id="wallet-filter-side">
+                  <option value="">Any</option>
+                  <option value="long">Long</option>
+                  <option value="short">Short</option>
+                  <option value="mixed">Mixed</option>
+                  <option value="flat">No open positions</option>
+                </select>
+              </label>
+              <label>
+                Open Positions
+                <select id="wallet-filter-open-positions">
+                  <option value="">Any</option>
+                  <option value="has">Has open positions</option>
+                  <option value="none">No open positions</option>
+                </select>
+              </label>
+              <div class="filter-checkbox-group">
+                <span>Status</span>
+                <label><input type="checkbox" data-wallet-filter-status="fresh" /> Fresh</label>
+                <label><input type="checkbox" data-wallet-filter-status="warm" /> Warm</label>
+                <label><input type="checkbox" data-wallet-filter-status="stale" /> Stale</label>
+              </div>
+            </section>
+          </details>
+          <details class="filter-group" data-wallet-filter-group="performance">
+            <summary class="filter-group-summary">
+              <span class="filter-group-title">Performance</span>
+              <span class="filter-group-meta">
+                <span class="filter-group-count" data-wallet-filter-group-count="performance">0</span>
+                <span class="filter-group-chevron">+</span>
+              </span>
+            </summary>
+            <section class="filter-card">
+              <div class="filter-range-grid">
+                <label>
+                  Min Trades
+                  <input id="wallet-filter-min-trades" type="number" min="0" step="1" />
+                </label>
+                <label>
+                  Max Trades
+                  <input id="wallet-filter-max-trades" type="number" min="0" step="1" />
+                </label>
+                <label>
+                  Min Volume
+                  <input id="wallet-filter-min-volume" type="number" step="0.01" />
+                </label>
+                <label>
+                  Max Volume
+                  <input id="wallet-filter-max-volume" type="number" step="0.01" />
+                </label>
+                <label>
+                  Min PnL
+                  <input id="wallet-filter-min-pnl" type="number" step="0.01" />
+                </label>
+                <label>
+                  Max PnL
+                  <input id="wallet-filter-max-pnl" type="number" step="0.01" />
+                </label>
+                <label>
+                  Min Win Rate %
+                  <input id="wallet-filter-min-win-rate" type="number" min="0" max="100" step="0.1" />
+                </label>
+                <label>
+                  Max Win Rate %
+                  <input id="wallet-filter-max-win-rate" type="number" min="0" max="100" step="0.1" />
+                </label>
+              </div>
+            </section>
+          </details>
+          <details class="filter-group" data-wallet-filter-group="exposure">
+            <summary class="filter-group-summary">
+              <span class="filter-group-title">Exposure</span>
+              <span class="filter-group-meta">
+                <span class="filter-group-count" data-wallet-filter-group-count="exposure">0</span>
+                <span class="filter-group-chevron">+</span>
+              </span>
+            </summary>
+            <section class="filter-card">
+              <div class="filter-range-grid">
+                <label>
+                  Min Open Positions
+                  <input id="wallet-filter-min-open-positions" type="number" min="0" step="1" />
+                </label>
+                <label>
+                  Max Open Positions
+                  <input id="wallet-filter-max-open-positions" type="number" min="0" step="1" />
+                </label>
+                <label>
+                  Min Position USD
+                  <input id="wallet-filter-min-exposure" type="number" step="0.01" />
+                </label>
+                <label>
+                  Max Position USD
+                  <input id="wallet-filter-max-exposure" type="number" step="0.01" />
+                </label>
+              </div>
+            </section>
+          </details>
+          <details class="filter-group" data-wallet-filter-group="dates">
+            <summary class="filter-group-summary">
+              <span class="filter-group-title">Date Windows</span>
+              <span class="filter-group-meta">
+                <span class="filter-group-count" data-wallet-filter-group-count="dates">0</span>
+                <span class="filter-group-chevron">+</span>
+              </span>
+            </summary>
+            <section class="filter-card">
+              <div class="filter-range-grid">
+                <label>
+                  First Trade From
+                  <input id="wallet-filter-first-trade-from" type="date" />
+                </label>
+                <label>
+                  First Trade To
+                  <input id="wallet-filter-first-trade-to" type="date" />
+                </label>
+                <label>
+                  Last Trade From
+                  <input id="wallet-filter-last-trade-from" type="date" />
+                </label>
+                <label>
+                  Last Trade To
+                  <input id="wallet-filter-last-trade-to" type="date" />
+                </label>
+              </div>
+            </section>
+          </details>
+        </div>
+        <div class="filter-modal-actions">
+          <button id="wallet-filter-reset-btn" class="btn-ghost" type="button">Reset</button>
+          <button id="wallet-filter-apply-btn" class="btn-ghost" type="button">Apply filters</button>
+        </div>
+      </section>
+    </div>
+    <datalist id="wallet-symbol-options"></datalist>
 
     <script>
       (function () {
@@ -301,7 +441,7 @@
       })();
     </script>
     <script
-      src="/app.js?v=20260311-walletsort1"
+      src="/app.js?v=20260312-uiaudit1"
       onload="window.__PF_APP_SCRIPT_NETWORK_OK = true;"
       onerror="window.__PF_APP_SCRIPT_NETWORK_OK = false; if (window.__PF_APP_SHOW_RUNTIME_ERROR) { window.__PF_APP_SHOW_RUNTIME_ERROR('frontend bundle failed to load from /app.js'); }"
     ></script>

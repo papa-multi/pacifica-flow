@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>PacificaFlow Live Trade</title>
     <link rel="stylesheet" href="/theme.css?v=20260310-perf1" />
-    <link rel="stylesheet" href="/live-trade/styles.css?v=20260311-liveclarity1" />
+    <link rel="stylesheet" href="/live-trade/styles.css?v=20260312-uiaudit1" />
   </head>
   <body class="lt-body">
     <div class="lt-bg" aria-hidden="true">
@@ -233,23 +233,23 @@
                     </div>
                   </footer>
                 </div>
+
+                <section id="lt-detail-panel" class="lt-detail-panel" hidden tabindex="-1">
+                  <div class="lt-detail-panel-head">
+                    <div class="lt-detail-panel-copy">
+                      <span id="lt-detail-kicker" class="lt-stage-kicker">Wallet detail</span>
+                      <h3 id="lt-detail-title">Select a row</h3>
+                      <p id="lt-detail-subtitle">Choose a position or wallet to inspect more context.</p>
+                    </div>
+                    <button id="lt-detail-close" class="lt-btn lt-btn-ghost" type="button">Close</button>
+                  </div>
+                  <div id="lt-detail-body" class="lt-detail-panel-body"></div>
+                </section>
               </section>
             </section>
           </div>
         </div>
       </main>
-
-      <aside id="lt-detail-drawer" class="lt-detail-drawer" hidden>
-        <div class="lt-detail-drawer-head">
-          <div class="lt-detail-drawer-copy">
-            <span id="lt-drawer-kicker" class="lt-stage-kicker">Detail</span>
-            <h3 id="lt-drawer-title">Select a row</h3>
-            <p id="lt-drawer-subtitle">Choose a position or wallet to inspect more context.</p>
-          </div>
-          <button id="lt-drawer-close" class="lt-btn lt-btn-ghost" type="button">Close</button>
-        </div>
-        <div id="lt-drawer-body" class="lt-detail-drawer-body"></div>
-      </aside>
     </div>
 
     <script>
@@ -296,7 +296,7 @@
       })();
     </script>
     <script
-      src="/live-trade/app.js?v=20260311-livepositionsort1"
+      src="/live-trade/app.js?v=20260312-uiaudit1"
       onload="window.__PF_LIVE_TRADE_SCRIPT_NETWORK_OK = true;"
       onerror="window.__PF_LIVE_TRADE_SCRIPT_NETWORK_OK = false; if (window.__PF_SHOW_LIVE_TRADE_RUNTIME_ERROR) { window.__PF_SHOW_LIVE_TRADE_RUNTIME_ERROR('frontend bundle failed to load from /live-trade/app.js'); }"
     ></script>

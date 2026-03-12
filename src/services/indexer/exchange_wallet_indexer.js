@@ -1972,11 +1972,6 @@ class ExchangeWalletIndexer {
     if (this.runtime.running) return;
     this.runtime.running = true;
 
-    await this.discoverWallets();
-    if (!this.discoveryOnly) {
-      await this.scanCycle();
-    }
-
     this.runtime.discoveryTimer = setInterval(() => {
       this.discoverWallets().catch((error) => {
         this.runtime.lastError = `[discover] ${toErrorMessage(error)}`;
@@ -1990,6 +1985,20 @@ class ExchangeWalletIndexer {
         });
       }, this.scanIntervalMs);
     }
+
+    // Kick off the first discovery/scan asynchronously so the worker reaches a
+    // steady scheduled state immediately instead of blocking startup on one
+    // heavy pass.
+    setImmediate(() => {
+      this.discoverWallets().catch((error) => {
+        this.runtime.lastError = `[discover:init] ${toErrorMessage(error)}`;
+      });
+      if (!this.discoveryOnly) {
+        this.scanCycle().catch((error) => {
+          this.runtime.lastError = `[scan:init] ${toErrorMessage(error)}`;
+        });
+      }
+    });
   }
 
   stop() {

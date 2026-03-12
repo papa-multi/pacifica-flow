@@ -16,8 +16,10 @@ const state = {
   payloadSignature: "",
   activeView: "positions",
   activeWalletGroup: "pnl",
-  positionsSortKey: "activity",
+  positionsSortKey: "openedAt",
   positionsSortDir: "desc",
+  walletsSortKey: "pnlAll",
+  walletsSortDir: "desc",
   selection: {
     type: "",
     key: ""
@@ -337,6 +339,29 @@ function clamp(value, min, max) {
 }
 function titleCase(value) {
   return String(value || "").trim().replaceAll("_", " ").replace(/\s+/g, " ").replace(/\b\w/g, char => char.toUpperCase());
+}
+async function copyTextToClipboard(text) {
+  var _navigator, _navigator$clipboard;
+  const value = String(text || "").trim();
+  if (!value) return false;
+  if ((_navigator = navigator) !== null && _navigator !== void 0 && (_navigator$clipboard = _navigator.clipboard) !== null && _navigator$clipboard !== void 0 && _navigator$clipboard.writeText) {
+    await navigator.clipboard.writeText(value);
+    return true;
+  }
+  const input = document.createElement("textarea");
+  input.value = value;
+  input.setAttribute("readonly", "readonly");
+  input.style.position = "fixed";
+  input.style.opacity = "0";
+  document.body.appendChild(input);
+  input.select();
+  let copied = false;
+  try {
+    copied = document.execCommand("copy");
+  } finally {
+    document.body.removeChild(input);
+  }
+  return copied;
 }
 function activityLevelFromAge(ageMs) {
   const age = Math.max(0, n(ageMs, Infinity));
@@ -688,7 +713,7 @@ function buildRows(payload, options = {}) {
         source: String(item.source || "wallet_first_positions"),
         raw: item
       };
-    }).sort((a, b) => b.updatedAt - a.updatedAt);
+    }).sort((a, b) => Number(b.openedAt || 0) - Number(a.openedAt || 0) || Number(b.updatedAt || 0) - Number(a.updatedAt || 0));
     if (positionRowsFromPrimary.length > 0) return positionRowsFromPrimary;
     const positionRowsFromPublic = publicTrades.map((row, idx) => {
       const item = asObject(row);
@@ -759,7 +784,7 @@ function buildRows(payload, options = {}) {
         source: "exchange_public_trade",
         raw: item
       };
-    }).sort((a, b) => b.updatedAt - a.updatedAt);
+    }).sort((a, b) => Number(b.openedAt || 0) - Number(a.openedAt || 0) || Number(b.updatedAt || 0) - Number(a.updatedAt || 0));
     const positionRowsFromFallback = positionsFallback.map((row, idx) => {
       const item = asObject(row);
       const timestamp = tsMs(item.updatedAt || item.timestamp || item.openedAt || 0);
@@ -821,7 +846,7 @@ function buildRows(payload, options = {}) {
         source: "account_positions_fallback",
         raw: item
       };
-    }).sort((a, b) => b.updatedAt - a.updatedAt);
+    }).sort((a, b) => Number(b.openedAt || 0) - Number(a.openedAt || 0) || Number(b.updatedAt || 0) - Number(a.updatedAt || 0));
     return positionRowsFromPublic.length > 0 ? positionRowsFromPublic : positionRowsFromFallback;
   })() : null;
   const walletRows = includeWallets ? walletPerformance.map((row, idx) => {
@@ -1001,7 +1026,9 @@ function currentWindowParams() {
     position_sort: state.positionsSortKey,
     position_dir: state.positionsSortDir,
     wallet_offset: (walletsPage - 1) * walletsPageSize,
-    wallet_limit: walletsPageSize
+    wallet_limit: walletsPageSize,
+    wallet_sort: state.walletsSortKey,
+    wallet_dir: state.walletsSortDir
   };
 }
 function buildLiveTradesPath(basePath) {
@@ -1140,18 +1167,60 @@ function renderMiniBars(values) {
     return `<span class="${tone}" style="height:${height}px"></span>`;
   }).join("")}</span>`;
 }
-function renderWalletCell(row) {
+function renderWalletCell(row, options = {}) {
   const walletText = row.walletLabel || shortWallet(row.wallet) || "Unattributed Flow";
+  const showTrackedBadge = options.showTrackedBadge !== false;
+  const showFreshnessBadge = options.showFreshnessBadge !== false;
+  const showCopyButton = Boolean(options.showCopyButton);
   const statusClass = row.walletResolved ? row.freshness === "fresh" ? "fresh" : row.freshness === "stale" ? "stale" : "cool" : "warn";
   const statusLabel = row.walletResolved ? row.freshness || "unknown" : "unresolved";
-  const tracked = row.trackedWallet ? badge("tracked", "tracked") : "";
+  const tracked = showTrackedBadge && row.trackedWallet ? badge("tracked", "tracked") : "";
+  const freshness = showFreshnessBadge ? badge(statusClass, statusLabel) : "";
   const walletFilterValue = row.walletResolved ? row.wallet : "";
   const walletButtonClass = row.walletResolved ? "lt-wallet-link" : "lt-wallet-link lt-wallet-link-disabled";
+  const copyButton = showCopyButton && row.walletResolved ? `<button class="lt-inline-copy" type="button" data-copy-wallet="${escapeHtml(row.wallet)}" title="Copy wallet">Copy</button>` : "";
+  const metaBits = [tracked, freshness].filter(Boolean).join("");
   return `<div class="lt-wallet-cell">
-    <button class="${walletButtonClass}" data-filter-wallet="${escapeHtml(walletFilterValue)}" title="${escapeHtml(row.walletTitle || row.wallet || walletText)}" ${row.walletResolved ? "" : "disabled"}>${escapeHtml(walletText)}</button>
-    ${tracked}
-    ${badge(statusClass, statusLabel)}
+    <div class="lt-wallet-main">
+      <button class="${walletButtonClass}" data-filter-wallet="${escapeHtml(walletFilterValue)}" title="${escapeHtml(row.walletTitle || row.wallet || walletText)}" ${row.walletResolved ? "" : "disabled"}>${escapeHtml(walletText)}</button>
+      ${copyButton}
+    </div>
+    ${metaBits ? `<div class="lt-wallet-meta">${metaBits}</div>` : ""}
   </div>`;
+}
+function attachWalletCopyButtons(root) {
+  if (!root) return;
+  root.querySelectorAll("[data-copy-wallet]").forEach(button => {
+    button.addEventListener("click", async event => {
+      event.preventDefault();
+      event.stopPropagation();
+      const walletValue = String(button.getAttribute("data-copy-wallet") || "").trim();
+      if (!walletValue) return;
+      const original = button.textContent || "Copy";
+      try {
+        const copied = await copyTextToClipboard(walletValue);
+        button.textContent = copied ? "Copied" : "Copy failed";
+      } catch (_error) {
+        button.textContent = "Copy failed";
+      }
+      window.setTimeout(() => {
+        button.textContent = original;
+      }, 1400);
+    });
+  });
+}
+function scrollDetailPanelIntoView() {
+  const panel = el("lt-detail-panel");
+  if (!panel || panel.hidden) return;
+  panel.scrollIntoView({
+    behavior: "smooth",
+    block: "start"
+  });
+  window.requestAnimationFrame(() => {
+    if (panel instanceof HTMLElement) panel.focus({
+      preventScroll: true
+    });
+  });
 }
 async function fetchJsonWithTimeout(url, timeoutMs = SNAPSHOT_TIMEOUT_MS, externalSignal = null) {
   const controller = typeof AbortController === "function" ? new AbortController() : null;
@@ -1238,11 +1307,11 @@ function renderPositionsTable(rows) {
     sortKey: "unrealized"
   }, {
     key: "activity",
-    label: "Opened / Updated",
+    label: "Opened",
     align: "left",
-    sortKey: "activity"
+    sortKey: "openedAt"
   }];
-  head.innerHTML = `<tr>${columns.map(col => `<th class="${col.align === "right" ? "right" : "left"}" data-col="${escapeHtml(col.key)}"><button class="lt-table-sort-btn${state.positionsSortKey === col.sortKey ? " active" : ""}" type="button" data-position-sort-key="${escapeHtml(col.sortKey)}" data-position-sort-label="${escapeHtml(col.label)}">${escapeHtml(col.label)} <span data-position-sort-indicator>${state.positionsSortKey === col.sortKey ? state.positionsSortDir === "asc" ? "↑" : "↓" : "↑↓"}</span></button></th>`).join("")}</tr>`;
+  head.innerHTML = `<tr>${columns.map(col => `<th class="${col.align === "right" ? "right" : "left"}" data-col="${escapeHtml(col.key)}" aria-sort="${state.positionsSortKey === col.sortKey ? state.positionsSortDir === "asc" ? "ascending" : "descending" : "none"}"><button class="lt-table-sort-btn${state.positionsSortKey === col.sortKey ? " active" : ""}" type="button" data-position-sort-key="${escapeHtml(col.sortKey)}" data-position-sort-label="${escapeHtml(col.label)}">${escapeHtml(col.label)} <span data-position-sort-indicator>${state.positionsSortKey === col.sortKey ? state.positionsSortDir === "asc" ? "↑" : "↓" : "↑↓"}</span></button></th>`).join("")}</tr>`;
   head.querySelectorAll("[data-position-sort-key]").forEach(button => {
     button.addEventListener("click", () => {
       const nextKey = String(button.getAttribute("data-position-sort-key") || "").trim();
@@ -1274,14 +1343,13 @@ function renderPositionsTable(rows) {
     const ageText = row.openedAt ? fmtAgo(row.openedAt) : "n/a";
     const updateText = row.updatedAt ? fmtAgo(row.updatedAt) : "-";
     const activityTone = row.freshness === "fresh" ? "fresh" : row.freshness === "stale" ? "stale" : "cooling";
-    return `<tr class="${isSelected ? "is-selected" : ""}" data-select-type="positions" data-select-key="${escapeHtml(row.key)}">
+    return `<tr class="${isSelected ? "is-selected" : ""}" data-select-type="positions" data-select-key="${escapeHtml(row.key)}" tabindex="0" aria-selected="${isSelected ? "true" : "false"}">
         <td class="left" data-col="wallet">
-          <div class="lt-wallet-cell">
-            ${renderWalletCell(row)}
-            <div class="lt-wallet-meta">
-              <span>${escapeHtml(row.walletLiveRank ? `#${fmtInt(row.walletLiveRank)} live rank` : "tracked wallet")}</span>
-            </div>
-          </div>
+          ${renderWalletCell(row, {
+      showTrackedBadge: false,
+      showFreshnessBadge: false,
+      showCopyButton: true
+    })}
         </td>
         <td class="left" data-col="symbol">
           <strong>${escapeHtml(row.symbol || "-")}</strong>
@@ -1320,8 +1388,9 @@ function renderPositionsTable(rows) {
       render();
     });
   });
+  attachWalletCopyButtons(body);
   body.querySelectorAll("tr[data-select-type='positions'][data-select-key]").forEach(rowNode => {
-    rowNode.addEventListener("click", event => {
+    const selectRow = event => {
       const button = event.target.closest("button.lt-wallet-link");
       if (button) return;
       const row = rows.find(entry => entry.key === String(rowNode.getAttribute("data-select-key") || ""));
@@ -1334,6 +1403,12 @@ function renderPositionsTable(rows) {
       } else {
         render();
       }
+    };
+    rowNode.addEventListener("click", selectRow);
+    rowNode.addEventListener("keydown", event => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      selectRow(event);
     });
   });
 }
@@ -1348,15 +1423,18 @@ function renderWalletsTable(rows) {
   }, {
     key: "pnl7",
     label: "Realized 7D",
-    align: "right"
+    align: "right",
+    sortKey: "pnl7"
   }, {
     key: "pnl30",
     label: "Realized 30D",
-    align: "right"
+    align: "right",
+    sortKey: "pnl30"
   }, {
     key: "pnlAll",
     label: "Realized All",
-    align: "right"
+    align: "right",
+    sortKey: "pnlAll"
   }, {
     key: "open",
     label: "Open Positions",
@@ -1366,7 +1444,22 @@ function renderWalletsTable(rows) {
     label: "Last Activity",
     align: "left"
   }];
-  head.innerHTML = `<tr>${columns.map(col => `<th class="${col.align === "right" ? "right" : "left"}" data-col="${escapeHtml(col.key)}">${escapeHtml(col.label)}</th>`).join("")}</tr>`;
+  head.innerHTML = `<tr>${columns.map(col => `<th class="${col.align === "right" ? "right" : "left"}" data-col="${escapeHtml(col.key)}" aria-sort="${col.sortKey && state.walletsSortKey === col.sortKey ? state.walletsSortDir === "asc" ? "ascending" : "descending" : "none"}">${col.sortKey ? `<button class="lt-table-sort-btn${state.walletsSortKey === col.sortKey ? " active" : ""}" type="button" data-wallet-sort-key="${escapeHtml(col.sortKey)}" data-wallet-sort-label="${escapeHtml(col.label)}">${escapeHtml(col.label)} <span data-wallet-sort-indicator>${state.walletsSortKey === col.sortKey ? state.walletsSortDir === "asc" ? "↑" : "↓" : "↑↓"}</span></button>` : escapeHtml(col.label)}</th>`).join("")}</tr>`;
+  head.querySelectorAll("[data-wallet-sort-key]").forEach(button => {
+    button.addEventListener("click", () => {
+      const nextKey = String(button.getAttribute("data-wallet-sort-key") || "").trim();
+      if (!nextKey) return;
+      if (state.walletsSortKey === nextKey) {
+        state.walletsSortDir = state.walletsSortDir === "asc" ? "desc" : "asc";
+      } else {
+        state.walletsSortKey = nextKey;
+        state.walletsSortDir = "desc";
+      }
+      state.pagination.wallets.page = 1;
+      fetchSnapshot().then(payload => applyPayload(payload, "sort")).catch(() => {});
+      connectSse();
+    });
+  });
   if (!rows.length) {
     body.innerHTML = '<tr><td colspan="6" class="lt-empty-state">No wallets match the current filters.</td></tr>';
     return;
@@ -1379,7 +1472,7 @@ function renderWalletsTable(rows) {
     const realized30 = Number.isFinite(n(row.pnl30Usd, NaN)) ? fmtSignedUsd(row.pnl30Usd, 2) : "n/a";
     const realizedAll = Number.isFinite(n(row.realizedPnlUsd, NaN)) ? fmtSignedUsd(row.realizedPnlUsd, 2) : "n/a";
     const lastActivity = row.lastActivity ? fmtAgo(row.lastActivity) : "-";
-    return `<tr class="${isSelected ? "is-selected" : ""}" data-select-type="wallets" data-select-key="${escapeHtml(row.key)}">
+    return `<tr class="${isSelected ? "is-selected" : ""}" data-select-type="wallets" data-select-key="${escapeHtml(row.key)}" tabindex="0" aria-selected="${isSelected ? "true" : "false"}">
         <td class="left" data-col="wallet">
           <div class="lt-wallet-cell">
             ${renderWalletCell(row)}
@@ -1419,8 +1512,9 @@ function renderWalletsTable(rows) {
       render();
     });
   });
+  attachWalletCopyButtons(body);
   body.querySelectorAll("tr[data-select-type='wallets'][data-select-key]").forEach(rowNode => {
-    rowNode.addEventListener("click", event => {
+    const selectRow = event => {
       const button = event.target.closest("button.lt-wallet-link");
       if (button) return;
       const row = rows.find(entry => entry.key === String(rowNode.getAttribute("data-select-key") || ""));
@@ -1433,8 +1527,41 @@ function renderWalletsTable(rows) {
       } else {
         render();
       }
+    };
+    rowNode.addEventListener("click", selectRow);
+    rowNode.addEventListener("keydown", event => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      selectRow(event);
     });
   });
+}
+function sortWalletRows(rows) {
+  const list = safeArray(rows).slice();
+  const key = String(state.walletsSortKey || "pnlAll").trim();
+  const dir = state.walletsSortDir === "asc" ? "asc" : "desc";
+  const numericValue = (row, sortKey) => {
+    if (sortKey === "pnl7") return n(row === null || row === void 0 ? void 0 : row.pnl7Usd, NaN);
+    if (sortKey === "pnl30") return n(row === null || row === void 0 ? void 0 : row.pnl30Usd, NaN);
+    if (sortKey === "pnlAll") return n(row === null || row === void 0 ? void 0 : row.realizedPnlUsd, NaN);
+    return NaN;
+  };
+  list.sort((left, right) => {
+    const leftVal = numericValue(left, key);
+    const rightVal = numericValue(right, key);
+    const leftMissing = !Number.isFinite(leftVal);
+    const rightMissing = !Number.isFinite(rightVal);
+    if (leftMissing && rightMissing) {
+      return tsMs(right === null || right === void 0 ? void 0 : right.lastActivity) - tsMs(left === null || left === void 0 ? void 0 : left.lastActivity);
+    }
+    if (leftMissing) return 1;
+    if (rightMissing) return -1;
+    if (leftVal === rightVal) {
+      return tsMs(right === null || right === void 0 ? void 0 : right.lastActivity) - tsMs(left === null || left === void 0 ? void 0 : left.lastActivity);
+    }
+    return dir === "asc" ? leftVal - rightVal : rightVal - leftVal;
+  });
+  return list;
 }
 function renderActiveView() {
   const activeView = state.activeView === "wallets" ? "wallets" : "positions";
@@ -1519,7 +1646,8 @@ async function openWalletDrawerForRow(row) {
     requestId,
     abortController
   };
-  renderDetailDrawer();
+  renderDetailPanel();
+  scrollDetailPanelIntoView();
   try {
     const payload = await fetchJsonWithTimeout(`${WALLET_DETAIL_ENDPOINT_PREFIX}${encodeURIComponent(wallet)}`, DRAWER_FETCH_TIMEOUT_MS, abortController ? abortController.signal : null);
     if (requestId !== state.drawer.requestId) return;
@@ -1545,7 +1673,8 @@ async function openWalletDrawerForRow(row) {
       abortController: null
     };
   }
-  renderDetailDrawer();
+  renderDetailPanel();
+  scrollDetailPanelIntoView();
 }
 function renderWalletPositionsList(positions, sourceRow) {
   const rows = safeArray(positions);
@@ -1584,44 +1713,62 @@ function renderWalletPositionsList(positions, sourceRow) {
     </table>
   </div>`;
 }
-function renderDetailDrawer() {
+function renderAllocationBars(entries) {
+  const rows = safeArray(entries);
+  if (!rows.length) {
+    return '<div class="lt-drawer-empty">No concentration data available.</div>';
+  }
+  return `<div class="lt-allocation-list">
+    ${rows.map(entry => {
+    const pct = clamp(entry.sharePct, 0, 100);
+    return `<div class="lt-allocation-row">
+          <div class="lt-allocation-label">
+            <span class="lt-allocation-symbol">${escapeHtml(entry.symbol || "-")}</span>
+            <span class="lt-allocation-values">
+              <strong>${escapeHtml(fmtUsd(entry.volumeUsd, 2))}</strong>
+              <span>${escapeHtml(fmtPct(pct, 1))}</span>
+            </span>
+          </div>
+          <div class="lt-allocation-bar"><span style="width:${pct.toFixed(2)}%"></span></div>
+        </div>`;
+  }).join("")}
+  </div>`;
+}
+function renderDetailPanel() {
   var _safeArray$;
-  const drawer = el("lt-detail-drawer");
-  const appLayout = document.querySelector(".app-layout");
-  const drawerTitle = el("lt-drawer-title");
-  const drawerSubtitle = el("lt-drawer-subtitle");
-  const drawerKicker = el("lt-drawer-kicker");
-  const drawerBody = el("lt-drawer-body");
-  if (!drawer || !drawerTitle || !drawerSubtitle || !drawerKicker || !drawerBody) return;
+  const panel = el("lt-detail-panel");
+  const detailTitle = el("lt-detail-title");
+  const detailSubtitle = el("lt-detail-subtitle");
+  const detailKicker = el("lt-detail-kicker");
+  const detailBody = el("lt-detail-body");
+  if (!panel || !detailTitle || !detailSubtitle || !detailKicker || !detailBody) return;
   if (!state.drawer.wallet) {
-    drawer.hidden = true;
-    drawerBody.innerHTML = "";
-    if (appLayout) appLayout.classList.remove("lt-drawer-open");
+    panel.hidden = true;
+    detailBody.innerHTML = "";
     return;
   }
-  drawer.hidden = false;
-  if (appLayout) appLayout.classList.add("lt-drawer-open");
-  drawerKicker.textContent = "Wallet detail";
+  panel.hidden = false;
+  detailKicker.textContent = "Wallet detail";
   if (state.drawer.loading) {
     var _state$drawer$sourceR, _state$drawer$sourceR2;
-    drawerTitle.textContent = ((_state$drawer$sourceR = state.drawer.sourceRow) === null || _state$drawer$sourceR === void 0 ? void 0 : _state$drawer$sourceR.walletTitle) || ((_state$drawer$sourceR2 = state.drawer.sourceRow) === null || _state$drawer$sourceR2 === void 0 ? void 0 : _state$drawer$sourceR2.walletLabel) || shortWallet(state.drawer.wallet);
-    drawerSubtitle.textContent = "Loading wallet summary and open positions.";
-    drawerBody.innerHTML = '<div class="lt-drawer-empty">Loading wallet details...</div>';
+    detailTitle.textContent = ((_state$drawer$sourceR = state.drawer.sourceRow) === null || _state$drawer$sourceR === void 0 ? void 0 : _state$drawer$sourceR.walletTitle) || ((_state$drawer$sourceR2 = state.drawer.sourceRow) === null || _state$drawer$sourceR2 === void 0 ? void 0 : _state$drawer$sourceR2.walletLabel) || shortWallet(state.drawer.wallet);
+    detailSubtitle.textContent = "Loading wallet summary and open positions.";
+    detailBody.innerHTML = '<div class="lt-drawer-empty">Loading wallet details...</div>';
     return;
   }
   if (state.drawer.error) {
     var _state$drawer$sourceR3, _state$drawer$sourceR4;
-    drawerTitle.textContent = ((_state$drawer$sourceR3 = state.drawer.sourceRow) === null || _state$drawer$sourceR3 === void 0 ? void 0 : _state$drawer$sourceR3.walletTitle) || ((_state$drawer$sourceR4 = state.drawer.sourceRow) === null || _state$drawer$sourceR4 === void 0 ? void 0 : _state$drawer$sourceR4.walletLabel) || shortWallet(state.drawer.wallet);
-    drawerSubtitle.textContent = "Wallet detail unavailable";
-    drawerBody.innerHTML = `<div class="lt-drawer-empty">${escapeHtml(state.drawer.error)}</div>`;
+    detailTitle.textContent = ((_state$drawer$sourceR3 = state.drawer.sourceRow) === null || _state$drawer$sourceR3 === void 0 ? void 0 : _state$drawer$sourceR3.walletTitle) || ((_state$drawer$sourceR4 = state.drawer.sourceRow) === null || _state$drawer$sourceR4 === void 0 ? void 0 : _state$drawer$sourceR4.walletLabel) || shortWallet(state.drawer.wallet);
+    detailSubtitle.textContent = "Wallet detail unavailable";
+    detailBody.innerHTML = `<div class="lt-drawer-empty">${escapeHtml(state.drawer.error)}</div>`;
     return;
   }
   const detail = asObject(state.drawer.detail);
   const summary = asObject(detail.summary);
   const positions = safeArray(detail.positions);
   const sourceRow = state.drawer.sourceRow || null;
-  drawerTitle.textContent = (sourceRow === null || sourceRow === void 0 ? void 0 : sourceRow.walletTitle) || (sourceRow === null || sourceRow === void 0 ? void 0 : sourceRow.walletLabel) || shortWallet(detail.wallet || state.drawer.wallet);
-  drawerSubtitle.textContent = `${titleCase(summary.freshness || "unknown")} • ${summary.liveActiveRank ? `#${fmtInt(summary.liveActiveRank)} live` : "tracked wallet"}`;
+  detailTitle.textContent = (sourceRow === null || sourceRow === void 0 ? void 0 : sourceRow.walletTitle) || (sourceRow === null || sourceRow === void 0 ? void 0 : sourceRow.walletLabel) || shortWallet(detail.wallet || state.drawer.wallet);
+  detailSubtitle.textContent = `${titleCase(summary.freshness || "unknown")} • ${summary.liveActiveRank ? `#${fmtInt(summary.liveActiveRank)} live` : "tracked wallet"}`;
   const all = asObject(summary.all);
   const d7 = asObject(summary.d7);
   const d30 = asObject(summary.d30);
@@ -1641,48 +1788,98 @@ function renderDetailDrawer() {
     avgHoldingMs: lifecycle.avgObservedHoldingMs || lifecycle.avgCompletedHoldingMs || lifecycle.currentAvgOpenAgeMs,
     totalTrades: all.trades
   });
-  drawerBody.innerHTML = `
-    <section class="lt-drawer-section">
-      <h4>Realized wallet metrics</h4>
-      <div class="lt-drawer-grid">
-        <div class="lt-drawer-stat"><span>24H realized</span><strong class="${n(d24.pnlUsd, 0) >= 0 ? "up" : "down"}">${escapeHtml(fmtSignedUsd(d24.pnlUsd, 2))}</strong></div>
-        <div class="lt-drawer-stat"><span>7D realized</span><strong class="${n(d7.pnlUsd, 0) >= 0 ? "up" : "down"}">${escapeHtml(fmtSignedUsd(d7.pnlUsd, 2))}</strong></div>
-        <div class="lt-drawer-stat"><span>30D realized</span><strong class="${n(d30.pnlUsd, 0) >= 0 ? "up" : "down"}">${escapeHtml(fmtSignedUsd(d30.pnlUsd, 2))}</strong></div>
-        <div class="lt-drawer-stat"><span>All-time realized</span><strong class="${n(all.pnlUsd, 0) >= 0 ? "up" : "down"}">${escapeHtml(fmtSignedUsd(all.pnlUsd, 2))}</strong></div>
-        <div class="lt-drawer-stat"><span>7D win rate</span><strong>${escapeHtml(Number.isFinite(n(d7.winRatePct, NaN)) ? fmtPct(d7.winRatePct, 2) : "n/a")}</strong></div>
-        <div class="lt-drawer-stat"><span>All trades</span><strong>${escapeHtml(fmtInt(all.trades || 0))}</strong></div>
+  const walletAddress = detail.wallet || state.drawer.wallet;
+  const shortAddress = shortWallet(walletAddress, 8, 6);
+  const summaryParts = [];
+  if (Number.isFinite(n(all.winRatePct, NaN))) {
+    summaryParts.push(`Win Rate ${fmtPct(all.winRatePct, 2)}`);
+  }
+  if (Number.isFinite(n(all.trades, NaN))) {
+    summaryParts.push(`${fmtInt(all.trades)} trades`);
+  }
+  if (Number.isFinite(n(summary.exposureUsd, NaN))) {
+    summaryParts.push(`${fmtUsd(summary.exposureUsd, 2)} exposure`);
+  }
+  detailBody.innerHTML = `
+    <div class="lt-detail-header">
+      <div class="lt-detail-identity">
+        <span class="lt-detail-label">Wallet</span>
+        <span class="lt-detail-address">${escapeHtml(shortAddress)}</span>
+        <div class="lt-detail-actions">
+          <button type="button" class="lt-inline-copy" data-copy-wallet="${escapeHtml(walletAddress)}">Copy</button>
+        </div>
+      </div>
+      <div class="lt-detail-badges">
+        ${badge(summary.freshness === "fresh" ? "fresh" : summary.freshness === "stale" ? "stale" : "cool", titleCase(summary.freshness || "unknown"))}
+        ${badge("rank", `${fmtInt(summary.openPositions || positions.length)} open`)}
+      </div>
+    </div>
+    ${summaryParts.length ? `<div class="lt-detail-summary">${escapeHtml(summaryParts.join(" • "))}</div>` : ""}
+    <div class="lt-detail-kpi-grid">
+      <div class="lt-detail-kpi-card">
+        <span>24H Realized</span>
+        <strong class="${n(d24.pnlUsd, 0) >= 0 ? "up" : "down"}">${escapeHtml(fmtSignedUsd(d24.pnlUsd, 2))}</strong>
+      </div>
+      <div class="lt-detail-kpi-card">
+        <span>7D Realized</span>
+        <strong class="${n(d7.pnlUsd, 0) >= 0 ? "up" : "down"}">${escapeHtml(fmtSignedUsd(d7.pnlUsd, 2))}</strong>
+      </div>
+      <div class="lt-detail-kpi-card">
+        <span>30D Realized</span>
+        <strong class="${n(d30.pnlUsd, 0) >= 0 ? "up" : "down"}">${escapeHtml(fmtSignedUsd(d30.pnlUsd, 2))}</strong>
+      </div>
+      <div class="lt-detail-kpi-card">
+        <span>Total PnL</span>
+        <strong class="${n(summary.totalPnlUsd, 0) >= 0 ? "up" : "down"}">${escapeHtml(fmtSignedUsd(summary.totalPnlUsd || 0, 2))}</strong>
+      </div>
+    </div>
+    <section class="lt-detail-section-block">
+      <h4>Wallet posture</h4>
+      <div class="lt-detail-section-grid">
+        <div class="lt-detail-item">
+          <div class="lt-detail-item-label">Open positions</div>
+          <div class="lt-detail-item-value">${escapeHtml(fmtInt(summary.openPositions || positions.length))}</div>
+        </div>
+        <div class="lt-detail-item">
+          <div class="lt-detail-item-label">Exposure</div>
+          <div class="lt-detail-item-value">${escapeHtml(fmtUsd(summary.exposureUsd || 0, 2))}</div>
+        </div>
+        <div class="lt-detail-item">
+          <div class="lt-detail-item-label">Wallet unrealized</div>
+          <div class="lt-detail-item-value ${n(summary.unrealizedPnlUsd, 0) >= 0 ? "up" : "down"}">${escapeHtml(fmtSignedUsd(summary.unrealizedPnlUsd || 0, 2))}</div>
+        </div>
+        <div class="lt-detail-item">
+          <div class="lt-detail-item-label">Last activity</div>
+          <div class="lt-detail-item-value">${escapeHtml(summary.lastActivityAt ? fmtTs(summary.lastActivityAt) : "-")}</div>
+        </div>
+        <div class="lt-detail-item">
+          <div class="lt-detail-item-label">Recent events</div>
+          <div class="lt-detail-item-value">${escapeHtml(fmtInt(summary.recentEvents15m || 0))} / 15m</div>
+        </div>
+        <div class="lt-detail-item">
+          <div class="lt-detail-item-label">Live score</div>
+          <div class="lt-detail-item-value">${escapeHtml(fmtInt(summary.liveActiveScore || 0))}</div>
+        </div>
       </div>
     </section>
-    <section class="lt-drawer-section">
-      <h4>Live / open posture</h4>
-      <div class="lt-drawer-grid">
-        <div class="lt-drawer-stat"><span>Open positions</span><strong>${escapeHtml(fmtInt(summary.openPositions || positions.length))}</strong></div>
-        <div class="lt-drawer-stat"><span>Exposure</span><strong>${escapeHtml(fmtUsd(summary.exposureUsd || 0, 2))}</strong></div>
-        <div class="lt-drawer-stat"><span>Wallet unrealized</span><strong class="${n(summary.unrealizedPnlUsd, 0) >= 0 ? "up" : "down"}">${escapeHtml(fmtSignedUsd(summary.unrealizedPnlUsd || 0, 2))}</strong></div>
-        <div class="lt-drawer-stat"><span>Total PnL</span><strong class="${n(summary.totalPnlUsd, 0) >= 0 ? "up" : "down"}">${escapeHtml(fmtSignedUsd(summary.totalPnlUsd || 0, 2))}</strong></div>
-        <div class="lt-drawer-stat"><span>Freshness</span><strong>${escapeHtml(titleCase(summary.freshness || "unknown"))}</strong></div>
-        <div class="lt-drawer-stat"><span>Last activity</span><strong>${escapeHtml(summary.lastActivityAt ? fmtTs(summary.lastActivityAt) : "-")}</strong></div>
-        <div class="lt-drawer-stat"><span>Recent events</span><strong>${escapeHtml(fmtInt(summary.recentEvents15m || 0))} / 15m</strong></div>
-        <div class="lt-drawer-stat"><span>Live score</span><strong>${escapeHtml(fmtInt(summary.liveActiveScore || 0))}</strong></div>
-      </div>
-    </section>
-    <section class="lt-drawer-section">
-      <h4>Open positions</h4>
-      ${renderWalletPositionsList(positions, sourceRow)}
-    </section>
-    <section class="lt-drawer-section">
-      <h4>Concentration</h4>
-      <div class="lt-drawer-list">
-        ${safeArray(summary.concentration).length ? safeArray(summary.concentration).map(entry => `<div class="lt-drawer-list-item"><span>${escapeHtml(entry.symbol)}</span><strong>${escapeHtml(`${fmtUsd(entry.volumeUsd, 2)} • ${fmtPct(entry.sharePct, 1)}`)}</strong></div>`).join("") : '<div class="lt-drawer-empty">No concentration data available.</div>'}
-      </div>
-    </section>
-    <section class="lt-drawer-section">
+    <div class="lt-detail-columns">
+      <section class="lt-detail-section-block">
+        <h4>Open positions</h4>
+        ${renderWalletPositionsList(positions, sourceRow)}
+      </section>
+      <section class="lt-detail-section-block">
+        <h4>Concentration</h4>
+        ${renderAllocationBars(summary.concentration)}
+      </section>
+    </div>
+    <section class="lt-detail-section-block">
       <h4>Behavior context</h4>
       <div class="lt-tag-group">
         ${behaviorTags.length ? behaviorTags.map(tag => badge("cool", tag)).join(" ") : '<span class="lt-drawer-empty">No recent behavior signals.</span>'}
       </div>
     </section>
   `;
+  attachWalletCopyButtons(detailBody);
 }
 function connectionState() {
   if (state.stream.paused) return {
@@ -1716,99 +1913,21 @@ function connectionState() {
   };
 }
 function renderHealth(payload) {
-  var _payload$sync, _payload$marketContex, _payload$summary8;
   const status = connectionState();
   const liveBadge = el("lt-live-badge");
   if (liveBadge) {
     liveBadge.textContent = status.label;
     liveBadge.className = `lt-pill lt-pill-live ${status.className}`;
   }
-  const generatedAt = tsMs(payload === null || payload === void 0 ? void 0 : payload.generatedAt);
-  const syncUpdatedAt = tsMs(payload === null || payload === void 0 ? void 0 : (_payload$sync = payload.sync) === null || _payload$sync === void 0 ? void 0 : _payload$sync.updatedAt);
-  const marketLastEventAt = tsMs(payload === null || payload === void 0 ? void 0 : (_payload$marketContex = payload.marketContext) === null || _payload$marketContex === void 0 ? void 0 : _payload$marketContex.lastEventAt);
-  const eventAt = Math.max(generatedAt, syncUpdatedAt, marketLastEventAt, state.stream.lastEventAt || 0);
   const freshness = state.stream.lastPayloadAt ? Date.now() - state.stream.lastPayloadAt : null;
-  const walletFirst = asObject(payload === null || payload === void 0 ? void 0 : (_payload$summary8 = payload.summary) === null || _payload$summary8 === void 0 ? void 0 : _payload$summary8.walletFirstLive);
-  const openPositionsTotal = payloadPositionsTotal(payload);
-  const indexedWalletsTotal = payloadWalletsTotal(payload);
-  const lastEventNode = el("lt-last-event");
-  if (lastEventNode) lastEventNode.textContent = eventAt ? fmtTs(eventAt) : "-";
   const freshNode = el("lt-stage-freshness");
   if (freshNode) {
     freshNode.textContent = freshness === null ? "Freshness -" : `Freshness ${fmtInt(freshness)} ms`;
   }
-  const connNode = el("lt-conn");
-  if (connNode) {
-    var _payload$sync2, _payload$summary9, _payload$environment2, _payload$marketContex2;
-    const wsStatus = (payload === null || payload === void 0 ? void 0 : (_payload$sync2 = payload.sync) === null || _payload$sync2 === void 0 ? void 0 : _payload$sync2.wsStatus) || (payload === null || payload === void 0 ? void 0 : (_payload$summary9 = payload.summary) === null || _payload$summary9 === void 0 ? void 0 : _payload$summary9.wsStatus) || (payload === null || payload === void 0 ? void 0 : (_payload$environment2 = payload.environment) === null || _payload$environment2 === void 0 ? void 0 : _payload$environment2.wsStatus) || (state.stream.connection === "open" ? "open" : state.stream.connection || "unknown");
-    connNode.textContent = `${wsStatus || "unknown"} • ${fmtInt(n(payload === null || payload === void 0 ? void 0 : (_payload$marketContex2 = payload.marketContext) === null || _payload$marketContex2 === void 0 ? void 0 : _payload$marketContex2.eventsPerMin, 0))} ev/min`;
-  }
-  const latencyNode = el("lt-latency");
-  if (latencyNode) {
-    const lastPassMs = n(walletFirst.lastPassDurationMs, NaN);
-    const hotLoopSec = n(walletFirst.estimatedHotLoopSeconds, NaN);
-    if (Number.isFinite(lastPassMs) && Number.isFinite(hotLoopSec)) {
-      latencyNode.textContent = `Loop latency ${fmtInt(lastPassMs)} ms • hot ${fmtInt(hotLoopSec)}s`;
-    } else if (Number.isFinite(lastPassMs)) {
-      latencyNode.textContent = `Loop latency ${fmtInt(lastPassMs)} ms`;
-    } else {
-      latencyNode.textContent = "Loop latency -";
-    }
-  }
-  const coverageNode = el("lt-coverage");
-  if (coverageNode) {
-    coverageNode.textContent = `${fmtInt(openPositionsTotal)} positions • ${fmtInt(indexedWalletsTotal)} wallets`;
-  }
-  const attributionNode = el("lt-attribution");
-  if (attributionNode) {
-    var _payload$summary10, _payload$summary11;
-    const attribution = asObject(payload === null || payload === void 0 ? void 0 : (_payload$summary10 = payload.summary) === null || _payload$summary10 === void 0 ? void 0 : _payload$summary10.walletAttribution);
-    const tiers = asObject(attribution.tiers);
-    const hardPayload = Math.max(0, Math.floor(n(tiers.hard_payload, 0)));
-    const hardHistory = Math.max(0, Math.floor(n(tiers.hard_history_id, 0)));
-    const hardOrder = Math.max(0, Math.floor(n(tiers.hard_order_id, 0)));
-    const fallbackLi = Math.max(0, Math.floor(n(tiers.fallback_li, 0)));
-    const unresolved = Math.max(0, Math.floor(n(tiers.unresolved, 0)));
-    const coverageRaw = n(attribution.coveragePct, NaN);
-    const coverageSummaryRaw = n(payload === null || payload === void 0 ? void 0 : (_payload$summary11 = payload.summary) === null || _payload$summary11 === void 0 ? void 0 : _payload$summary11.publicTradesWalletCoveragePct, NaN);
-    const coverage = Number.isFinite(coverageRaw) ? coverageRaw : Number.isFinite(coverageSummaryRaw) ? coverageSummaryRaw : NaN;
-    const hasBreakdown = hardPayload > 0 || hardHistory > 0 || hardOrder > 0 || fallbackLi > 0 || unresolved > 0;
-    if (!hasBreakdown && !Number.isFinite(coverage)) {
-      attributionNode.textContent = "Attribution unavailable";
-    } else {
-      var _payload$summary12, _payload$summary13;
-      const coverageText = Number.isFinite(coverage) ? `${fmtNum(coverage, 2)}%` : "-";
-      const txAttribution = asObject(payload === null || payload === void 0 ? void 0 : (_payload$summary12 = payload.summary) === null || _payload$summary12 === void 0 ? void 0 : _payload$summary12.txAttribution);
-      const txCoverageRaw = n(txAttribution.coveragePct, NaN);
-      const txCoverageSummaryRaw = n(payload === null || payload === void 0 ? void 0 : (_payload$summary13 = payload.summary) === null || _payload$summary13 === void 0 ? void 0 : _payload$summary13.publicTradesTxCoveragePct, NaN);
-      const txCoverage = Number.isFinite(txCoverageRaw) ? txCoverageRaw : Number.isFinite(txCoverageSummaryRaw) ? txCoverageSummaryRaw : NaN;
-      const txCoverageText = Number.isFinite(txCoverage) ? `${fmtNum(txCoverage, 2)}%` : "-";
-      attributionNode.textContent = `Wallet ${coverageText} • tx ${txCoverageText} • hard ${fmtInt(hardHistory + hardOrder + hardPayload)} • li ${fmtInt(fallbackLi)} • unresolved ${fmtInt(unresolved)}`;
-    }
-  }
-  const attributionGrowthNode = el("lt-attribution-growth");
-  if (attributionGrowthNode) {
-    var _payload$summary14;
-    const db = asObject(payload === null || payload === void 0 ? void 0 : (_payload$summary14 = payload.summary) === null || _payload$summary14 === void 0 ? void 0 : _payload$summary14.attributionDb);
-    const growth = asObject(db.growth);
-    const wallet1h = Math.max(0, Math.floor(n(growth.walletUpserts1h, 0)));
-    const wallet24h = Math.max(0, Math.floor(n(growth.walletUpserts24h, 0)));
-    const tx1h = Math.max(0, Math.floor(n(growth.txUpserts1h, 0)));
-    const tx24h = Math.max(0, Math.floor(n(growth.txUpserts24h, 0)));
-    const total1h = Math.max(0, Math.floor(n(growth.totalUpserts1h, wallet1h + tx1h)));
-    const total24h = Math.max(0, Math.floor(n(growth.totalUpserts24h, wallet24h + tx24h)));
-    const rate = n(growth.ratePerHour, NaN);
-    if (!db.enabled) {
-      attributionGrowthNode.textContent = "DB disabled";
-    } else {
-      const rateText = Number.isFinite(rate) ? fmtNum(rate, 2) : "-";
-      attributionGrowthNode.textContent = `+${fmtInt(total1h)}/1h • +${fmtInt(total24h)}/24h • ${rateText}/h`;
-    }
-  }
 }
 function renderObservability(payload) {
-  var _payload$summary15;
-  const obs = asObject(payload === null || payload === void 0 ? void 0 : (_payload$summary15 = payload.summary) === null || _payload$summary15 === void 0 ? void 0 : _payload$summary15.observability);
+  var _payload$summary8;
+  const obs = asObject(payload === null || payload === void 0 ? void 0 : (_payload$summary8 = payload.summary) === null || _payload$summary8 === void 0 ? void 0 : _payload$summary8.observability);
   const hot = asObject(obs.hotTier);
   const reconciliation = asObject(obs.reconciliation);
   const publicCoverage = asObject(obs.publicActiveCoverage);
@@ -1839,8 +1958,8 @@ function renderObservability(payload) {
   }
   const coverageMeta = el("lt-obs-coverage-meta");
   if (coverageMeta) {
-    var _payload$summary16, _payload$summary16$wa;
-    const tracked = n(payload === null || payload === void 0 ? void 0 : (_payload$summary16 = payload.summary) === null || _payload$summary16 === void 0 ? void 0 : (_payload$summary16$wa = _payload$summary16.walletFirstLive) === null || _payload$summary16$wa === void 0 ? void 0 : _payload$summary16$wa.walletsWithOpenPositions, NaN);
+    var _payload$summary9, _payload$summary9$wal;
+    const tracked = n(payload === null || payload === void 0 ? void 0 : (_payload$summary9 = payload.summary) === null || _payload$summary9 === void 0 ? void 0 : (_payload$summary9$wal = _payload$summary9.walletFirstLive) === null || _payload$summary9$wal === void 0 ? void 0 : _payload$summary9$wal.walletsWithOpenPositions, NaN);
     const lowerBound = n(publicCoverage.activeWalletsLowerBound, NaN);
     if (Number.isFinite(tracked) && Number.isFinite(lowerBound) && lowerBound > 0) {
       coverageMeta.textContent = `${fmtInt(tracked)} / ${fmtInt(lowerBound)} active wallets`;
@@ -1963,7 +2082,7 @@ function render(options = {}) {
   const positionsFiltered = applyPositionFilters(rows.positions);
   const walletsFiltered = applyWalletFilters(rows.wallets);
   const walletGroupState = renderWalletRankingGroups(walletsFiltered);
-  const walletsActive = safeArray(walletGroupState === null || walletGroupState === void 0 ? void 0 : walletGroupState.activeRows);
+  const walletsActive = sortWalletRows(safeArray(walletGroupState === null || walletGroupState === void 0 ? void 0 : walletGroupState.activeRows));
   const positionsWindow = pageWindowFromSummary("positions", positionsFiltered.length);
   const walletsWindow = pageWindowFromSummary("wallets", walletsActive.length);
   renderHealth(payload);
@@ -1972,7 +2091,7 @@ function render(options = {}) {
   renderWalletSupportNote(payload);
   renderPositionsTable(positionsFiltered);
   renderWalletsTable(walletsActive);
-  renderDetailDrawer();
+  renderDetailPanel();
   renderPagination("positions", positionsWindow);
   renderPagination("wallets", walletsWindow);
 }
@@ -2132,7 +2251,7 @@ function readNumber(id, options = {}) {
   return floorZero ? Math.max(0, value) : value;
 }
 function wireEvents() {
-  var _el2, _el3, _el4, _el5, _el6, _el7, _el8, _el9, _el10, _el11, _el12, _el13, _el14, _el15, _el16, _el17, _el18, _el19, _el20, _el21, _el22, _el23;
+  var _el2, _el3, _el4, _el5, _el6, _el7, _el8, _el9, _el10, _el11, _el12, _el13, _el14, _el15, _el16, _el17, _el18, _el19, _el20;
   (_el2 = el("lt-view-positions-btn")) === null || _el2 === void 0 ? void 0 : _el2.addEventListener("click", () => {
     state.activeView = "positions";
     if (state.selection.type && state.selection.type !== "positions") {
@@ -2153,23 +2272,7 @@ function wireEvents() {
     }
     render();
   });
-  (_el4 = el("lt-drawer-close")) === null || _el4 === void 0 ? void 0 : _el4.addEventListener("click", () => {
-    state.selection = {
-      type: "",
-      key: ""
-    };
-    closeWalletDrawer();
-    render();
-  });
-  document.addEventListener("pointerdown", event => {
-    if (!state.selection.key && !state.drawer.wallet) return;
-    const drawer = el("lt-detail-drawer");
-    if (!drawer || drawer.hidden) return;
-    const target = event.target;
-    if (!(target instanceof Node)) return;
-    if (drawer.contains(target)) return;
-    const sidebar = document.querySelector(".sidebar");
-    if (sidebar instanceof Node && sidebar.contains(target)) return;
+  (_el4 = el("lt-detail-close")) === null || _el4 === void 0 ? void 0 : _el4.addEventListener("click", () => {
     state.selection = {
       type: "",
       key: ""
@@ -2187,93 +2290,88 @@ function wireEvents() {
       render();
     }
   });
-  (_el5 = el("lt-search")) === null || _el5 === void 0 ? void 0 : _el5.addEventListener("input", event => {
-    state.search = String(event.target.value || "");
-    resetPagination();
-    render();
-  });
-  (_el6 = el("lt-filter-wallet")) === null || _el6 === void 0 ? void 0 : _el6.addEventListener("input", event => {
+  (_el5 = el("lt-filter-wallet")) === null || _el5 === void 0 ? void 0 : _el5.addEventListener("input", event => {
     state.filters.wallet = String(event.target.value || "");
     resetPagination();
     render();
   });
-  (_el7 = el("lt-filter-symbol")) === null || _el7 === void 0 ? void 0 : _el7.addEventListener("change", event => {
+  (_el6 = el("lt-filter-symbol")) === null || _el6 === void 0 ? void 0 : _el6.addEventListener("change", event => {
     state.filters.symbol = String(event.target.value || "");
     resetPagination();
     render();
   });
-  (_el8 = el("lt-filter-side")) === null || _el8 === void 0 ? void 0 : _el8.addEventListener("change", event => {
+  (_el7 = el("lt-filter-side")) === null || _el7 === void 0 ? void 0 : _el7.addEventListener("change", event => {
     state.filters.side = String(event.target.value || "");
     resetPagination();
     render();
   });
-  (_el9 = el("lt-filter-min-usd")) === null || _el9 === void 0 ? void 0 : _el9.addEventListener("input", () => {
+  (_el8 = el("lt-filter-min-usd")) === null || _el8 === void 0 ? void 0 : _el8.addEventListener("input", () => {
     state.filters.minUsd = readNumber("lt-filter-min-usd");
     resetPagination();
     render();
   });
-  (_el10 = el("lt-filter-max-usd")) === null || _el10 === void 0 ? void 0 : _el10.addEventListener("input", () => {
+  (_el9 = el("lt-filter-max-usd")) === null || _el9 === void 0 ? void 0 : _el9.addEventListener("input", () => {
     state.filters.maxUsd = readNumber("lt-filter-max-usd");
     resetPagination();
     render();
   });
-  (_el11 = el("lt-filter-min-pnl")) === null || _el11 === void 0 ? void 0 : _el11.addEventListener("input", () => {
+  (_el10 = el("lt-filter-min-pnl")) === null || _el10 === void 0 ? void 0 : _el10.addEventListener("input", () => {
     state.filters.minPnl = readNumber("lt-filter-min-pnl", {
       floorZero: false
     });
     resetPagination();
     render();
   });
-  (_el12 = el("lt-filter-max-pnl")) === null || _el12 === void 0 ? void 0 : _el12.addEventListener("input", () => {
+  (_el11 = el("lt-filter-max-pnl")) === null || _el11 === void 0 ? void 0 : _el11.addEventListener("input", () => {
     state.filters.maxPnl = readNumber("lt-filter-max-pnl", {
       floorZero: false
     });
     resetPagination();
     render();
   });
-  (_el13 = el("lt-filter-freshness")) === null || _el13 === void 0 ? void 0 : _el13.addEventListener("change", event => {
+  (_el12 = el("lt-filter-freshness")) === null || _el12 === void 0 ? void 0 : _el12.addEventListener("change", event => {
     state.filters.freshness = String(event.target.value || "");
     resetPagination();
     render();
   });
-  (_el14 = el("lt-filter-tracked")) === null || _el14 === void 0 ? void 0 : _el14.addEventListener("change", event => {
+  (_el13 = el("lt-filter-tracked")) === null || _el13 === void 0 ? void 0 : _el13.addEventListener("change", event => {
     state.filters.trackedOnly = Boolean(event.target.checked);
     resetPagination();
     render();
   });
-  (_el15 = el("lt-positions-page-size")) === null || _el15 === void 0 ? void 0 : _el15.addEventListener("change", event => {
+  (_el14 = el("lt-positions-page-size")) === null || _el14 === void 0 ? void 0 : _el14.addEventListener("change", event => {
     state.pagination.positions.pageSize = Math.max(10, Math.floor(n(event.target.value, 100)));
     state.pagination.positions.page = 1;
     fetchSnapshot().then(payload => applyPayload(payload, "page")).catch(() => {});
     connectSse();
   });
-  (_el16 = el("lt-wallets-page-size")) === null || _el16 === void 0 ? void 0 : _el16.addEventListener("change", event => {
+  (_el15 = el("lt-wallets-page-size")) === null || _el15 === void 0 ? void 0 : _el15.addEventListener("change", event => {
     state.pagination.wallets.pageSize = Math.max(10, Math.floor(n(event.target.value, 100)));
     state.pagination.wallets.page = 1;
     fetchSnapshot().then(payload => applyPayload(payload, "page")).catch(() => {});
     connectSse();
   });
-  (_el17 = el("lt-positions-page-prev")) === null || _el17 === void 0 ? void 0 : _el17.addEventListener("click", () => {
+  (_el16 = el("lt-positions-page-prev")) === null || _el16 === void 0 ? void 0 : _el16.addEventListener("click", () => {
     state.pagination.positions.page = Math.max(1, n(state.pagination.positions.page, 1) - 1);
     fetchSnapshot().then(payload => applyPayload(payload, "page")).catch(() => {});
     connectSse();
   });
-  (_el18 = el("lt-positions-page-next")) === null || _el18 === void 0 ? void 0 : _el18.addEventListener("click", () => {
+  (_el17 = el("lt-positions-page-next")) === null || _el17 === void 0 ? void 0 : _el17.addEventListener("click", () => {
     state.pagination.positions.page = n(state.pagination.positions.page, 1) + 1;
     fetchSnapshot().then(payload => applyPayload(payload, "page")).catch(() => {});
     connectSse();
   });
-  (_el19 = el("lt-wallets-page-prev")) === null || _el19 === void 0 ? void 0 : _el19.addEventListener("click", () => {
+  (_el18 = el("lt-wallets-page-prev")) === null || _el18 === void 0 ? void 0 : _el18.addEventListener("click", () => {
     state.pagination.wallets.page = Math.max(1, n(state.pagination.wallets.page, 1) - 1);
     fetchSnapshot().then(payload => applyPayload(payload, "page")).catch(() => {});
     connectSse();
   });
-  (_el20 = el("lt-wallets-page-next")) === null || _el20 === void 0 ? void 0 : _el20.addEventListener("click", () => {
+  (_el19 = el("lt-wallets-page-next")) === null || _el19 === void 0 ? void 0 : _el19.addEventListener("click", () => {
     state.pagination.wallets.page = n(state.pagination.wallets.page, 1) + 1;
     fetchSnapshot().then(payload => applyPayload(payload, "page")).catch(() => {});
     connectSse();
   });
-  (_el21 = el("lt-reset-filters")) === null || _el21 === void 0 ? void 0 : _el21.addEventListener("click", () => {
+  (_el20 = el("lt-reset-filters")) === null || _el20 === void 0 ? void 0 : _el20.addEventListener("click", () => {
     state.search = "";
     state.filters = {
       wallet: "",
@@ -2286,7 +2384,7 @@ function wireEvents() {
       freshness: "",
       trackedOnly: false
     };
-    ["lt-search", "lt-filter-wallet", "lt-filter-min-usd", "lt-filter-max-usd", "lt-filter-min-pnl", "lt-filter-max-pnl"].forEach(id => {
+    ["lt-filter-wallet", "lt-filter-min-usd", "lt-filter-max-usd", "lt-filter-min-pnl", "lt-filter-max-pnl"].forEach(id => {
       if (el(id)) el(id).value = "";
     });
     ["lt-filter-symbol", "lt-filter-side", "lt-filter-freshness"].forEach(id => {
@@ -2294,31 +2392,6 @@ function wireEvents() {
     });
     if (el("lt-filter-tracked")) el("lt-filter-tracked").checked = false;
     resetPagination();
-    render();
-  });
-  (_el22 = el("lt-refresh-btn")) === null || _el22 === void 0 ? void 0 : _el22.addEventListener("click", async () => {
-    try {
-      const payload = await fetchSnapshot();
-      applyPayload(payload, "manual");
-    } catch (_error) {
-      // keep UI alive
-    }
-  });
-  (_el23 = el("lt-pause-btn")) === null || _el23 === void 0 ? void 0 : _el23.addEventListener("click", () => {
-    state.stream.paused = !state.stream.paused;
-    const btn = el("lt-pause-btn");
-    if (btn) {
-      btn.textContent = state.stream.paused ? "Resume Stream" : "Pause Stream";
-      btn.setAttribute("aria-pressed", state.stream.paused ? "true" : "false");
-    }
-    if (state.stream.paused) {
-      stopEventSource();
-      clearFallbackPolling();
-      state.stream.connection = "paused";
-    } else {
-      connectSse();
-      ensureFallbackPolling();
-    }
     render();
   });
 }

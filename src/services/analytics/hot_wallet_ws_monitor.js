@@ -403,9 +403,7 @@ class HotWalletWsMonitor {
   }
 
   computeEvictionScore(record, now = Date.now()) {
-    const pinned =
-      Number(record.openPositionsCount || 0) > 0 || Number(record.pinUntil || 0) > now;
-    if (pinned) return Number.POSITIVE_INFINITY;
+    if (Number(record.openPositionsCount || 0) > 0) return Number.POSITIVE_INFINITY;
     const lastTouch = Math.max(
       Number(record.lastWsEventAt || 0),
       Number(record.lastActivityAt || 0),
@@ -414,10 +412,12 @@ class HotWalletWsMonitor {
       Number(record.lastTradeAt || 0),
       Number(record.lastOrderAt || 0)
     );
-    const recentProtection = lastTouch > 0 && now - lastTouch < this.aggressiveEvictMs ? 10_000 : 0;
-    const tierPenalty = record.tier === "warm" ? 5_000 : record.tier === "hot" ? 50_000 : 0;
+    const recentProtection = lastTouch > 0 && now - lastTouch < this.aggressiveEvictMs ? 15_000 : 0;
+    const remainingPinMs = Math.max(0, Number(record.pinUntil || 0) - now);
+    const pinProtection = remainingPinMs > 0 ? Math.min(45_000, Math.round(remainingPinMs / 1000) * 150) : 0;
+    const tierPenalty = record.tier === "warm" ? 12_000 : record.tier === "hot" ? 60_000 : 0;
     const priority = Math.max(0, Number(record.priorityScore || 0));
-    return priority + recentProtection + tierPenalty;
+    return priority + recentProtection + pinProtection + tierPenalty;
   }
 
   evictOneFor(_wallet, now = Date.now()) {

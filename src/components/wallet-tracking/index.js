@@ -1,6 +1,5 @@
 const {
   buildExchangeOverviewPayload,
-  buildWalletExplorerPayload,
   buildWalletProfilePayload,
 } = require("../../services/pipeline/api");
 const { buildWalletRecordFromState } = require("../../services/analytics/wallet_stats");
@@ -997,6 +996,23 @@ function createWalletTrackingComponent({
     stale: false,
     lastError: null,
   };
+  const walletExplorerDatasetCache = {
+    generatedAt: 0,
+    walletStoreUpdatedAt: 0,
+    liveSnapshotGeneratedAt: 0,
+    ttlMs: Math.max(
+      1000,
+      Number(process.env.PACIFICA_WALLET_EXPLORER_DATASET_TTL_MS || 2000)
+    ),
+    refreshIntervalMs: Math.max(
+      2000,
+      Number(process.env.PACIFICA_WALLET_EXPLORER_DATASET_REFRESH_MS || 3000)
+    ),
+    value: null,
+    inflight: null,
+    lastError: null,
+    lastDurationMs: null,
+  };
   const defaultDataRoot = process.env.PACIFICA_DATA_DIR
     ? path.resolve(process.env.PACIFICA_DATA_DIR)
     : path.join(process.cwd(), "data");
@@ -1265,6 +1281,14 @@ function createWalletTrackingComponent({
     0,
     Number(process.env.PACIFICA_HOT_WALLET_WS_MAX_SCALE_RECONNECTS || 1)
   );
+  const hotWalletWsMinScaleUtilizationPct = Math.max(
+    1,
+    Math.min(100, Number(process.env.PACIFICA_HOT_WALLET_WS_MIN_SCALE_UTILIZATION_PCT || 92))
+  );
+  const hotWalletWsMinScaleBacklog = Math.max(
+    0,
+    Number(process.env.PACIFICA_HOT_WALLET_WS_MIN_SCALE_BACKLOG || 1)
+  );
   const hotWalletWsMemoryCeilingMb = Math.max(
     0,
     Number(process.env.PACIFICA_HOT_WALLET_WS_MEMORY_CEILING_MB || 0)
@@ -1504,6 +1528,8 @@ function createWalletTrackingComponent({
     soakWindowMs: hotWalletWsSoakWindowMs,
     maxScaleErrors: hotWalletWsMaxScaleErrors,
     maxScaleReconnects: hotWalletWsMaxScaleReconnects,
+    minScaleUtilizationPct: hotWalletWsMinScaleUtilizationPct,
+    minScaleBacklog: hotWalletWsMinScaleBacklog,
     memoryCeilingMb: hotWalletWsMemoryCeilingMb,
     inactivityMs: hotWalletWsInactivityMs,
     openPositionHoldMs: hotWalletWsOpenPositionHoldMs,
@@ -1578,6 +1604,7 @@ function createWalletTrackingComponent({
     hotReconcileMaxAgeMs: liveWalletFirstHotReconcileMaxAgeMs,
     warmReconcileMaxAgeMs: liveWalletFirstWarmReconcileMaxAgeMs,
     triggerPollMs: liveWalletTriggerPollMs,
+    publicActiveWalletsProvider: getPacificaTrackedPublicActiveWallets,
     persistDir: liveWalletFirstPersistDir,
     persistEveryMs: Math.max(
       1000,
@@ -3686,12 +3713,16 @@ function createWalletTrackingComponent({
         );
         const activeWallets = [];
         let trackedOverlap = 0;
+        const trackedActiveWallets = [];
         rows.forEach((row) => {
           const wallet = String((row && row.address) || "").trim();
           const oiCurrent = Number(row && row.oi_current !== undefined ? row.oi_current : 0);
           if (!wallet || !Number.isFinite(oiCurrent) || oiCurrent <= 0) return;
           activeWallets.push(wallet);
-          if (trackedWallets.has(wallet)) trackedOverlap += 1;
+          if (trackedWallets.has(wallet)) {
+            trackedOverlap += 1;
+            trackedActiveWallets.push(wallet);
+          }
         });
         pacificaPublicActiveCache.value = {
           source: "pacifica_leaderboard_oi_current_gt_0",
@@ -3700,6 +3731,7 @@ function createWalletTrackingComponent({
           activeWalletsLowerBound: activeWallets.length,
           trackedOverlap,
           untrackedActiveWallets: Math.max(0, activeWallets.length - trackedOverlap),
+          trackedActiveWallets,
         };
         pacificaPublicActiveCache.fetchedAt = Date.now();
         pacificaPublicActiveCache.lastError = null;
@@ -3741,6 +3773,13 @@ function createWalletTrackingComponent({
       lastError: pacificaPublicActiveCache.lastError,
       inflight: Boolean(pacificaPublicActiveCache.inflight),
     };
+  }
+
+  function getPacificaTrackedPublicActiveWallets() {
+    const snapshot = getPacificaPublicActiveSnapshot();
+    return Array.isArray(snapshot && snapshot.trackedActiveWallets)
+      ? snapshot.trackedActiveWallets
+      : [];
   }
 
   function buildLiveActiveWalletRows({ walletRows = [], positions = [], events = [], nowMs = Date.now() }) {
@@ -3920,6 +3959,12 @@ function createWalletTrackingComponent({
       trades: Number(safeBucket.trades || 0),
       volumeUsd: Number(toNum(safeBucket.volumeUsd, 0).toFixed(2)),
       pnlUsd: Number(toNum(safeBucket.pnlUsd, 0).toFixed(2)),
+      wins: Number(
+        safeBucket.wins !== undefined ? safeBucket.wins : safeBucket.winCount || 0
+      ),
+      losses: Number(
+        safeBucket.losses !== undefined ? safeBucket.losses : safeBucket.lossCount || 0
+      ),
       winRatePct: Number(toNum(safeBucket.winRatePct, 0).toFixed(2)),
       feesUsd: Number(
         toNum(
@@ -3960,6 +4005,558 @@ function createWalletTrackingComponent({
     if (ageMs <= 5 * 60 * 1000) return "fresh";
     if (ageMs <= 15 * 60 * 1000) return "warm";
     return "stale";
+  }
+
+  function normalizeWalletExplorerTimeframe(value) {
+    const raw = String(value || "all").trim().toLowerCase();
+    if (raw === "24h") return "24h";
+    if (raw === "30d") return "30d";
+    return "all";
+  }
+
+  function pickWalletExplorerBucket(row = {}, timeframe = "all") {
+    if (timeframe === "24h") return row.d24 || {};
+    if (timeframe === "30d") return row.d30 || {};
+    return row.all || {};
+  }
+
+  function parseWalletExplorerNumber(value) {
+    if (value === null || value === undefined || value === "") return null;
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? numeric : null;
+  }
+
+  function parseWalletExplorerDate(value, endOfDay = false) {
+    const raw = String(value || "").trim();
+    if (!raw) return null;
+    const normalized = raw.length === 10 ? `${raw}T${endOfDay ? "23:59:59.999" : "00:00:00.000"}Z` : raw;
+    const parsed = Date.parse(normalized);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  function parseWalletExplorerTokens(value) {
+    return Array.from(
+      new Set(
+        String(value || "")
+          .split(",")
+          .map((token) => String(token || "").trim().toUpperCase())
+          .filter(Boolean)
+      )
+    );
+  }
+
+  function parseWalletExplorerQuery(rawQuery = {}) {
+    const query = rawQuery && typeof rawQuery === "object" ? rawQuery : {};
+    const requestedSort = String(query.sort || "volumeUsd").trim();
+    return {
+      timeframe: normalizeWalletExplorerTimeframe(query.timeframe),
+      q: String(query.q || "").trim().toLowerCase(),
+      page: Math.max(1, Number(query.page || 1)),
+      pageSize: Math.max(1, Math.min(200, Number(query.pageSize || 20))),
+      sort: {
+        wallet: "wallet",
+        trades: "trades",
+        volume: "volumeUsd",
+        volumeUsd: "volumeUsd",
+        totalWins: "totalWins",
+        totalLosses: "totalLosses",
+        pnl: "pnlUsd",
+        pnlUsd: "pnlUsd",
+        winRate: "winRate",
+        firstTrade: "firstTrade",
+        lastTrade: "lastTrade",
+        openPositions: "openPositions",
+        exposureUsd: "exposureUsd",
+      }[requestedSort] || "volumeUsd",
+      dir: String(query.dir || "desc").trim().toLowerCase() === "asc" ? "asc" : "desc",
+      symbols: parseWalletExplorerTokens(query.symbols || query.symbol || ""),
+      side: String(query.side || "").trim().toLowerCase(),
+      status: Array.from(
+        new Set(
+          String(query.status || "")
+            .split(",")
+            .map((item) => String(item || "").trim().toLowerCase())
+            .filter(Boolean)
+        )
+      ),
+      openPositions: String(query.openPositions || query.open || "").trim().toLowerCase(),
+      minTrades: parseWalletExplorerNumber(query.minTrades),
+      maxTrades: parseWalletExplorerNumber(query.maxTrades),
+      minVolumeUsd: parseWalletExplorerNumber(query.minVolumeUsd ?? query.minVolume),
+      maxVolumeUsd: parseWalletExplorerNumber(query.maxVolumeUsd ?? query.maxVolume),
+      minPnlUsd: parseWalletExplorerNumber(query.minPnlUsd ?? query.minPnl),
+      maxPnlUsd: parseWalletExplorerNumber(query.maxPnlUsd ?? query.maxPnl),
+      minWinRate: parseWalletExplorerNumber(query.minWinRate),
+      maxWinRate: parseWalletExplorerNumber(query.maxWinRate),
+      minOpenPositions: parseWalletExplorerNumber(query.minOpenPositions),
+      maxOpenPositions: parseWalletExplorerNumber(query.maxOpenPositions),
+      minExposureUsd: parseWalletExplorerNumber(query.minExposureUsd ?? query.minPositionUsd),
+      maxExposureUsd: parseWalletExplorerNumber(query.maxExposureUsd ?? query.maxPositionUsd),
+      firstTradeFrom: parseWalletExplorerDate(query.firstTradeFrom, false),
+      firstTradeTo: parseWalletExplorerDate(query.firstTradeTo, true),
+      lastTradeFrom: parseWalletExplorerDate(query.lastTradeFrom, false),
+      lastTradeTo: parseWalletExplorerDate(query.lastTradeTo, true),
+    };
+  }
+
+  function buildWalletExplorerAppliedFilters(parsed) {
+    const filters = [];
+    if (parsed.q) filters.push({ key: "q", label: "Search", value: parsed.q });
+    if (parsed.symbols.length) {
+      parsed.symbols.forEach((symbol) => {
+        filters.push({ key: "symbol", label: "Symbol", value: symbol });
+      });
+    }
+    if (parsed.side) filters.push({ key: "side", label: "Side", value: parsed.side });
+    if (parsed.status.length) {
+      parsed.status.forEach((status) => {
+        filters.push({ key: "status", label: "Status", value: status });
+      });
+    }
+    if (parsed.openPositions) filters.push({ key: "openPositions", label: "Open Positions", value: parsed.openPositions });
+    if (parsed.minTrades !== null) filters.push({ key: "minTrades", label: "Min Trades", value: String(parsed.minTrades) });
+    if (parsed.maxTrades !== null) filters.push({ key: "maxTrades", label: "Max Trades", value: String(parsed.maxTrades) });
+    if (parsed.minVolumeUsd !== null) filters.push({ key: "minVolumeUsd", label: "Min Volume", value: toCompact(parsed.minVolumeUsd) });
+    if (parsed.maxVolumeUsd !== null) filters.push({ key: "maxVolumeUsd", label: "Max Volume", value: toCompact(parsed.maxVolumeUsd) });
+    if (parsed.minPnlUsd !== null) filters.push({ key: "minPnlUsd", label: "Min PnL", value: toCompact(parsed.minPnlUsd) });
+    if (parsed.maxPnlUsd !== null) filters.push({ key: "maxPnlUsd", label: "Max PnL", value: toCompact(parsed.maxPnlUsd) });
+    if (parsed.minWinRate !== null) filters.push({ key: "minWinRate", label: "Min Win Rate", value: `${parsed.minWinRate}%` });
+    if (parsed.maxWinRate !== null) filters.push({ key: "maxWinRate", label: "Max Win Rate", value: `${parsed.maxWinRate}%` });
+    if (parsed.minOpenPositions !== null) filters.push({ key: "minOpenPositions", label: "Min Open", value: String(parsed.minOpenPositions) });
+    if (parsed.maxOpenPositions !== null) filters.push({ key: "maxOpenPositions", label: "Max Open", value: String(parsed.maxOpenPositions) });
+    if (parsed.minExposureUsd !== null) filters.push({ key: "minExposureUsd", label: "Min Exposure", value: toCompact(parsed.minExposureUsd) });
+    if (parsed.maxExposureUsd !== null) filters.push({ key: "maxExposureUsd", label: "Max Exposure", value: toCompact(parsed.maxExposureUsd) });
+    if (parsed.firstTradeFrom !== null) filters.push({ key: "firstTradeFrom", label: "First Trade From", value: new Date(parsed.firstTradeFrom).toISOString().slice(0, 10) });
+    if (parsed.firstTradeTo !== null) filters.push({ key: "firstTradeTo", label: "First Trade To", value: new Date(parsed.firstTradeTo).toISOString().slice(0, 10) });
+    if (parsed.lastTradeFrom !== null) filters.push({ key: "lastTradeFrom", label: "Last Trade From", value: new Date(parsed.lastTradeFrom).toISOString().slice(0, 10) });
+    if (parsed.lastTradeTo !== null) filters.push({ key: "lastTradeTo", label: "Last Trade To", value: new Date(parsed.lastTradeTo).toISOString().slice(0, 10) });
+    return filters;
+  }
+
+  async function refreshWalletExplorerDataset(force = false, snapshotSeed = null) {
+    const now = Date.now();
+    const walletStoreUpdatedAt = Number(
+      walletStore && walletStore.data ? walletStore.data.updatedAt || 0 : 0
+    );
+    const snapshotForFreshness = snapshotSeed || getLiveWalletSnapshot(1);
+    const liveSnapshotGeneratedAt = Number(
+      snapshotForFreshness && snapshotForFreshness.generatedAt
+        ? snapshotForFreshness.generatedAt
+        : 0
+    );
+    const current = walletExplorerDatasetCache.value;
+    const currentFresh =
+      current &&
+      !force &&
+      now - Number(walletExplorerDatasetCache.generatedAt || 0) < walletExplorerDatasetCache.ttlMs &&
+      walletStoreUpdatedAt <= Number(walletExplorerDatasetCache.walletStoreUpdatedAt || 0) &&
+      liveSnapshotGeneratedAt <= Number(walletExplorerDatasetCache.liveSnapshotGeneratedAt || 0);
+    if (currentFresh) return current;
+    if (walletExplorerDatasetCache.inflight) return walletExplorerDatasetCache.inflight;
+
+    walletExplorerDatasetCache.inflight = (async () => {
+      const startedAt = Date.now();
+      const walletRows = walletStore ? walletStore.list() : [];
+      const liveSnapshot =
+        snapshotSeed && Array.isArray(snapshotSeed.positions)
+          ? snapshotSeed
+          : getLiveWalletSnapshot(1500);
+      const priceLookup = await getLivePositionPriceLookup();
+      const livePositions =
+        liveSnapshot && Array.isArray(liveSnapshot.positions) ? liveSnapshot.positions : [];
+      const enrichedPositions = livePositions.map((row) =>
+        enrichPositionRowWithMarketPrice(row, priceLookup)
+      );
+      const liveActiveRows = buildLiveActiveWalletRows({
+        walletRows,
+        positions: enrichedPositions,
+        events:
+          liveSnapshot && Array.isArray(liveSnapshot.events) ? liveSnapshot.events : [],
+        nowMs: Date.now(),
+      }).map((row, index) => ({
+        ...row,
+        rank: index + 1,
+      }));
+
+      const liveActiveMap = new Map(
+        liveActiveRows.map((row) => [String(row.wallet || "").trim(), row])
+      );
+      const positionsByWallet = new Map();
+      const unrealizedByWallet = new Map();
+      const exposureByWallet = new Map();
+      const openSideByWallet = new Map();
+      const symbolUniverse = new Map();
+
+      enrichedPositions.forEach((row) => {
+        const wallet = String((row && row.wallet) || "").trim();
+        if (!wallet) return;
+        const list = positionsByWallet.get(wallet) || [];
+        list.push(row);
+        positionsByWallet.set(wallet, list);
+        unrealizedByWallet.set(
+          wallet,
+          Number(
+            (
+              toNum(unrealizedByWallet.get(wallet), 0) +
+              toNum(row && row.unrealizedPnlUsd, 0)
+            ).toFixed(2)
+          )
+        );
+        exposureByWallet.set(
+          wallet,
+          Number(
+            (
+              toNum(exposureByWallet.get(wallet), 0) +
+              toNum(row && row.positionUsd, 0)
+            ).toFixed(2)
+          )
+        );
+        const sideSet = openSideByWallet.get(wallet) || new Set();
+        const side = String((row && row.side) || "").trim().toLowerCase();
+        if (side.includes("long") || side === "buy") sideSet.add("long");
+        else if (side.includes("short") || side === "sell") sideSet.add("short");
+        openSideByWallet.set(wallet, sideSet);
+        const symbol = String((row && row.symbol) || "").trim().toUpperCase();
+        if (symbol) {
+          symbolUniverse.set(
+            symbol,
+            Number(
+              (
+                toNum(symbolUniverse.get(symbol), 0) +
+                toNum(row && row.positionUsd, 0)
+              ).toFixed(2)
+            )
+          );
+        }
+      });
+
+      walletRows.forEach((record) => {
+        const symbols = new Set();
+        [record && record.all, record && record.d30, record && record.d7, record && record.d24].forEach((bucket) => {
+          const volumes = bucket && typeof bucket.symbolVolumes === "object" ? bucket.symbolVolumes : {};
+          Object.entries(volumes).forEach(([symbol, volumeUsd]) => {
+            const normalized = String(symbol || "").trim().toUpperCase();
+            if (!normalized) return;
+            symbols.add(normalized);
+            symbolUniverse.set(
+              normalized,
+              Number(
+                (
+                  toNum(symbolUniverse.get(normalized), 0) +
+                  toNum(volumeUsd, 0)
+                ).toFixed(2)
+              )
+            );
+          });
+        });
+      });
+
+      const preparedRows = walletRows.map((record) => {
+        const wallet = String((record && record.wallet) || "").trim();
+        const d24 = summarizeWalletWindow(record && record.d24);
+        const d7 = summarizeWalletWindow(record && record.d7);
+        const d30 = summarizeWalletWindow(record && record.d30);
+        const all = summarizeWalletWindow(record && record.all);
+        const liveActive = liveActiveMap.get(wallet) || {};
+        const positions = positionsByWallet.get(wallet) || [];
+        const openSides = openSideByWallet.get(wallet) || new Set();
+        const sideState =
+          openSides.has("long") && openSides.has("short")
+            ? "mixed"
+            : openSides.has("long")
+            ? "long"
+            : openSides.has("short")
+            ? "short"
+            : "none";
+        const symbolSet = new Set([
+          ...Object.keys(all.symbolVolumes || {}),
+          ...Object.keys(d30.symbolVolumes || {}),
+          ...Object.keys(d7.symbolVolumes || {}),
+          ...Object.keys(d24.symbolVolumes || {}),
+          ...positions.map((row) => String((row && row.symbol) || "").trim().toUpperCase()).filter(Boolean),
+        ]);
+        const lastActivity =
+          Math.max(
+            Number(liveActive.lastActivityAt || 0),
+            Number(liveActive.lastPositionAt || 0),
+            Number(record && record.updatedAt ? record.updatedAt : 0),
+            Number(all.lastTrade || 0)
+          ) || null;
+        const unrealizedPnlUsd = Number(toNum(unrealizedByWallet.get(wallet), 0).toFixed(2));
+        const realizedAllPnl = Number(toNum(all.pnlUsd, 0).toFixed(2));
+        return {
+          wallet,
+          updatedAt: record && record.updatedAt ? record.updatedAt : null,
+          d24,
+          d7,
+          d30,
+          all,
+          openPositions: Number(liveActive.openPositions || positions.length || 0),
+          exposureUsd: Number(
+            toNum(
+              liveActive.positionUsd !== undefined ? liveActive.positionUsd : exposureByWallet.get(wallet),
+              0
+            ).toFixed(2)
+          ),
+          unrealizedPnlUsd,
+          totalPnlUsd: Number((realizedAllPnl + unrealizedPnlUsd).toFixed(2)),
+          liveActiveRank: liveActive.rank || null,
+          liveActiveScore: Number(toNum(liveActive.activityScore, 0).toFixed(2)),
+          recentEvents15m: Number(liveActive.recentEvents15m || 0),
+          recentEvents1h: Number(liveActive.recentEvents1h || 0),
+          lastActivity,
+          freshness: buildWalletFreshnessLabel(lastActivity),
+          sideState,
+          hasLongOpen: openSides.has("long"),
+          hasShortOpen: openSides.has("short"),
+          symbols: Array.from(symbolSet)
+            .map((item) => String(item || "").trim().toUpperCase())
+            .filter(Boolean)
+            .sort(),
+          searchText: `${wallet} ${Array.from(symbolSet).join(" ")}`.toLowerCase(),
+        };
+      });
+
+      const nextValue = {
+        generatedAt: Date.now(),
+        walletStoreUpdatedAt,
+        walletRows,
+        preparedRows,
+        preparedRowsByWallet: new Map(preparedRows.map((row) => [row.wallet, row])),
+        liveActiveRows,
+        liveSnapshot,
+        positions: enrichedPositions,
+        positionsByWallet,
+        availableSymbols: Array.from(symbolUniverse.entries())
+          .sort((a, b) => b[1] - a[1])
+          .slice(0, 250)
+          .map(([symbol]) => symbol),
+      };
+
+      walletExplorerDatasetCache.value = nextValue;
+      walletExplorerDatasetCache.generatedAt = nextValue.generatedAt;
+      walletExplorerDatasetCache.walletStoreUpdatedAt = walletStoreUpdatedAt;
+      walletExplorerDatasetCache.liveSnapshotGeneratedAt = Number(
+        liveSnapshot && liveSnapshot.generatedAt ? liveSnapshot.generatedAt : 0
+      );
+      walletExplorerDatasetCache.lastError = null;
+      walletExplorerDatasetCache.lastDurationMs = Date.now() - startedAt;
+      return nextValue;
+    })()
+      .catch((error) => {
+        walletExplorerDatasetCache.lastError = String(
+          error && error.message ? error.message : error || "wallet_explorer_dataset_failed"
+        );
+        if (walletExplorerDatasetCache.value) return walletExplorerDatasetCache.value;
+        throw error;
+      })
+      .finally(() => {
+        walletExplorerDatasetCache.inflight = null;
+      });
+
+    return walletExplorerDatasetCache.inflight;
+  }
+
+  async function getWalletExplorerDataset(options = {}) {
+    const force = Boolean(options.force);
+    const now = Date.now();
+    const current = walletExplorerDatasetCache.value;
+    const walletStoreUpdatedAt = Number(
+      walletStore && walletStore.data ? walletStore.data.updatedAt || 0 : 0
+    );
+    const liveSnapshot = getLiveWalletSnapshot(1);
+    const liveSnapshotGeneratedAt = Number(
+      liveSnapshot && liveSnapshot.generatedAt ? liveSnapshot.generatedAt : 0
+    );
+    const datasetAgeMs = Math.max(0, now - Number(walletExplorerDatasetCache.generatedAt || 0));
+    const liveSnapshotAdvanced =
+      liveSnapshotGeneratedAt > Number(walletExplorerDatasetCache.liveSnapshotGeneratedAt || 0);
+    const walletStoreAdvanced =
+      walletStoreUpdatedAt > Number(walletExplorerDatasetCache.walletStoreUpdatedAt || 0);
+    const expired =
+      !current ||
+      force ||
+      datasetAgeMs >= walletExplorerDatasetCache.ttlMs ||
+      walletStoreAdvanced ||
+      liveSnapshotAdvanced;
+    if (!expired) return current;
+    // Explorer should stay visually consistent with Live Trade when the live snapshot
+    // or tracked-wallet store has advanced. Serve stale-on-refresh only for plain TTL expiry.
+    if (current && !force && !liveSnapshotAdvanced && !walletStoreAdvanced) {
+      refreshWalletExplorerDataset(true, liveSnapshot).catch(() => {});
+      return current;
+    }
+    return refreshWalletExplorerDataset(true, liveSnapshot);
+  }
+
+  function queryWalletExplorerDataset(dataset, rawQuery = {}) {
+    const parsed = parseWalletExplorerQuery(rawQuery);
+    const timeframe = parsed.timeframe;
+    const rows = Array.isArray(dataset && dataset.preparedRows) ? dataset.preparedRows : [];
+    let filtered = rows;
+
+    if (parsed.q) {
+      filtered = filtered.filter((row) => String(row.searchText || "").includes(parsed.q));
+    }
+
+    if (parsed.symbols.length) {
+      filtered = filtered.filter((row) =>
+        parsed.symbols.some((symbol) => Array.isArray(row.symbols) && row.symbols.includes(symbol))
+      );
+    }
+
+    if (parsed.side === "long") {
+      filtered = filtered.filter((row) => row.hasLongOpen);
+    } else if (parsed.side === "short") {
+      filtered = filtered.filter((row) => row.hasShortOpen);
+    } else if (parsed.side === "mixed") {
+      filtered = filtered.filter((row) => row.sideState === "mixed");
+    } else if (parsed.side === "flat") {
+      filtered = filtered.filter((row) => !row.openPositions);
+    }
+
+    if (parsed.status.length) {
+      filtered = filtered.filter((row) => parsed.status.includes(String(row.freshness || "").toLowerCase()));
+    }
+
+    if (parsed.openPositions === "has" || parsed.openPositions === "open") {
+      filtered = filtered.filter((row) => Number(row.openPositions || 0) > 0);
+    } else if (parsed.openPositions === "none" || parsed.openPositions === "closed") {
+      filtered = filtered.filter((row) => Number(row.openPositions || 0) <= 0);
+    }
+
+    const applyRangeFilter = (getter, minValue, maxValue) => {
+      if (minValue === null && maxValue === null) return;
+      filtered = filtered.filter((row) => {
+        const value = getter(row);
+        if (minValue !== null && value < minValue) return false;
+        if (maxValue !== null && value > maxValue) return false;
+        return true;
+      });
+    };
+
+    applyRangeFilter((row) => Number(pickWalletExplorerBucket(row, timeframe).trades || 0), parsed.minTrades, parsed.maxTrades);
+    applyRangeFilter((row) => toNum(pickWalletExplorerBucket(row, timeframe).volumeUsd, 0), parsed.minVolumeUsd, parsed.maxVolumeUsd);
+    applyRangeFilter((row) => toNum(pickWalletExplorerBucket(row, timeframe).pnlUsd, 0), parsed.minPnlUsd, parsed.maxPnlUsd);
+    applyRangeFilter((row) => toNum(pickWalletExplorerBucket(row, timeframe).winRatePct, 0), parsed.minWinRate, parsed.maxWinRate);
+    applyRangeFilter((row) => Number(row.openPositions || 0), parsed.minOpenPositions, parsed.maxOpenPositions);
+    applyRangeFilter((row) => toNum(row.exposureUsd, 0), parsed.minExposureUsd, parsed.maxExposureUsd);
+
+    if (parsed.firstTradeFrom !== null || parsed.firstTradeTo !== null) {
+      filtered = filtered.filter((row) => {
+        const ts = Number(pickWalletExplorerBucket(row, timeframe).firstTrade || 0);
+        if (parsed.firstTradeFrom !== null && (!ts || ts < parsed.firstTradeFrom)) return false;
+        if (parsed.firstTradeTo !== null && (!ts || ts > parsed.firstTradeTo)) return false;
+        return true;
+      });
+    }
+
+    if (parsed.lastTradeFrom !== null || parsed.lastTradeTo !== null) {
+      filtered = filtered.filter((row) => {
+        const ts = Number(pickWalletExplorerBucket(row, timeframe).lastTrade || row.lastActivity || 0);
+        if (parsed.lastTradeFrom !== null && (!ts || ts < parsed.lastTradeFrom)) return false;
+        if (parsed.lastTradeTo !== null && (!ts || ts > parsed.lastTradeTo)) return false;
+        return true;
+      });
+    }
+
+    const sortKey = parsed.sort;
+    const sortDir = parsed.dir;
+    const sortable = filtered.slice();
+    sortable.sort((left, right) => {
+      const leftBucket = pickWalletExplorerBucket(left, timeframe);
+      const rightBucket = pickWalletExplorerBucket(right, timeframe);
+      const getValue = (row, bucket) => {
+        if (sortKey === "wallet") return String(row.wallet || "");
+        if (sortKey === "trades") return Number(bucket.trades || 0);
+        if (sortKey === "volumeUsd") return toNum(bucket.volumeUsd, 0);
+        if (sortKey === "totalWins") return Number(bucket.wins || 0);
+        if (sortKey === "totalLosses") return Number(bucket.losses || 0);
+        if (sortKey === "pnlUsd") return toNum(bucket.pnlUsd, 0);
+        if (sortKey === "winRate") return toNum(bucket.winRatePct, 0);
+        if (sortKey === "firstTrade") return Number(bucket.firstTrade || 0);
+        if (sortKey === "lastTrade") return Number(bucket.lastTrade || row.lastActivity || 0);
+        if (sortKey === "openPositions") return Number(row.openPositions || 0);
+        if (sortKey === "exposureUsd") return toNum(row.exposureUsd, 0);
+        return toNum(bucket.volumeUsd, 0);
+      };
+      const a = getValue(left, leftBucket);
+      const b = getValue(right, rightBucket);
+      if (typeof a === "string" || typeof b === "string") {
+        const cmp = String(a).localeCompare(String(b));
+        if (cmp !== 0) return sortDir === "asc" ? cmp : -cmp;
+      } else if (a !== b) {
+        return sortDir === "asc" ? a - b : b - a;
+      }
+      return String(left.wallet || "").localeCompare(String(right.wallet || ""));
+    });
+
+    const total = sortable.length;
+    const pages = Math.max(1, Math.ceil(total / parsed.pageSize));
+    const page = Math.min(parsed.page, pages);
+    const start = (page - 1) * parsed.pageSize;
+    const pageRows = sortable.slice(start, start + parsed.pageSize).map((row, idx) => {
+      const bucket = pickWalletExplorerBucket(row, timeframe);
+      return {
+        wallet: row.wallet,
+        rank: start + idx + 1,
+        trades: Number(bucket.trades || 0),
+        volumeUsd: toFixed(toNum(bucket.volumeUsd, 0), 2),
+        totalWins: Number(bucket.wins || 0),
+        totalLosses: Number(bucket.losses || 0),
+        pnlUsd: toFixed(toNum(bucket.pnlUsd, 0), 2),
+        winRate: toFixed(toNum(bucket.winRatePct, 0), 2),
+        firstTrade: bucket.firstTrade || null,
+        lastTrade: bucket.lastTrade || null,
+        updatedAt: row.updatedAt || null,
+        lastActivity: row.lastActivity || null,
+        openPositions: Number(row.openPositions || 0),
+        exposureUsd: Number(toNum(row.exposureUsd, 0).toFixed(2)),
+        unrealizedPnlUsd: Number(toNum(row.unrealizedPnlUsd, 0).toFixed(2)),
+        totalPnlUsd: Number(toNum(row.totalPnlUsd, 0).toFixed(2)),
+        liveActiveRank: row.liveActiveRank || null,
+        liveActiveScore: Number(toNum(row.liveActiveScore, 0).toFixed(2)),
+        recentEvents15m: Number(row.recentEvents15m || 0),
+        recentEvents1h: Number(row.recentEvents1h || 0),
+        freshness: row.freshness || "unknown",
+        side: row.sideState || "none",
+        d24: row.d24,
+        d7: row.d7,
+        d30: row.d30,
+        all: row.all,
+      };
+    });
+
+    return {
+      generatedAt: Number(dataset && dataset.generatedAt ? dataset.generatedAt : Date.now()),
+      timeframe,
+      query: {
+        q: parsed.q,
+        page,
+        pageSize: parsed.pageSize,
+        sort: sortKey,
+        dir: sortDir,
+      },
+      total,
+      page,
+      pageSize: parsed.pageSize,
+      pages,
+      rows: pageRows,
+      filters: {
+        applied: buildWalletExplorerAppliedFilters(parsed),
+        availableSymbols: Array.isArray(dataset && dataset.availableSymbols)
+          ? dataset.availableSymbols
+          : [],
+      },
+      performance: {
+        datasetBuiltAt: Number(dataset && dataset.generatedAt ? dataset.generatedAt : 0) || null,
+        datasetAgeMs:
+          dataset && dataset.generatedAt ? Math.max(0, Date.now() - Number(dataset.generatedAt || 0)) : null,
+        datasetBuildMs: walletExplorerDatasetCache.lastDurationMs,
+        stale: !dataset || Date.now() - Number(dataset.generatedAt || 0) >= walletExplorerDatasetCache.ttlMs,
+        lastError: walletExplorerDatasetCache.lastError,
+      },
+    };
   }
 
   function mapWalletDetailPositions(rows = [], wallet) {
@@ -4179,9 +4776,25 @@ function createWalletTrackingComponent({
     const queryPublicLimit = parseWindowParam(options.publicLimit, 0);
     const queryWalletOffset = parseWindowParam(options.walletOffset, 0);
     const queryWalletLimit = parseWindowParam(options.walletLimit, 0);
+    const queryWalletSortRaw = String(options.walletSort || "pnlAll").trim();
+    const queryWalletSort = {
+      wallet: "wallet",
+      pnl7: "pnl7Usd",
+      realized7: "pnl7Usd",
+      pnl30: "pnl30Usd",
+      realized30: "pnl30Usd",
+      pnlAll: "realizedPnlUsd",
+      realizedAll: "realizedPnlUsd",
+      open: "openPositions",
+      openPositions: "openPositions",
+      activity: "lastActivity",
+      lastActivity: "lastActivity",
+    }[queryWalletSortRaw] || "realizedPnlUsd";
+    const queryWalletDir =
+      String(options.walletDir || "desc").trim().toLowerCase() === "asc" ? "asc" : "desc";
     const queryPositionOffset = parseWindowParam(options.positionOffset, 0);
     const queryPositionLimit = parseWindowParam(options.positionLimit, 0);
-    const queryPositionSortRaw = String(options.positionSort || "activity").trim();
+    const queryPositionSortRaw = String(options.positionSort || "openedAt").trim();
     const queryPositionSort = {
       wallet: "wallet",
       symbol: "symbol",
@@ -4193,12 +4806,12 @@ function createWalletTrackingComponent({
       mark: "mark",
       unrealized: "unrealized",
       pnl: "unrealized",
-      activity: "activity",
+      activity: "openedAt",
       opened: "openedAt",
       openedAt: "openedAt",
       updated: "updatedAt",
       updatedAt: "updatedAt",
-    }[queryPositionSortRaw] || "activity";
+    }[queryPositionSortRaw] || "openedAt";
     const queryPositionDir =
       String(options.positionDir || "desc").trim().toLowerCase() === "asc" ? "asc" : "desc";
     const queryAccountTradeOffset = parseWindowParam(options.accountTradeOffset, 0);
@@ -4498,9 +5111,6 @@ function createWalletTrackingComponent({
             NaN
           );
         }
-        if (key === "activity") {
-          return Math.max(Number(row.updatedAt || 0), Number(row.openedAt || 0));
-        }
         return toNum(row[key], NaN);
       };
       const stringValueFor = (row, key) => {
@@ -4526,17 +5136,32 @@ function createWalletTrackingComponent({
         const rightVal = numericValueFor(right, queryPositionSort);
         const leftMissing = !Number.isFinite(leftVal);
         const rightMissing = !Number.isFinite(rightVal);
-        if (leftMissing && rightMissing) return Number(right.updatedAt || 0) - Number(left.updatedAt || 0);
+        if (leftMissing && rightMissing) {
+          return (
+            Number(right.openedAt || 0) - Number(left.openedAt || 0) ||
+            Number(right.updatedAt || 0) - Number(left.updatedAt || 0)
+          );
+        }
         if (leftMissing) return 1;
         if (rightMissing) return -1;
-        if (leftVal === rightVal) return Number(right.updatedAt || 0) - Number(left.updatedAt || 0);
+        if (leftVal === rightVal) {
+          return (
+            Number(right.openedAt || 0) - Number(left.openedAt || 0) ||
+            Number(right.updatedAt || 0) - Number(left.updatedAt || 0)
+          );
+        }
         return queryPositionDir === "asc" ? leftVal - rightVal : rightVal - leftVal;
       }
 
       const leftVal = stringValueFor(left, queryPositionSort);
       const rightVal = stringValueFor(right, queryPositionSort);
       const cmp = leftVal.localeCompare(rightVal);
-      if (cmp === 0) return Number(right.updatedAt || 0) - Number(left.updatedAt || 0);
+      if (cmp === 0) {
+        return (
+          Number(right.openedAt || 0) - Number(left.openedAt || 0) ||
+          Number(right.updatedAt || 0) - Number(left.updatedAt || 0)
+        );
+      }
       return queryPositionDir === "asc" ? cmp : -cmp;
     };
     positionsAll.sort(comparePositionRows);
@@ -4622,6 +5247,94 @@ function createWalletTrackingComponent({
     const walletRowsAll = walletRowsSeed.map((row) => {
       const wallet = String((row && row.wallet) || "").trim();
       const liveActive = liveActiveMap.get(wallet) || null;
+      const pnl24Usd = Number(
+        toNum(
+          row &&
+            row.d24 &&
+            (row.d24.pnlUsd !== undefined ? row.d24.pnlUsd : row.d24.realizedPnlUsd),
+          NaN
+        ).toFixed(
+          Number.isFinite(
+            toNum(
+              row &&
+                row.d24 &&
+                (row.d24.pnlUsd !== undefined ? row.d24.pnlUsd : row.d24.realizedPnlUsd),
+              NaN
+            )
+          )
+            ? 2
+            : 0
+        )
+      );
+      const pnl7Usd = Number(
+        toNum(
+          row &&
+            row.d7 &&
+            (row.d7.pnlUsd !== undefined ? row.d7.pnlUsd : row.d7.realizedPnlUsd),
+          NaN
+        ).toFixed(
+          Number.isFinite(
+            toNum(
+              row &&
+                row.d7 &&
+                (row.d7.pnlUsd !== undefined ? row.d7.pnlUsd : row.d7.realizedPnlUsd),
+              NaN
+            )
+          )
+            ? 2
+            : 0
+        )
+      );
+      const pnl30Usd = Number(
+        toNum(
+          row &&
+            row.d30 &&
+            (row.d30.pnlUsd !== undefined ? row.d30.pnlUsd : row.d30.realizedPnlUsd),
+          NaN
+        ).toFixed(
+          Number.isFinite(
+            toNum(
+              row &&
+                row.d30 &&
+                (row.d30.pnlUsd !== undefined ? row.d30.pnlUsd : row.d30.realizedPnlUsd),
+              NaN
+            )
+          )
+            ? 2
+            : 0
+        )
+      );
+      const realizedPnlUsd = Number(
+        toNum(
+          row &&
+            row.all &&
+            (row.all.pnlUsd !== undefined ? row.all.pnlUsd : row.all.realizedPnlUsd) !== undefined
+            ? row.all.pnlUsd !== undefined
+              ? row.all.pnlUsd
+              : row.all.realizedPnlUsd
+            : row && row.realizedPnlUsd !== undefined
+            ? row.realizedPnlUsd
+            : row && row.pnlUsd,
+          NaN
+        ).toFixed(
+          Number.isFinite(
+            toNum(
+              row &&
+                row.all &&
+                (row.all.pnlUsd !== undefined ? row.all.pnlUsd : row.all.realizedPnlUsd) !== undefined
+                ? row.all.pnlUsd !== undefined
+                  ? row.all.pnlUsd
+                  : row.all.realizedPnlUsd
+                : row && row.realizedPnlUsd !== undefined
+                ? row.realizedPnlUsd
+                : row && row.pnlUsd,
+              NaN
+            )
+          )
+            ? 2
+            : 0
+        )
+      );
       const historicalLastActivity = Math.max(
         Number(row && row.lastActivity ? row.lastActivity : 0),
         Number(row && row.lastTrade ? row.lastTrade : 0),
@@ -4644,19 +5357,17 @@ function createWalletTrackingComponent({
       const unrealizedPnlUsd = Number(toNum(unrealizedByWallet.get(wallet), 0).toFixed(2));
       return {
         ...row,
+        pnl24Usd,
+        pnl7Usd,
+        pnl30Usd,
+        realizedPnlUsd,
         openPositions,
         exposureUsd,
         unrealizedPnlUsd,
         totalPnlUsd: Number(
           (
             toNum(
-              row &&
-                row.all &&
-                row.all.pnlUsd !== undefined
-                ? row.all.pnlUsd
-                : row && row.realizedPnlUsd !== undefined
-                ? row.realizedPnlUsd
-                : row && row.pnlUsd,
+              Number.isFinite(realizedPnlUsd) ? realizedPnlUsd : 0,
               0
             ) + unrealizedPnlUsd
           ).toFixed(2)
@@ -4669,6 +5380,39 @@ function createWalletTrackingComponent({
         freshness: buildWalletFreshnessLabel(lastActivity, now),
       };
     });
+    const compareWalletRows = (left, right) => {
+      const stringValueFor = (row, key) => {
+        if (!row || typeof row !== "object") return "";
+        if (key === "wallet") {
+          return String(row.walletLabel || row.wallet || "").trim().toLowerCase();
+        }
+        return String(row[key] || "").trim().toLowerCase();
+      };
+      const numericKeys = new Set(["pnl7Usd", "pnl30Usd", "realizedPnlUsd", "openPositions", "lastActivity"]);
+      if (numericKeys.has(queryWalletSort)) {
+        const leftVal = toNum(left && left[queryWalletSort], NaN);
+        const rightVal = toNum(right && right[queryWalletSort], NaN);
+        const leftMissing = !Number.isFinite(leftVal);
+        const rightMissing = !Number.isFinite(rightVal);
+        if (leftMissing && rightMissing) {
+          return Number(right && right.lastActivity ? right.lastActivity : 0) - Number(left && left.lastActivity ? left.lastActivity : 0);
+        }
+        if (leftMissing) return 1;
+        if (rightMissing) return -1;
+        if (leftVal === rightVal) {
+          return Number(right && right.lastActivity ? right.lastActivity : 0) - Number(left && left.lastActivity ? left.lastActivity : 0);
+        }
+        return queryWalletDir === "asc" ? leftVal - rightVal : rightVal - leftVal;
+      }
+      const leftVal = stringValueFor(left, queryWalletSort);
+      const rightVal = stringValueFor(right, queryWalletSort);
+      const cmp = leftVal.localeCompare(rightVal);
+      if (cmp === 0) {
+        return Number(right && right.lastActivity ? right.lastActivity : 0) - Number(left && left.lastActivity ? left.lastActivity : 0);
+      }
+      return queryWalletDir === "asc" ? cmp : -cmp;
+    };
+    walletRowsAll.sort(compareWalletRows);
     const walletRowsWindow = applyWindow(walletRowsAll, {
       offset: queryWalletOffset,
       limit: queryWalletLimit,
@@ -4803,6 +5547,8 @@ function createWalletTrackingComponent({
         indexedWalletsHasMore: walletRowsWindow.hasMore,
         indexedWalletsOffset: walletRowsWindow.offset,
         indexedWalletsLimit: walletRowsWindow.limit,
+        indexedWalletsSort: queryWalletSort,
+        indexedWalletsDir: queryWalletDir,
         liveActiveWallets: liveActiveWalletWindow.returned,
         liveActiveWalletsTotal: liveActiveWalletWindow.total,
         liveActiveWalletsWindowed: liveActiveWalletWindow.windowedByQuery,
@@ -5110,7 +5856,9 @@ function createWalletTrackingComponent({
                 url.searchParams.get("position_limit"),
                 liveDefaultPositionLimit
               ),
-              positionSort: String(url.searchParams.get("position_sort") || "activity").trim(),
+              walletSort: String(url.searchParams.get("wallet_sort") || "pnlAll").trim(),
+              walletDir: String(url.searchParams.get("wallet_dir") || "desc").trim(),
+              positionSort: String(url.searchParams.get("position_sort") || "openedAt").trim(),
               positionDir: String(url.searchParams.get("position_dir") || "desc").trim(),
               accountTradeOffset: parseWindowParam(url.searchParams.get("account_trade_offset"), 0),
               accountTradeLimit: parseWindowParam(
@@ -5617,7 +6365,9 @@ function createWalletTrackingComponent({
               url.searchParams.get("position_limit"),
               liveDefaultPositionLimit
             ),
-            positionSort: String(url.searchParams.get("position_sort") || "activity").trim(),
+            walletSort: String(url.searchParams.get("wallet_sort") || "pnlAll").trim(),
+            walletDir: String(url.searchParams.get("wallet_dir") || "desc").trim(),
+            positionSort: String(url.searchParams.get("position_sort") || "openedAt").trim(),
             positionDir: String(url.searchParams.get("position_dir") || "desc").trim(),
             accountTradeOffset: parseWindowParam(url.searchParams.get("account_trade_offset"), 0),
             accountTradeLimit: parseWindowParam(
@@ -5643,21 +6393,20 @@ function createWalletTrackingComponent({
         });
         return true;
       }
-      const walletRows = walletStore ? walletStore.list() : [];
-      const liveSnapshot = getLiveWalletSnapshot(1000);
-      const priceLookup = await getLivePositionPriceLookup();
+      const explorerDataset = await getWalletExplorerDataset();
+      const walletRows =
+        explorerDataset && Array.isArray(explorerDataset.walletRows)
+          ? explorerDataset.walletRows
+          : [];
       const positionsAll =
-        liveSnapshot && Array.isArray(liveSnapshot.positions) ? liveSnapshot.positions : [];
-      const eventsAll = liveSnapshot && Array.isArray(liveSnapshot.events) ? liveSnapshot.events : [];
-      const liveActiveRows = buildLiveActiveWalletRows({
-        walletRows,
-        positions: positionsAll,
-        events: eventsAll,
-        nowMs: Date.now(),
-      }).map((row, index) => ({
-        ...row,
-        rank: index + 1,
-      }));
+        explorerDataset && Array.isArray(explorerDataset.positions)
+          ? explorerDataset.positions
+          : [];
+      const liveActiveRows =
+        explorerDataset && Array.isArray(explorerDataset.liveActiveRows)
+          ? explorerDataset.liveActiveRows
+          : [];
+      const priceLookup = await getLivePositionPriceLookup();
       const walletPerformanceSupport = buildWalletPerformanceSupportSummary({
         walletMetricsHistoryStatus:
           walletMetricsHistoryStore &&
@@ -5765,88 +6514,27 @@ function createWalletTrackingComponent({
     }
 
     if (url.pathname === "/api/wallets") {
-      const payload = buildWalletExplorerPayload({
-        wallets: walletStore ? walletStore.list() : [],
-        query: Object.fromEntries(url.searchParams.entries()),
-      });
-      if (Array.isArray(payload.rows)) {
-        const walletRows = walletStore ? walletStore.list() : [];
-        const liveSnapshot = getLiveWalletSnapshot(600);
-        const priceLookup = await getLivePositionPriceLookup();
-        const livePositions = (
-          liveSnapshot && Array.isArray(liveSnapshot.positions) ? liveSnapshot.positions : []
-        ).map((row) => enrichPositionRowWithMarketPrice(row, priceLookup));
-        const liveActiveRows = buildLiveActiveWalletRows({
-          walletRows,
-          positions: livePositions,
-          events: liveSnapshot && Array.isArray(liveSnapshot.events) ? liveSnapshot.events : [],
-          nowMs: Date.now(),
-        }).map((row, index) => ({
-          ...row,
-          rank: index + 1,
-        }));
-        const liveActiveMap = new Map(
-          liveActiveRows.map((row) => [String(row.wallet || "").trim(), row])
-        );
-        const unrealizedByWallet = new Map();
-        livePositions.forEach((row) => {
-          const wallet = String((row && row.wallet) || "").trim();
-          if (!wallet) return;
-          unrealizedByWallet.set(
-            wallet,
-            Number(
-              (
-                toNum(unrealizedByWallet.get(wallet), 0) +
-                toNum(row && row.unrealizedPnlUsd, 0)
-              ).toFixed(2)
-            )
-          );
-        });
-        const lifecycleMap = await getLifecycleMap(payload.rows.map((row) => row.wallet));
-        payload.rows = payload.rows.map((row) => ({
-          ...row,
-          openPositions: Number((liveActiveMap.get(row.wallet)?.openPositions || 0)),
-          exposureUsd: Number(
-            toNum(liveActiveMap.get(row.wallet)?.positionUsd, 0).toFixed(2)
-          ),
-          liveActiveRank: liveActiveMap.get(row.wallet)?.rank || null,
-          liveActiveScore: Number(
-            toNum(liveActiveMap.get(row.wallet)?.activityScore, 0).toFixed(2)
-          ),
-          recentEvents15m: Number((liveActiveMap.get(row.wallet)?.recentEvents15m || 0)),
-          recentEvents1h: Number((liveActiveMap.get(row.wallet)?.recentEvents1h || 0)),
-          unrealizedPnlUsd: Number(toNum(unrealizedByWallet.get(row.wallet), 0).toFixed(2)),
-          totalPnlUsd: Number(
-            (
-              toNum(row && row.all && row.all.pnlUsd !== undefined ? row.all.pnlUsd : row.pnlUsd, 0) +
-              toNum(unrealizedByWallet.get(row.wallet), 0)
-            ).toFixed(2)
-          ),
-          lastActivity:
-            Math.max(
-              Number(row.lastActivity || 0),
-              Number(liveActiveMap.get(row.wallet)?.lastActivityAt || 0),
-              Number(liveActiveMap.get(row.wallet)?.lastPositionAt || 0),
-              Number(row.updatedAt || 0)
-            ) || null,
-          freshness: buildWalletFreshnessLabel(
-            Math.max(
-              Number(row.lastActivity || 0),
-              Number(liveActiveMap.get(row.wallet)?.lastActivityAt || 0),
-              Number(liveActiveMap.get(row.wallet)?.lastPositionAt || 0),
-              Number(row.updatedAt || 0)
-            ) || 0
-          ),
-          lifecycle: lifecycleMap[row.wallet] || null,
-        }));
-      }
+      const query = Object.fromEntries(url.searchParams.entries());
+      const payload = queryWalletExplorerDataset(
+        await getWalletExplorerDataset({
+          force:
+            String(query.force || query.refresh || "")
+              .trim()
+              .toLowerCase() === "1",
+        }),
+        query
+      );
       sendJson(res, 200, payload);
       return true;
     }
 
     if (url.pathname === "/api/wallets/profile") {
+      const explorerDataset = await getWalletExplorerDataset();
       const payload = buildWalletProfilePayload({
-        wallets: walletStore ? walletStore.list() : [],
+        wallets:
+          explorerDataset && Array.isArray(explorerDataset.walletRows)
+            ? explorerDataset.walletRows
+            : [],
         wallet: url.searchParams.get("wallet"),
         timeframe: url.searchParams.get("timeframe"),
       });
@@ -5914,6 +6602,14 @@ function createWalletTrackingComponent({
     ) {
       liveWalletPositionsMonitor.noteRecentWalletActivity(trigger.wallet, trigger.at || Date.now());
     }
+  }
+
+  refreshWalletExplorerDataset(true).catch(() => {});
+  const walletExplorerRefreshTimer = setInterval(() => {
+    refreshWalletExplorerDataset(true).catch(() => {});
+  }, walletExplorerDatasetCache.refreshIntervalMs);
+  if (walletExplorerRefreshTimer && typeof walletExplorerRefreshTimer.unref === "function") {
+    walletExplorerRefreshTimer.unref();
   }
 
   return {

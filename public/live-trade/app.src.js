@@ -16,8 +16,10 @@ const state = {
   payloadSignature: "",
   activeView: "positions",
   activeWalletGroup: "pnl",
-  positionsSortKey: "activity",
+  positionsSortKey: "openedAt",
   positionsSortDir: "desc",
+  walletsSortKey: "pnlAll",
+  walletsSortDir: "desc",
   selection: {
     type: "",
     key: "",
@@ -418,6 +420,29 @@ function titleCase(value) {
     .replaceAll("_", " ")
     .replace(/\s+/g, " ")
     .replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+async function copyTextToClipboard(text) {
+  const value = String(text || "").trim();
+  if (!value) return false;
+  if (navigator?.clipboard?.writeText) {
+    await navigator.clipboard.writeText(value);
+    return true;
+  }
+  const input = document.createElement("textarea");
+  input.value = value;
+  input.setAttribute("readonly", "readonly");
+  input.style.position = "fixed";
+  input.style.opacity = "0";
+  document.body.appendChild(input);
+  input.select();
+  let copied = false;
+  try {
+    copied = document.execCommand("copy");
+  } finally {
+    document.body.removeChild(input);
+  }
+  return copied;
 }
 
 function activityLevelFromAge(ageMs) {
@@ -963,7 +988,11 @@ function buildRows(payload, options = {}) {
               raw: item,
             };
           })
-          .sort((a, b) => b.updatedAt - a.updatedAt);
+          .sort(
+            (a, b) =>
+              Number(b.openedAt || 0) - Number(a.openedAt || 0) ||
+              Number(b.updatedAt || 0) - Number(a.updatedAt || 0)
+          );
 
         if (positionRowsFromPrimary.length > 0) return positionRowsFromPrimary;
 
@@ -1064,7 +1093,11 @@ function buildRows(payload, options = {}) {
               raw: item,
             };
           })
-          .sort((a, b) => b.updatedAt - a.updatedAt);
+          .sort(
+            (a, b) =>
+              Number(b.openedAt || 0) - Number(a.openedAt || 0) ||
+              Number(b.updatedAt || 0) - Number(a.updatedAt || 0)
+          );
 
         const positionRowsFromFallback = positionsFallback
           .map((row, idx) => {
@@ -1130,7 +1163,11 @@ function buildRows(payload, options = {}) {
               raw: item,
             };
           })
-          .sort((a, b) => b.updatedAt - a.updatedAt);
+          .sort(
+            (a, b) =>
+              Number(b.openedAt || 0) - Number(a.openedAt || 0) ||
+              Number(b.updatedAt || 0) - Number(a.updatedAt || 0)
+          );
 
         return positionRowsFromPublic.length > 0 ? positionRowsFromPublic : positionRowsFromFallback;
       })()
@@ -1386,6 +1423,8 @@ function currentWindowParams() {
     position_dir: state.positionsSortDir,
     wallet_offset: (walletsPage - 1) * walletsPageSize,
     wallet_limit: walletsPageSize,
+    wallet_sort: state.walletsSortKey,
+    wallet_dir: state.walletsSortDir,
   };
 }
 
@@ -1542,8 +1581,11 @@ function renderMiniBars(values) {
     .join("")}</span>`;
 }
 
-function renderWalletCell(row) {
+function renderWalletCell(row, options = {}) {
   const walletText = row.walletLabel || shortWallet(row.wallet) || "Unattributed Flow";
+  const showTrackedBadge = options.showTrackedBadge !== false;
+  const showFreshnessBadge = options.showFreshnessBadge !== false;
+  const showCopyButton = Boolean(options.showCopyButton);
   const statusClass = row.walletResolved
     ? row.freshness === "fresh"
       ? "fresh"
@@ -1552,16 +1594,55 @@ function renderWalletCell(row) {
       : "cool"
     : "warn";
   const statusLabel = row.walletResolved ? row.freshness || "unknown" : "unresolved";
-  const tracked = row.trackedWallet ? badge("tracked", "tracked") : "";
+  const tracked = showTrackedBadge && row.trackedWallet ? badge("tracked", "tracked") : "";
+  const freshness = showFreshnessBadge ? badge(statusClass, statusLabel) : "";
   const walletFilterValue = row.walletResolved ? row.wallet : "";
   const walletButtonClass = row.walletResolved ? "lt-wallet-link" : "lt-wallet-link lt-wallet-link-disabled";
+  const copyButton =
+    showCopyButton && row.walletResolved
+      ? `<button class="lt-inline-copy" type="button" data-copy-wallet="${escapeHtml(row.wallet)}" title="Copy wallet">Copy</button>`
+      : "";
+  const metaBits = [tracked, freshness].filter(Boolean).join("");
   return `<div class="lt-wallet-cell">
-    <button class="${walletButtonClass}" data-filter-wallet="${escapeHtml(walletFilterValue)}" title="${escapeHtml(
-      row.walletTitle || row.wallet || walletText
-    )}" ${row.walletResolved ? "" : "disabled"}>${escapeHtml(walletText)}</button>
-    ${tracked}
-    ${badge(statusClass, statusLabel)}
+    <div class="lt-wallet-main">
+      <button class="${walletButtonClass}" data-filter-wallet="${escapeHtml(walletFilterValue)}" title="${escapeHtml(
+        row.walletTitle || row.wallet || walletText
+      )}" ${row.walletResolved ? "" : "disabled"}>${escapeHtml(walletText)}</button>
+      ${copyButton}
+    </div>
+    ${metaBits ? `<div class="lt-wallet-meta">${metaBits}</div>` : ""}
   </div>`;
+}
+
+function attachWalletCopyButtons(root) {
+  if (!root) return;
+  root.querySelectorAll("[data-copy-wallet]").forEach((button) => {
+    button.addEventListener("click", async (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const walletValue = String(button.getAttribute("data-copy-wallet") || "").trim();
+      if (!walletValue) return;
+      const original = button.textContent || "Copy";
+      try {
+        const copied = await copyTextToClipboard(walletValue);
+        button.textContent = copied ? "Copied" : "Copy failed";
+      } catch (_error) {
+        button.textContent = "Copy failed";
+      }
+      window.setTimeout(() => {
+        button.textContent = original;
+      }, 1400);
+    });
+  });
+}
+
+function scrollDetailPanelIntoView() {
+  const panel = el("lt-detail-panel");
+  if (!panel || panel.hidden) return;
+  panel.scrollIntoView({ behavior: "smooth", block: "start" });
+  window.requestAnimationFrame(() => {
+    if (panel instanceof HTMLElement) panel.focus({ preventScroll: true });
+  });
 }
 
 async function fetchJsonWithTimeout(url, timeoutMs = SNAPSHOT_TIMEOUT_MS, externalSignal = null) {
@@ -1617,13 +1698,15 @@ function renderPositionsTable(rows) {
     { key: "entry", label: "Entry", align: "right", sortKey: "entry" },
     { key: "mark", label: "Mark", align: "right", sortKey: "mark" },
     { key: "unrealized", label: "Unrealized", align: "right", sortKey: "unrealized" },
-    { key: "activity", label: "Opened / Updated", align: "left", sortKey: "activity" },
+    { key: "activity", label: "Opened", align: "left", sortKey: "openedAt" },
   ];
 
   head.innerHTML = `<tr>${columns
     .map(
       (col) =>
-        `<th class="${col.align === "right" ? "right" : "left"}" data-col="${escapeHtml(col.key)}"><button class="lt-table-sort-btn${
+        `<th class="${col.align === "right" ? "right" : "left"}" data-col="${escapeHtml(col.key)}" aria-sort="${
+          state.positionsSortKey === col.sortKey ? (state.positionsSortDir === "asc" ? "ascending" : "descending") : "none"
+        }"><button class="lt-table-sort-btn${
           state.positionsSortKey === col.sortKey ? " active" : ""
         }" type="button" data-position-sort-key="${escapeHtml(col.sortKey)}" data-position-sort-label="${escapeHtml(
           col.label
@@ -1672,14 +1755,11 @@ function renderPositionsTable(rows) {
       const updateText = row.updatedAt ? fmtAgo(row.updatedAt) : "-";
       const activityTone =
         row.freshness === "fresh" ? "fresh" : row.freshness === "stale" ? "stale" : "cooling";
-      return `<tr class="${isSelected ? "is-selected" : ""}" data-select-type="positions" data-select-key="${escapeHtml(row.key)}">
+      return `<tr class="${isSelected ? "is-selected" : ""}" data-select-type="positions" data-select-key="${escapeHtml(
+        row.key
+      )}" tabindex="0" aria-selected="${isSelected ? "true" : "false"}">
         <td class="left" data-col="wallet">
-          <div class="lt-wallet-cell">
-            ${renderWalletCell(row)}
-            <div class="lt-wallet-meta">
-              <span>${escapeHtml(row.walletLiveRank ? `#${fmtInt(row.walletLiveRank)} live rank` : "tracked wallet")}</span>
-            </div>
-          </div>
+          ${renderWalletCell(row, { showTrackedBadge: false, showFreshnessBadge: false, showCopyButton: true })}
         </td>
         <td class="left" data-col="symbol">
           <strong>${escapeHtml(row.symbol || "-")}</strong>
@@ -1720,9 +1800,10 @@ function renderPositionsTable(rows) {
       render();
     });
   });
+  attachWalletCopyButtons(body);
 
   body.querySelectorAll("tr[data-select-type='positions'][data-select-key]").forEach((rowNode) => {
-    rowNode.addEventListener("click", (event) => {
+    const selectRow = (event) => {
       const button = event.target.closest("button.lt-wallet-link");
       if (button) return;
       const row = rows.find(
@@ -1737,6 +1818,12 @@ function renderPositionsTable(rows) {
       } else {
         render();
       }
+    };
+    rowNode.addEventListener("click", selectRow);
+    rowNode.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      selectRow(event);
     });
   });
 }
@@ -1748,9 +1835,9 @@ function renderWalletsTable(rows) {
 
   const columns = [
     { key: "wallet", label: "Wallet", align: "left" },
-    { key: "pnl7", label: "Realized 7D", align: "right" },
-    { key: "pnl30", label: "Realized 30D", align: "right" },
-    { key: "pnlAll", label: "Realized All", align: "right" },
+    { key: "pnl7", label: "Realized 7D", align: "right", sortKey: "pnl7" },
+    { key: "pnl30", label: "Realized 30D", align: "right", sortKey: "pnl30" },
+    { key: "pnlAll", label: "Realized All", align: "right", sortKey: "pnlAll" },
     { key: "open", label: "Open Positions", align: "right" },
     { key: "activity", label: "Last Activity", align: "left" },
   ];
@@ -1758,11 +1845,39 @@ function renderWalletsTable(rows) {
   head.innerHTML = `<tr>${columns
     .map(
       (col) =>
-        `<th class="${col.align === "right" ? "right" : "left"}" data-col="${escapeHtml(col.key)}">${escapeHtml(
-          col.label
-        )}</th>`
+        `<th class="${col.align === "right" ? "right" : "left"}" data-col="${escapeHtml(col.key)}" aria-sort="${
+          col.sortKey && state.walletsSortKey === col.sortKey ? (state.walletsSortDir === "asc" ? "ascending" : "descending") : "none"
+        }">${
+          col.sortKey
+            ? `<button class="lt-table-sort-btn${
+                state.walletsSortKey === col.sortKey ? " active" : ""
+              }" type="button" data-wallet-sort-key="${escapeHtml(col.sortKey)}" data-wallet-sort-label="${escapeHtml(
+                col.label
+              )}">${escapeHtml(col.label)} <span data-wallet-sort-indicator>${
+                state.walletsSortKey === col.sortKey ? (state.walletsSortDir === "asc" ? "↑" : "↓") : "↑↓"
+              }</span></button>`
+            : escapeHtml(col.label)
+        }</th>`
     )
     .join("")}</tr>`;
+
+  head.querySelectorAll("[data-wallet-sort-key]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const nextKey = String(button.getAttribute("data-wallet-sort-key") || "").trim();
+      if (!nextKey) return;
+      if (state.walletsSortKey === nextKey) {
+        state.walletsSortDir = state.walletsSortDir === "asc" ? "desc" : "asc";
+      } else {
+        state.walletsSortKey = nextKey;
+        state.walletsSortDir = "desc";
+      }
+      state.pagination.wallets.page = 1;
+      fetchSnapshot()
+        .then((payload) => applyPayload(payload, "sort"))
+        .catch(() => {});
+      connectSse();
+    });
+  });
 
   if (!rows.length) {
     body.innerHTML =
@@ -1788,7 +1903,9 @@ function renderWalletsTable(rows) {
         ? fmtSignedUsd(row.realizedPnlUsd, 2)
         : "n/a";
       const lastActivity = row.lastActivity ? fmtAgo(row.lastActivity) : "-";
-      return `<tr class="${isSelected ? "is-selected" : ""}" data-select-type="wallets" data-select-key="${escapeHtml(row.key)}">
+      return `<tr class="${isSelected ? "is-selected" : ""}" data-select-type="wallets" data-select-key="${escapeHtml(
+        row.key
+      )}" tabindex="0" aria-selected="${isSelected ? "true" : "false"}">
         <td class="left" data-col="wallet">
           <div class="lt-wallet-cell">
             ${renderWalletCell(row)}
@@ -1830,9 +1947,10 @@ function renderWalletsTable(rows) {
       render();
     });
   });
+  attachWalletCopyButtons(body);
 
   body.querySelectorAll("tr[data-select-type='wallets'][data-select-key]").forEach((rowNode) => {
-    rowNode.addEventListener("click", (event) => {
+    const selectRow = (event) => {
       const button = event.target.closest("button.lt-wallet-link");
       if (button) return;
       const row = rows.find(
@@ -1847,8 +1965,42 @@ function renderWalletsTable(rows) {
       } else {
         render();
       }
+    };
+    rowNode.addEventListener("click", selectRow);
+    rowNode.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      selectRow(event);
     });
   });
+}
+
+function sortWalletRows(rows) {
+  const list = safeArray(rows).slice();
+  const key = String(state.walletsSortKey || "pnlAll").trim();
+  const dir = state.walletsSortDir === "asc" ? "asc" : "desc";
+  const numericValue = (row, sortKey) => {
+    if (sortKey === "pnl7") return n(row?.pnl7Usd, NaN);
+    if (sortKey === "pnl30") return n(row?.pnl30Usd, NaN);
+    if (sortKey === "pnlAll") return n(row?.realizedPnlUsd, NaN);
+    return NaN;
+  };
+  list.sort((left, right) => {
+    const leftVal = numericValue(left, key);
+    const rightVal = numericValue(right, key);
+    const leftMissing = !Number.isFinite(leftVal);
+    const rightMissing = !Number.isFinite(rightVal);
+    if (leftMissing && rightMissing) {
+      return tsMs(right?.lastActivity) - tsMs(left?.lastActivity);
+    }
+    if (leftMissing) return 1;
+    if (rightMissing) return -1;
+    if (leftVal === rightVal) {
+      return tsMs(right?.lastActivity) - tsMs(left?.lastActivity);
+    }
+    return dir === "asc" ? leftVal - rightVal : rightVal - leftVal;
+  });
+  return list;
 }
 
 function renderActiveView() {
@@ -1941,7 +2093,8 @@ async function openWalletDrawerForRow(row) {
     requestId,
     abortController,
   };
-  renderDetailDrawer();
+  renderDetailPanel();
+  scrollDetailPanelIntoView();
   try {
     const payload = await fetchJsonWithTimeout(
       `${WALLET_DETAIL_ENDPOINT_PREFIX}${encodeURIComponent(wallet)}`,
@@ -1971,7 +2124,8 @@ async function openWalletDrawerForRow(row) {
       abortController: null,
     };
   }
-  renderDetailDrawer();
+  renderDetailPanel();
+  scrollDetailPanelIntoView();
 }
 
 function renderWalletPositionsList(positions, sourceRow) {
@@ -2023,43 +2177,64 @@ function renderWalletPositionsList(positions, sourceRow) {
   </div>`;
 }
 
-function renderDetailDrawer() {
-  const drawer = el("lt-detail-drawer");
-  const appLayout = document.querySelector(".app-layout");
-  const drawerTitle = el("lt-drawer-title");
-  const drawerSubtitle = el("lt-drawer-subtitle");
-  const drawerKicker = el("lt-drawer-kicker");
-  const drawerBody = el("lt-drawer-body");
-  if (!drawer || !drawerTitle || !drawerSubtitle || !drawerKicker || !drawerBody) return;
+function renderAllocationBars(entries) {
+  const rows = safeArray(entries);
+  if (!rows.length) {
+    return '<div class="lt-drawer-empty">No concentration data available.</div>';
+  }
+  return `<div class="lt-allocation-list">
+    ${rows
+      .map((entry) => {
+        const pct = clamp(entry.sharePct, 0, 100);
+        return `<div class="lt-allocation-row">
+          <div class="lt-allocation-label">
+            <span class="lt-allocation-symbol">${escapeHtml(entry.symbol || "-")}</span>
+            <span class="lt-allocation-values">
+              <strong>${escapeHtml(fmtUsd(entry.volumeUsd, 2))}</strong>
+              <span>${escapeHtml(fmtPct(pct, 1))}</span>
+            </span>
+          </div>
+          <div class="lt-allocation-bar"><span style="width:${pct.toFixed(2)}%"></span></div>
+        </div>`;
+      })
+      .join("")}
+  </div>`;
+}
+
+function renderDetailPanel() {
+  const panel = el("lt-detail-panel");
+  const detailTitle = el("lt-detail-title");
+  const detailSubtitle = el("lt-detail-subtitle");
+  const detailKicker = el("lt-detail-kicker");
+  const detailBody = el("lt-detail-body");
+  if (!panel || !detailTitle || !detailSubtitle || !detailKicker || !detailBody) return;
 
   if (!state.drawer.wallet) {
-    drawer.hidden = true;
-    drawerBody.innerHTML = "";
-    if (appLayout) appLayout.classList.remove("lt-drawer-open");
+    panel.hidden = true;
+    detailBody.innerHTML = "";
     return;
   }
 
-  drawer.hidden = false;
-  if (appLayout) appLayout.classList.add("lt-drawer-open");
-  drawerKicker.textContent = "Wallet detail";
+  panel.hidden = false;
+  detailKicker.textContent = "Wallet detail";
 
   if (state.drawer.loading) {
-    drawerTitle.textContent =
+    detailTitle.textContent =
       state.drawer.sourceRow?.walletTitle ||
       state.drawer.sourceRow?.walletLabel ||
       shortWallet(state.drawer.wallet);
-    drawerSubtitle.textContent = "Loading wallet summary and open positions.";
-    drawerBody.innerHTML = '<div class="lt-drawer-empty">Loading wallet details...</div>';
+    detailSubtitle.textContent = "Loading wallet summary and open positions.";
+    detailBody.innerHTML = '<div class="lt-drawer-empty">Loading wallet details...</div>';
     return;
   }
 
   if (state.drawer.error) {
-    drawerTitle.textContent =
+    detailTitle.textContent =
       state.drawer.sourceRow?.walletTitle ||
       state.drawer.sourceRow?.walletLabel ||
       shortWallet(state.drawer.wallet);
-    drawerSubtitle.textContent = "Wallet detail unavailable";
-    drawerBody.innerHTML = `<div class="lt-drawer-empty">${escapeHtml(state.drawer.error)}</div>`;
+    detailSubtitle.textContent = "Wallet detail unavailable";
+    detailBody.innerHTML = `<div class="lt-drawer-empty">${escapeHtml(state.drawer.error)}</div>`;
     return;
   }
 
@@ -2067,9 +2242,9 @@ function renderDetailDrawer() {
   const summary = asObject(detail.summary);
   const positions = safeArray(detail.positions);
   const sourceRow = state.drawer.sourceRow || null;
-  drawerTitle.textContent =
+  detailTitle.textContent =
     sourceRow?.walletTitle || sourceRow?.walletLabel || shortWallet(detail.wallet || state.drawer.wallet);
-  drawerSubtitle.textContent = `${titleCase(summary.freshness || "unknown")} • ${
+  detailSubtitle.textContent = `${titleCase(summary.freshness || "unknown")} • ${
     summary.liveActiveRank ? `#${fmtInt(summary.liveActiveRank)} live` : "tracked wallet"
   }`;
 
@@ -2096,53 +2271,94 @@ function renderDetailDrawer() {
     totalTrades: all.trades,
   });
 
-  drawerBody.innerHTML = `
-    <section class="lt-drawer-section">
-      <h4>Realized wallet metrics</h4>
-      <div class="lt-drawer-grid">
-        <div class="lt-drawer-stat"><span>24H realized</span><strong class="${n(d24.pnlUsd, 0) >= 0 ? "up" : "down"}">${escapeHtml(fmtSignedUsd(d24.pnlUsd, 2))}</strong></div>
-        <div class="lt-drawer-stat"><span>7D realized</span><strong class="${n(d7.pnlUsd, 0) >= 0 ? "up" : "down"}">${escapeHtml(fmtSignedUsd(d7.pnlUsd, 2))}</strong></div>
-        <div class="lt-drawer-stat"><span>30D realized</span><strong class="${n(d30.pnlUsd, 0) >= 0 ? "up" : "down"}">${escapeHtml(fmtSignedUsd(d30.pnlUsd, 2))}</strong></div>
-        <div class="lt-drawer-stat"><span>All-time realized</span><strong class="${n(all.pnlUsd, 0) >= 0 ? "up" : "down"}">${escapeHtml(fmtSignedUsd(all.pnlUsd, 2))}</strong></div>
-        <div class="lt-drawer-stat"><span>7D win rate</span><strong>${escapeHtml(Number.isFinite(n(d7.winRatePct, NaN)) ? fmtPct(d7.winRatePct, 2) : "n/a")}</strong></div>
-        <div class="lt-drawer-stat"><span>All trades</span><strong>${escapeHtml(fmtInt(all.trades || 0))}</strong></div>
+  const walletAddress = detail.wallet || state.drawer.wallet;
+  const shortAddress = shortWallet(walletAddress, 8, 6);
+  const summaryParts = [];
+  if (Number.isFinite(n(all.winRatePct, NaN))) {
+    summaryParts.push(`Win Rate ${fmtPct(all.winRatePct, 2)}`);
+  }
+  if (Number.isFinite(n(all.trades, NaN))) {
+    summaryParts.push(`${fmtInt(all.trades)} trades`);
+  }
+  if (Number.isFinite(n(summary.exposureUsd, NaN))) {
+    summaryParts.push(`${fmtUsd(summary.exposureUsd, 2)} exposure`);
+  }
+
+  detailBody.innerHTML = `
+    <div class="lt-detail-header">
+      <div class="lt-detail-identity">
+        <span class="lt-detail-label">Wallet</span>
+        <span class="lt-detail-address">${escapeHtml(shortAddress)}</span>
+        <div class="lt-detail-actions">
+          <button type="button" class="lt-inline-copy" data-copy-wallet="${escapeHtml(walletAddress)}">Copy</button>
+        </div>
+      </div>
+      <div class="lt-detail-badges">
+        ${badge(summary.freshness === "fresh" ? "fresh" : summary.freshness === "stale" ? "stale" : "cool", titleCase(summary.freshness || "unknown"))}
+        ${badge("rank", `${fmtInt(summary.openPositions || positions.length)} open`)}
+      </div>
+    </div>
+    ${summaryParts.length ? `<div class="lt-detail-summary">${escapeHtml(summaryParts.join(" • "))}</div>` : ""}
+    <div class="lt-detail-kpi-grid">
+      <div class="lt-detail-kpi-card">
+        <span>24H Realized</span>
+        <strong class="${n(d24.pnlUsd, 0) >= 0 ? "up" : "down"}">${escapeHtml(fmtSignedUsd(d24.pnlUsd, 2))}</strong>
+      </div>
+      <div class="lt-detail-kpi-card">
+        <span>7D Realized</span>
+        <strong class="${n(d7.pnlUsd, 0) >= 0 ? "up" : "down"}">${escapeHtml(fmtSignedUsd(d7.pnlUsd, 2))}</strong>
+      </div>
+      <div class="lt-detail-kpi-card">
+        <span>30D Realized</span>
+        <strong class="${n(d30.pnlUsd, 0) >= 0 ? "up" : "down"}">${escapeHtml(fmtSignedUsd(d30.pnlUsd, 2))}</strong>
+      </div>
+      <div class="lt-detail-kpi-card">
+        <span>Total PnL</span>
+        <strong class="${n(summary.totalPnlUsd, 0) >= 0 ? "up" : "down"}">${escapeHtml(fmtSignedUsd(summary.totalPnlUsd || 0, 2))}</strong>
+      </div>
+    </div>
+    <section class="lt-detail-section-block">
+      <h4>Wallet posture</h4>
+      <div class="lt-detail-section-grid">
+        <div class="lt-detail-item">
+          <div class="lt-detail-item-label">Open positions</div>
+          <div class="lt-detail-item-value">${escapeHtml(fmtInt(summary.openPositions || positions.length))}</div>
+        </div>
+        <div class="lt-detail-item">
+          <div class="lt-detail-item-label">Exposure</div>
+          <div class="lt-detail-item-value">${escapeHtml(fmtUsd(summary.exposureUsd || 0, 2))}</div>
+        </div>
+        <div class="lt-detail-item">
+          <div class="lt-detail-item-label">Wallet unrealized</div>
+          <div class="lt-detail-item-value ${n(summary.unrealizedPnlUsd, 0) >= 0 ? "up" : "down"}">${escapeHtml(
+            fmtSignedUsd(summary.unrealizedPnlUsd || 0, 2)
+          )}</div>
+        </div>
+        <div class="lt-detail-item">
+          <div class="lt-detail-item-label">Last activity</div>
+          <div class="lt-detail-item-value">${escapeHtml(summary.lastActivityAt ? fmtTs(summary.lastActivityAt) : "-")}</div>
+        </div>
+        <div class="lt-detail-item">
+          <div class="lt-detail-item-label">Recent events</div>
+          <div class="lt-detail-item-value">${escapeHtml(fmtInt(summary.recentEvents15m || 0))} / 15m</div>
+        </div>
+        <div class="lt-detail-item">
+          <div class="lt-detail-item-label">Live score</div>
+          <div class="lt-detail-item-value">${escapeHtml(fmtInt(summary.liveActiveScore || 0))}</div>
+        </div>
       </div>
     </section>
-    <section class="lt-drawer-section">
-      <h4>Live / open posture</h4>
-      <div class="lt-drawer-grid">
-        <div class="lt-drawer-stat"><span>Open positions</span><strong>${escapeHtml(fmtInt(summary.openPositions || positions.length))}</strong></div>
-        <div class="lt-drawer-stat"><span>Exposure</span><strong>${escapeHtml(fmtUsd(summary.exposureUsd || 0, 2))}</strong></div>
-        <div class="lt-drawer-stat"><span>Wallet unrealized</span><strong class="${n(summary.unrealizedPnlUsd, 0) >= 0 ? "up" : "down"}">${escapeHtml(fmtSignedUsd(summary.unrealizedPnlUsd || 0, 2))}</strong></div>
-        <div class="lt-drawer-stat"><span>Total PnL</span><strong class="${n(summary.totalPnlUsd, 0) >= 0 ? "up" : "down"}">${escapeHtml(fmtSignedUsd(summary.totalPnlUsd || 0, 2))}</strong></div>
-        <div class="lt-drawer-stat"><span>Freshness</span><strong>${escapeHtml(titleCase(summary.freshness || "unknown"))}</strong></div>
-        <div class="lt-drawer-stat"><span>Last activity</span><strong>${escapeHtml(summary.lastActivityAt ? fmtTs(summary.lastActivityAt) : "-")}</strong></div>
-        <div class="lt-drawer-stat"><span>Recent events</span><strong>${escapeHtml(fmtInt(summary.recentEvents15m || 0))} / 15m</strong></div>
-        <div class="lt-drawer-stat"><span>Live score</span><strong>${escapeHtml(fmtInt(summary.liveActiveScore || 0))}</strong></div>
-      </div>
-    </section>
-    <section class="lt-drawer-section">
-      <h4>Open positions</h4>
-      ${renderWalletPositionsList(positions, sourceRow)}
-    </section>
-    <section class="lt-drawer-section">
-      <h4>Concentration</h4>
-      <div class="lt-drawer-list">
-        ${
-          safeArray(summary.concentration).length
-            ? safeArray(summary.concentration)
-                .map(
-                  (entry) =>
-                    `<div class="lt-drawer-list-item"><span>${escapeHtml(entry.symbol)}</span><strong>${escapeHtml(
-                      `${fmtUsd(entry.volumeUsd, 2)} • ${fmtPct(entry.sharePct, 1)}`
-                    )}</strong></div>`
-                )
-                .join("")
-            : '<div class="lt-drawer-empty">No concentration data available.</div>'
-        }
-      </div>
-    </section>
-    <section class="lt-drawer-section">
+    <div class="lt-detail-columns">
+      <section class="lt-detail-section-block">
+        <h4>Open positions</h4>
+        ${renderWalletPositionsList(positions, sourceRow)}
+      </section>
+      <section class="lt-detail-section-block">
+        <h4>Concentration</h4>
+        ${renderAllocationBars(summary.concentration)}
+      </section>
+    </div>
+    <section class="lt-detail-section-block">
       <h4>Behavior context</h4>
       <div class="lt-tag-group">
         ${
@@ -2153,6 +2369,7 @@ function renderDetailDrawer() {
       </div>
     </section>
   `;
+  attachWalletCopyButtons(detailBody);
 }
 
 function connectionState() {
@@ -2175,105 +2392,11 @@ function renderHealth(payload) {
     liveBadge.className = `lt-pill lt-pill-live ${status.className}`;
   }
 
-  const generatedAt = tsMs(payload?.generatedAt);
-  const syncUpdatedAt = tsMs(payload?.sync?.updatedAt);
-  const marketLastEventAt = tsMs(payload?.marketContext?.lastEventAt);
-  const eventAt = Math.max(generatedAt, syncUpdatedAt, marketLastEventAt, state.stream.lastEventAt || 0);
   const freshness = state.stream.lastPayloadAt ? Date.now() - state.stream.lastPayloadAt : null;
-  const walletFirst = asObject(payload?.summary?.walletFirstLive);
-  const openPositionsTotal = payloadPositionsTotal(payload);
-  const indexedWalletsTotal = payloadWalletsTotal(payload);
-
-  const lastEventNode = el("lt-last-event");
-  if (lastEventNode) lastEventNode.textContent = eventAt ? fmtTs(eventAt) : "-";
 
   const freshNode = el("lt-stage-freshness");
   if (freshNode) {
     freshNode.textContent = freshness === null ? "Freshness -" : `Freshness ${fmtInt(freshness)} ms`;
-  }
-
-  const connNode = el("lt-conn");
-  if (connNode) {
-    const wsStatus =
-      payload?.sync?.wsStatus ||
-      payload?.summary?.wsStatus ||
-      payload?.environment?.wsStatus ||
-      (state.stream.connection === "open" ? "open" : state.stream.connection || "unknown");
-    connNode.textContent = `${wsStatus || "unknown"} • ${fmtInt(n(payload?.marketContext?.eventsPerMin, 0))} ev/min`;
-  }
-
-  const latencyNode = el("lt-latency");
-  if (latencyNode) {
-    const lastPassMs = n(walletFirst.lastPassDurationMs, NaN);
-    const hotLoopSec = n(walletFirst.estimatedHotLoopSeconds, NaN);
-    if (Number.isFinite(lastPassMs) && Number.isFinite(hotLoopSec)) {
-      latencyNode.textContent = `Loop latency ${fmtInt(lastPassMs)} ms • hot ${fmtInt(hotLoopSec)}s`;
-    } else if (Number.isFinite(lastPassMs)) {
-      latencyNode.textContent = `Loop latency ${fmtInt(lastPassMs)} ms`;
-    } else {
-      latencyNode.textContent = "Loop latency -";
-    }
-  }
-
-  const coverageNode = el("lt-coverage");
-  if (coverageNode) {
-    coverageNode.textContent = `${fmtInt(openPositionsTotal)} positions • ${fmtInt(indexedWalletsTotal)} wallets`;
-  }
-
-  const attributionNode = el("lt-attribution");
-  if (attributionNode) {
-    const attribution = asObject(payload?.summary?.walletAttribution);
-    const tiers = asObject(attribution.tiers);
-    const hardPayload = Math.max(0, Math.floor(n(tiers.hard_payload, 0)));
-    const hardHistory = Math.max(0, Math.floor(n(tiers.hard_history_id, 0)));
-    const hardOrder = Math.max(0, Math.floor(n(tiers.hard_order_id, 0)));
-    const fallbackLi = Math.max(0, Math.floor(n(tiers.fallback_li, 0)));
-    const unresolved = Math.max(0, Math.floor(n(tiers.unresolved, 0)));
-    const coverageRaw = n(attribution.coveragePct, NaN);
-    const coverageSummaryRaw = n(payload?.summary?.publicTradesWalletCoveragePct, NaN);
-    const coverage = Number.isFinite(coverageRaw)
-      ? coverageRaw
-      : Number.isFinite(coverageSummaryRaw)
-      ? coverageSummaryRaw
-      : NaN;
-    const hasBreakdown =
-      hardPayload > 0 || hardHistory > 0 || hardOrder > 0 || fallbackLi > 0 || unresolved > 0;
-    if (!hasBreakdown && !Number.isFinite(coverage)) {
-      attributionNode.textContent = "Attribution unavailable";
-    } else {
-      const coverageText = Number.isFinite(coverage) ? `${fmtNum(coverage, 2)}%` : "-";
-      const txAttribution = asObject(payload?.summary?.txAttribution);
-      const txCoverageRaw = n(txAttribution.coveragePct, NaN);
-      const txCoverageSummaryRaw = n(payload?.summary?.publicTradesTxCoveragePct, NaN);
-      const txCoverage = Number.isFinite(txCoverageRaw)
-        ? txCoverageRaw
-        : Number.isFinite(txCoverageSummaryRaw)
-        ? txCoverageSummaryRaw
-        : NaN;
-      const txCoverageText = Number.isFinite(txCoverage) ? `${fmtNum(txCoverage, 2)}%` : "-";
-      attributionNode.textContent = `Wallet ${coverageText} • tx ${txCoverageText} • hard ${fmtInt(
-        hardHistory + hardOrder + hardPayload
-      )} • li ${fmtInt(fallbackLi)} • unresolved ${fmtInt(unresolved)}`;
-    }
-  }
-
-  const attributionGrowthNode = el("lt-attribution-growth");
-  if (attributionGrowthNode) {
-    const db = asObject(payload?.summary?.attributionDb);
-    const growth = asObject(db.growth);
-    const wallet1h = Math.max(0, Math.floor(n(growth.walletUpserts1h, 0)));
-    const wallet24h = Math.max(0, Math.floor(n(growth.walletUpserts24h, 0)));
-    const tx1h = Math.max(0, Math.floor(n(growth.txUpserts1h, 0)));
-    const tx24h = Math.max(0, Math.floor(n(growth.txUpserts24h, 0)));
-    const total1h = Math.max(0, Math.floor(n(growth.totalUpserts1h, wallet1h + tx1h)));
-    const total24h = Math.max(0, Math.floor(n(growth.totalUpserts24h, wallet24h + tx24h)));
-    const rate = n(growth.ratePerHour, NaN);
-    if (!db.enabled) {
-      attributionGrowthNode.textContent = "DB disabled";
-    } else {
-      const rateText = Number.isFinite(rate) ? fmtNum(rate, 2) : "-";
-      attributionGrowthNode.textContent = `+${fmtInt(total1h)}/1h • +${fmtInt(total24h)}/24h • ${rateText}/h`;
-    }
   }
 }
 
@@ -2487,7 +2610,7 @@ function render(options = {}) {
   const positionsFiltered = applyPositionFilters(rows.positions);
   const walletsFiltered = applyWalletFilters(rows.wallets);
   const walletGroupState = renderWalletRankingGroups(walletsFiltered);
-  const walletsActive = safeArray(walletGroupState?.activeRows);
+  const walletsActive = sortWalletRows(safeArray(walletGroupState?.activeRows));
   const positionsWindow = pageWindowFromSummary("positions", positionsFiltered.length);
   const walletsWindow = pageWindowFromSummary("wallets", walletsActive.length);
 
@@ -2497,7 +2620,7 @@ function render(options = {}) {
   renderWalletSupportNote(payload);
   renderPositionsTable(positionsFiltered);
   renderWalletsTable(walletsActive);
-  renderDetailDrawer();
+  renderDetailPanel();
   renderPagination("positions", positionsWindow);
   renderPagination("wallets", walletsWindow);
 }
@@ -2708,38 +2831,18 @@ function wireEvents() {
     render();
   });
 
-  el("lt-drawer-close")?.addEventListener("click", () => {
-    state.selection = { type: "", key: "" };
-    closeWalletDrawer();
-    render();
-  });
-
-  document.addEventListener("pointerdown", (event) => {
-    if (!state.selection.key && !state.drawer.wallet) return;
-    const drawer = el("lt-detail-drawer");
-    if (!drawer || drawer.hidden) return;
-    const target = event.target;
-    if (!(target instanceof Node)) return;
-    if (drawer.contains(target)) return;
-    const sidebar = document.querySelector(".sidebar");
-    if (sidebar instanceof Node && sidebar.contains(target)) return;
+  el("lt-detail-close")?.addEventListener("click", () => {
     state.selection = { type: "", key: "" };
     closeWalletDrawer();
     render();
   });
 
   window.addEventListener("keydown", (event) => {
-    if (event.key === "Escape" && (state.selection.key || state.drawer.wallet)) {
+  if (event.key === "Escape" && (state.selection.key || state.drawer.wallet)) {
       state.selection = { type: "", key: "" };
       closeWalletDrawer();
       render();
     }
-  });
-
-  el("lt-search")?.addEventListener("input", (event) => {
-    state.search = String(event.target.value || "");
-    resetPagination();
-    render();
   });
 
   el("lt-filter-wallet")?.addEventListener("input", (event) => {
@@ -2861,7 +2964,6 @@ function wireEvents() {
     };
 
     [
-      "lt-search",
       "lt-filter-wallet",
       "lt-filter-min-usd",
       "lt-filter-max-usd",
@@ -2881,33 +2983,6 @@ function wireEvents() {
     render();
   });
 
-  el("lt-refresh-btn")?.addEventListener("click", async () => {
-    try {
-      const payload = await fetchSnapshot();
-      applyPayload(payload, "manual");
-    } catch (_error) {
-      // keep UI alive
-    }
-  });
-
-  el("lt-pause-btn")?.addEventListener("click", () => {
-    state.stream.paused = !state.stream.paused;
-    const btn = el("lt-pause-btn");
-    if (btn) {
-      btn.textContent = state.stream.paused ? "Resume Stream" : "Pause Stream";
-      btn.setAttribute("aria-pressed", state.stream.paused ? "true" : "false");
-    }
-
-    if (state.stream.paused) {
-      stopEventSource();
-      clearFallbackPolling();
-      state.stream.connection = "paused";
-    } else {
-      connectSse();
-      ensureFallbackPolling();
-    }
-    render();
-  });
 }
 
 async function boot() {

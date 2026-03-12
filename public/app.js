@@ -4,6 +4,30 @@ if (typeof window !== "undefined") {
   window.__PF_APP_SCRIPT_EXECUTED = true;
   window.__PF_APP_BOOTED = false;
 }
+function defaultWalletFilters() {
+  return {
+    symbols: "",
+    side: "",
+    status: [],
+    openPositions: "",
+    minTrades: "",
+    maxTrades: "",
+    minVolumeUsd: "",
+    maxVolumeUsd: "",
+    minPnlUsd: "",
+    maxPnlUsd: "",
+    minWinRate: "",
+    maxWinRate: "",
+    minOpenPositions: "",
+    maxOpenPositions: "",
+    minExposureUsd: "",
+    maxExposureUsd: "",
+    firstTradeFrom: "",
+    firstTradeTo: "",
+    lastTradeFrom: "",
+    lastTradeTo: ""
+  };
+}
 const state = {
   view: "exchange",
   timeframe: "all",
@@ -20,6 +44,9 @@ const state = {
   wallets: null,
   walletProfile: null,
   walletSearch: "",
+  walletFilters: defaultWalletFilters(),
+  walletAppliedFilters: [],
+  walletAvailableSymbols: [],
   walletPage: 1,
   walletPageSize: 20,
   walletSortKey: "volumeUsd",
@@ -36,8 +63,10 @@ const refreshState = {
   walletProfile: null
 };
 const pollTimers = new Map();
+let walletSearchDebounceTimer = 0;
 let tickerResizeRaf = 0;
 let chartResizeRaf = 0;
+let walletFilterModalReturnFocus = null;
 let activeSeries = "monthly";
 let activeChartType = "bars";
 let chartHasUserControl = false;
@@ -157,6 +186,297 @@ function fmtTimeShort(ts) {
     hour: "2-digit",
     minute: "2-digit"
   });
+}
+function fmtDateOnly(ts) {
+  const num = Number(ts);
+  if (!Number.isFinite(num) || num <= 0) return "-";
+  return new Date(num).toLocaleDateString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "2-digit"
+  });
+}
+function titleCase(value) {
+  return String(value || "").replace(/[_-]+/g, " ").split(/\s+/).filter(Boolean).map(part => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase()).join(" ");
+}
+function shortWalletAddress(wallet) {
+  const value = String(wallet || "").trim();
+  if (!value) return "unknown";
+  if (value.length <= 12) return value;
+  return `${value.slice(0, 6)}...${value.slice(-4)}`;
+}
+async function copyTextToClipboard(text) {
+  var _navigator, _navigator$clipboard;
+  const value = String(text || "").trim();
+  if (!value) return false;
+  if ((_navigator = navigator) !== null && _navigator !== void 0 && (_navigator$clipboard = _navigator.clipboard) !== null && _navigator$clipboard !== void 0 && _navigator$clipboard.writeText) {
+    await navigator.clipboard.writeText(value);
+    return true;
+  }
+  const input = document.createElement("textarea");
+  input.value = value;
+  input.setAttribute("readonly", "readonly");
+  input.style.position = "fixed";
+  input.style.opacity = "0";
+  document.body.appendChild(input);
+  input.select();
+  let copied = false;
+  try {
+    copied = document.execCommand("copy");
+  } finally {
+    document.body.removeChild(input);
+  }
+  return copied;
+}
+function cloneWalletFilters(filters = {}) {
+  const next = defaultWalletFilters();
+  Object.entries(next).forEach(([key, fallback]) => {
+    const value = filters[key];
+    if (Array.isArray(fallback)) {
+      next[key] = Array.isArray(value) ? value.map(item => String(item || "").trim()).filter(Boolean) : [];
+    } else {
+      next[key] = value === undefined || value === null ? fallback : String(value);
+    }
+  });
+  return next;
+}
+function getActiveWalletFilterCount(filters = state.walletFilters) {
+  return Object.entries(filters || {}).reduce((count, [key, value]) => {
+    if (Array.isArray(value)) return count + value.filter(Boolean).length;
+    if (key === "symbols") {
+      return count + String(value || "").split(",").map(item => item.trim()).filter(Boolean).length;
+    }
+    return count + (String(value || "").trim() ? 1 : 0);
+  }, 0);
+}
+function appendWalletFilterParams(params, filters = state.walletFilters) {
+  const source = filters || {};
+  const appendIfValue = (key, value) => {
+    const normalized = String(value || "").trim();
+    if (normalized) params.set(key, normalized);
+  };
+  appendIfValue("symbols", source.symbols);
+  appendIfValue("side", source.side);
+  if (Array.isArray(source.status) && source.status.length) {
+    params.set("status", source.status.join(","));
+  }
+  appendIfValue("openPositions", source.openPositions);
+  appendIfValue("minTrades", source.minTrades);
+  appendIfValue("maxTrades", source.maxTrades);
+  appendIfValue("minVolumeUsd", source.minVolumeUsd);
+  appendIfValue("maxVolumeUsd", source.maxVolumeUsd);
+  appendIfValue("minPnlUsd", source.minPnlUsd);
+  appendIfValue("maxPnlUsd", source.maxPnlUsd);
+  appendIfValue("minWinRate", source.minWinRate);
+  appendIfValue("maxWinRate", source.maxWinRate);
+  appendIfValue("minOpenPositions", source.minOpenPositions);
+  appendIfValue("maxOpenPositions", source.maxOpenPositions);
+  appendIfValue("minExposureUsd", source.minExposureUsd);
+  appendIfValue("maxExposureUsd", source.maxExposureUsd);
+  appendIfValue("firstTradeFrom", source.firstTradeFrom);
+  appendIfValue("firstTradeTo", source.firstTradeTo);
+  appendIfValue("lastTradeFrom", source.lastTradeFrom);
+  appendIfValue("lastTradeTo", source.lastTradeTo);
+}
+function setWalletFilterButtonState() {
+  const count = getActiveWalletFilterCount();
+  const filterBtn = el("wallet-filter-btn");
+  const clearBtn = el("wallet-clear-filters-btn");
+  if (filterBtn) {
+    filterBtn.textContent = count > 0 ? `Filters (${count})` : "Filters";
+  }
+  if (clearBtn) {
+    clearBtn.hidden = count <= 0 && !state.walletSearch;
+  }
+}
+function renderWalletFilterSuggestions() {
+  const datalist = el("wallet-symbol-options");
+  if (!datalist) return;
+  const symbols = Array.isArray(state.walletAvailableSymbols) ? state.walletAvailableSymbols : [];
+  datalist.innerHTML = symbols.slice(0, 150).map(symbol => `<option value="${escapeHtml(symbol)}"></option>`).join("");
+}
+function renderWalletFilterSummary() {
+  const host = el("wallet-filter-summary");
+  if (!host) return;
+  const chips = [];
+  if (state.walletSearch) {
+    chips.push(`<button type="button" class="filter-chip" data-remove-wallet-filter="q"><span>Search</span><strong>${escapeHtml(state.walletSearch)}</strong><span class="filter-chip-x">×</span></button>`);
+  }
+  const applied = Array.isArray(state.walletAppliedFilters) ? state.walletAppliedFilters : [];
+  applied.forEach(item => {
+    const key = String((item === null || item === void 0 ? void 0 : item.key) || "").trim();
+    const label = String((item === null || item === void 0 ? void 0 : item.label) || key).trim();
+    const value = String((item === null || item === void 0 ? void 0 : item.value) || "").trim();
+    if (!key || !value) return;
+    const displayValue = key === "symbol" ? value.toUpperCase() : titleCase(value);
+    chips.push(`<button type="button" class="filter-chip" data-remove-wallet-filter="${escapeHtml(key)}" data-remove-wallet-filter-value="${escapeHtml(value)}"><span>${escapeHtml(label)}</span><strong>${escapeHtml(displayValue)}</strong><span class="filter-chip-x">×</span></button>`);
+  });
+  host.hidden = chips.length === 0;
+  host.innerHTML = chips.length ? `<div class="filter-chip-row">${chips.join("")}</div>` : "";
+  setWalletFilterButtonState();
+}
+function writeWalletFiltersToModal() {
+  const filters = cloneWalletFilters(state.walletFilters);
+  const setValue = (id, value) => {
+    const node = el(id);
+    if (node) node.value = value;
+  };
+  setValue("wallet-filter-symbols", filters.symbols);
+  setValue("wallet-filter-side", filters.side);
+  setValue("wallet-filter-open-positions", filters.openPositions);
+  setValue("wallet-filter-min-trades", filters.minTrades);
+  setValue("wallet-filter-max-trades", filters.maxTrades);
+  setValue("wallet-filter-min-volume", filters.minVolumeUsd);
+  setValue("wallet-filter-max-volume", filters.maxVolumeUsd);
+  setValue("wallet-filter-min-pnl", filters.minPnlUsd);
+  setValue("wallet-filter-max-pnl", filters.maxPnlUsd);
+  setValue("wallet-filter-min-win-rate", filters.minWinRate);
+  setValue("wallet-filter-max-win-rate", filters.maxWinRate);
+  setValue("wallet-filter-min-open-positions", filters.minOpenPositions);
+  setValue("wallet-filter-max-open-positions", filters.maxOpenPositions);
+  setValue("wallet-filter-min-exposure", filters.minExposureUsd);
+  setValue("wallet-filter-max-exposure", filters.maxExposureUsd);
+  setValue("wallet-filter-first-trade-from", filters.firstTradeFrom);
+  setValue("wallet-filter-first-trade-to", filters.firstTradeTo);
+  setValue("wallet-filter-last-trade-from", filters.lastTradeFrom);
+  setValue("wallet-filter-last-trade-to", filters.lastTradeTo);
+  document.querySelectorAll("[data-wallet-filter-status]").forEach(checkbox => {
+    checkbox.checked = filters.status.includes(String(checkbox.getAttribute("data-wallet-filter-status") || "").trim());
+  });
+  syncWalletFilterGroupState(filters);
+}
+function readWalletFiltersFromModal() {
+  const next = defaultWalletFilters();
+  const getValue = id => {
+    var _el;
+    return String(((_el = el(id)) === null || _el === void 0 ? void 0 : _el.value) || "").trim();
+  };
+  next.symbols = getValue("wallet-filter-symbols").split(",").map(item => item.trim().toUpperCase()).filter(Boolean).join(",");
+  next.side = getValue("wallet-filter-side");
+  next.openPositions = getValue("wallet-filter-open-positions");
+  next.minTrades = getValue("wallet-filter-min-trades");
+  next.maxTrades = getValue("wallet-filter-max-trades");
+  next.minVolumeUsd = getValue("wallet-filter-min-volume");
+  next.maxVolumeUsd = getValue("wallet-filter-max-volume");
+  next.minPnlUsd = getValue("wallet-filter-min-pnl");
+  next.maxPnlUsd = getValue("wallet-filter-max-pnl");
+  next.minWinRate = getValue("wallet-filter-min-win-rate");
+  next.maxWinRate = getValue("wallet-filter-max-win-rate");
+  next.minOpenPositions = getValue("wallet-filter-min-open-positions");
+  next.maxOpenPositions = getValue("wallet-filter-max-open-positions");
+  next.minExposureUsd = getValue("wallet-filter-min-exposure");
+  next.maxExposureUsd = getValue("wallet-filter-max-exposure");
+  next.firstTradeFrom = getValue("wallet-filter-first-trade-from");
+  next.firstTradeTo = getValue("wallet-filter-first-trade-to");
+  next.lastTradeFrom = getValue("wallet-filter-last-trade-from");
+  next.lastTradeTo = getValue("wallet-filter-last-trade-to");
+  next.status = Array.from(document.querySelectorAll("[data-wallet-filter-status]:checked")).map(checkbox => String(checkbox.getAttribute("data-wallet-filter-status") || "").trim()).filter(Boolean);
+  return next;
+}
+function openWalletFiltersModal() {
+  const modal = el("wallet-filter-modal");
+  if (!modal) return;
+  writeWalletFiltersToModal();
+  walletFilterModalReturnFocus = typeof document !== "undefined" && document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  modal.hidden = false;
+  modal.setAttribute("aria-hidden", "false");
+  document.body.classList.add("modal-open");
+  const filterBtn = el("wallet-filter-btn");
+  if (filterBtn) filterBtn.setAttribute("aria-expanded", "true");
+  window.requestAnimationFrame(() => {
+    const firstTarget = modal.querySelector(".filter-group[open] input, .filter-group[open] select, .filter-group[open] button") || modal.querySelector("input, select, button, [tabindex]:not([tabindex='-1'])");
+    if (firstTarget instanceof HTMLElement) firstTarget.focus();else if (modal.querySelector(".filter-modal") instanceof HTMLElement) modal.querySelector(".filter-modal").focus();
+  });
+}
+function closeWalletFiltersModal() {
+  const modal = el("wallet-filter-modal");
+  if (!modal) return;
+  modal.hidden = true;
+  modal.setAttribute("aria-hidden", "true");
+  document.body.classList.remove("modal-open");
+  const filterBtn = el("wallet-filter-btn");
+  if (filterBtn) filterBtn.setAttribute("aria-expanded", "false");
+  if (walletFilterModalReturnFocus instanceof HTMLElement) {
+    walletFilterModalReturnFocus.focus();
+  }
+  walletFilterModalReturnFocus = null;
+}
+async function applyWalletFiltersFromModal() {
+  state.walletFilters = readWalletFiltersFromModal();
+  state.walletPage = 1;
+  closeWalletFiltersModal();
+  await refreshWallets();
+}
+async function clearWalletFilters() {
+  state.walletFilters = defaultWalletFilters();
+  state.walletSearch = "";
+  const searchInput = el("wallet-search");
+  if (searchInput) searchInput.value = "";
+  state.walletPage = 1;
+  writeWalletFiltersToModal();
+  await refreshWallets();
+}
+function getWalletFilterGroupCounts(filters = state.walletFilters) {
+  const next = cloneWalletFilters(filters);
+  return {
+    activity: String(next.symbols || "").split(",").map(item => item.trim()).filter(Boolean).length + (next.side ? 1 : 0) + (next.openPositions ? 1 : 0) + next.status.length,
+    performance: [next.minTrades, next.maxTrades, next.minVolumeUsd, next.maxVolumeUsd, next.minPnlUsd, next.maxPnlUsd, next.minWinRate, next.maxWinRate].filter(item => String(item || "").trim()).length,
+    exposure: [next.minOpenPositions, next.maxOpenPositions, next.minExposureUsd, next.maxExposureUsd].filter(item => String(item || "").trim()).length,
+    dates: [next.firstTradeFrom, next.firstTradeTo, next.lastTradeFrom, next.lastTradeTo].filter(item => String(item || "").trim()).length
+  };
+}
+function syncWalletFilterGroupState(filters = state.walletFilters) {
+  const counts = getWalletFilterGroupCounts(filters);
+  const activeGroups = Object.entries(counts).filter(([, count]) => count > 0).map(([group]) => group);
+  const openGroup = activeGroups[0] || "activity";
+  document.querySelectorAll("[data-wallet-filter-group-count]").forEach(node => {
+    const group = String(node.getAttribute("data-wallet-filter-group-count") || "").trim();
+    node.textContent = String(counts[group] || 0);
+  });
+  document.querySelectorAll("[data-wallet-filter-group]").forEach(node => {
+    const group = String(node.getAttribute("data-wallet-filter-group") || "").trim();
+    if (!group) return;
+    node.open = group === openGroup;
+  });
+}
+function trapWalletFilterModalFocus(event) {
+  if (event.key !== "Tab") return;
+  const modal = el("wallet-filter-modal");
+  if (!modal || modal.hidden) return;
+  const focusable = Array.from(modal.querySelectorAll("button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), details summary, [tabindex]:not([tabindex='-1'])")).filter(node => node instanceof HTMLElement && !node.hidden && node.offsetParent !== null);
+  if (!focusable.length) return;
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  const active = document.activeElement;
+  if (event.shiftKey) {
+    if (active === first || !modal.contains(active)) {
+      event.preventDefault();
+      last.focus();
+    }
+    return;
+  }
+  if (active === last) {
+    event.preventDefault();
+    first.focus();
+  }
+}
+async function removeWalletFilterChip(key, value) {
+  const normalizedKey = String(key || "").trim();
+  if (!normalizedKey) return;
+  if (normalizedKey === "q") {
+    state.walletSearch = "";
+    const searchInput = el("wallet-search");
+    if (searchInput) searchInput.value = "";
+  } else if (normalizedKey === "symbol") {
+    const tokens = String(state.walletFilters.symbols || "").split(",").map(item => item.trim().toUpperCase()).filter(Boolean).filter(item => item !== String(value || "").trim().toUpperCase());
+    state.walletFilters.symbols = tokens.join(",");
+  } else if (normalizedKey === "status") {
+    state.walletFilters.status = state.walletFilters.status.filter(item => item !== String(value || "").trim().toLowerCase());
+  } else if (Object.prototype.hasOwnProperty.call(state.walletFilters, normalizedKey)) {
+    state.walletFilters[normalizedKey] = Array.isArray(state.walletFilters[normalizedKey]) ? [] : "";
+  }
+  state.walletPage = 1;
+  await refreshWallets();
 }
 function fmtAgo(ts) {
   const num = Number(ts);
@@ -764,7 +1084,7 @@ function formatBandLabel(timestamp) {
   return formatter.format(new Date(timestamp));
 }
 function renderDateBand(data) {
-  var _el, _el$dataset;
+  var _el2, _el2$dataset;
   const chartDateBand = el("chartDateBand");
   if (!chartDateBand) return;
   const track = chartDateBand.querySelector(".chart-date-track") || chartDateBand;
@@ -773,7 +1093,7 @@ function renderDateBand(data) {
   const total = data.length;
   const trackWidth = track.clientWidth || chartDateBand.clientWidth || 0;
   const ticks = buildDateBandTicks(data, trackWidth);
-  const chartMode = String(((_el = el("volumeChart")) === null || _el === void 0 ? void 0 : (_el$dataset = _el.dataset) === null || _el$dataset === void 0 ? void 0 : _el$dataset.chartType) || "");
+  const chartMode = String(((_el2 = el("volumeChart")) === null || _el2 === void 0 ? void 0 : (_el2$dataset = _el2.dataset) === null || _el2$dataset === void 0 ? void 0 : _el2$dataset.chartType) || "");
   const isLineMode = chartMode.startsWith("line");
   const minDistancePx = activeSeries === "monthly" ? 70 : isLineMode ? 92 : 84;
   let lastRight = -Infinity;
@@ -2638,20 +2958,23 @@ function renderWallets() {
       const pnlUsd = toNum(row === null || row === void 0 ? void 0 : row.pnlUsd, NaN);
       const firstTrade = (row === null || row === void 0 ? void 0 : row.firstTrade) || null;
       const lastTrade = (row === null || row === void 0 ? void 0 : row.lastTrade) || (row === null || row === void 0 ? void 0 : row.lastActivity) || (row === null || row === void 0 ? void 0 : row.updatedAt) || null;
+      const walletLabel = shortWalletAddress(row.wallet);
+      const isSelected = state.selectedWallet && state.selectedWallet === row.wallet;
       const fmtMoney = value => Number.isFinite(value) ? `${value > 0 ? "+" : value < 0 ? "-" : ""}$${fmt(Math.abs(value), 2)}` : "-";
-      return `<tr class="wallet-list-row" data-wallet="${row.wallet}">
-              <td class="wallet-cell" title="${row.wallet}">${row.wallet}</td>
-              <td>${fmt(row.trades || 0, 0)}</td>
-              <td>${Number.isFinite(toNum(row.volumeUsd, NaN)) ? `$${fmtCompact(row.volumeUsd)}` : "-"}</td>
-              <td>${fmt(row.totalWins || 0, 0)}</td>
-              <td>${fmt(row.totalLosses || 0, 0)}</td>
-              <td class="${pnlUsd >= 0 ? "good" : "bad"}">${fmtMoney(pnlUsd)}</td>
-              <td>${Number.isFinite(toNum(row.winRate, NaN)) ? `${fmt(row.winRate, 2)}%` : "-"}</td>
-              <td title="${escapeHtml(fmtTime(firstTrade))}">${escapeHtml(fmtTimeShort(firstTrade))}</td>
-              <td title="${escapeHtml(fmtTime(lastTrade))}">${escapeHtml(fmtTimeShort(lastTrade))}</td>
-              <td><button class="btn-ghost inspect-btn" data-wallet="${row.wallet}">Inspect</button></td>
+      return `<tr class="wallet-list-row${isSelected ? " is-selected" : ""}" data-wallet="${row.wallet}">
+              <td class="wallet-cell"><span class="wallet-cell-value">${escapeHtml(walletLabel)}</span></td>
+              <td class="wallet-metric-cell">${fmt(row.trades || 0, 0)}</td>
+              <td class="wallet-metric-cell">${Number.isFinite(toNum(row.volumeUsd, NaN)) ? `$${fmtCompact(row.volumeUsd)}` : "-"}</td>
+              <td class="wallet-metric-cell">${fmt(row.totalWins || 0, 0)}</td>
+              <td class="wallet-metric-cell">${fmt(row.totalLosses || 0, 0)}</td>
+              <td class="wallet-metric-cell ${pnlUsd >= 0 ? "good" : "bad"}">${fmtMoney(pnlUsd)}</td>
+              <td class="wallet-metric-cell">${fmt(row.openPositions || 0, 0)}</td>
+              <td class="wallet-metric-cell">${Number.isFinite(toNum(row.winRate, NaN)) ? `${fmt(row.winRate, 2)}%` : "-"}</td>
+              <td class="wallet-date-cell">${escapeHtml(fmtDateOnly(firstTrade))}</td>
+              <td class="wallet-date-cell">${escapeHtml(fmtDateOnly(lastTrade))}</td>
+              <td class="wallet-action-cell"><button class="btn-ghost inspect-btn" data-wallet="${row.wallet}">Inspect</button></td>
             </tr>`;
-    }).join("") : "<tr><td colspan='10' class='muted'>No wallets match the current filters.</td></tr>";
+    }).join("") : "<tr><td colspan='11' class='muted'>No wallets match the current filters.</td></tr>";
   }
   const prevBtn = el("wallet-prev-btn");
   const nextBtn = el("wallet-next-btn");
@@ -2667,6 +2990,10 @@ function syncWalletSortHeaders() {
     btn.dataset.sortDir = direction;
     btn.setAttribute("aria-pressed", isActive ? "true" : "false");
     btn.setAttribute("aria-label", `${btn.dataset.sortLabel || key} sort ${direction || "off"}`);
+    const th = btn.closest("th");
+    if (th) {
+      th.setAttribute("aria-sort", isActive ? direction === "asc" ? "ascending" : "descending" : "none");
+    }
     const indicator = btn.querySelector("[data-wallet-sort-indicator]");
     if (indicator) {
       indicator.textContent = isActive ? direction === "asc" ? "↑" : "↓" : "↑↓";
@@ -2674,66 +3001,195 @@ function syncWalletSortHeaders() {
   });
 }
 function renderWalletProfile() {
+  var _s$all, _s$all2, _s$all3, _s$d, _s$d2, _s$d3, _s$all4, _s$all5, _s$all6, _s$all7, _s$d4, _s$d5, _s$d6, _s$d7;
   const profile = state.walletProfile;
-  const kpiWrap = el("wallet-profile-kpis");
-  const symbolsBody = el("wallet-profile-symbols");
-  const positionsBody = el("wallet-profile-positions");
-  const closeBtn = el("wallet-profile-close");
   const panel = el("wallet-profile-panel");
-  const subtitle = el("wallet-profile-subtitle");
-  const appLayout = document.querySelector(".app-layout");
-  if (closeBtn && !closeBtn.dataset.bound) {
-    closeBtn.dataset.bound = "true";
-    closeBtn.addEventListener("click", () => {
-      state.selectedWallet = null;
-      state.walletProfile = null;
-      renderWalletProfile();
-    });
-  }
+  const body = el("wallet-profile-body");
+  const emptyCopy = el("wallet-profile-empty-copy");
+  if (!panel || !body || !emptyCopy) return;
   if (!profile || !profile.found || !profile.summary) {
-    setText("wallet-profile-id", "Select a wallet");
-    setText("wallet-profile-subtitle", "Wallet summary, live posture, and concentration.");
-    if (kpiWrap) {
-      kpiWrap.innerHTML = `<div class='muted'>${profile && profile.error ? escapeHtml(profile.error) : "No wallet selected."}</div>`;
-    }
-    if (symbolsBody) symbolsBody.innerHTML = "";
-    if (positionsBody) positionsBody.innerHTML = "";
-    if (panel) panel.hidden = true;
-    if (appLayout) appLayout.classList.remove("wallet-drawer-open");
+    emptyCopy.hidden = false;
+    const closeBtn = el("wallet-profile-close-btn");
+    if (closeBtn) closeBtn.hidden = true;
+    body.innerHTML = `<div class="empty-state">${profile && profile.error ? escapeHtml(profile.error) : "No wallet selected."}</div>`;
     return;
   }
-  if (panel) panel.hidden = false;
-  if (appLayout) appLayout.classList.add("wallet-drawer-open");
-  setText("wallet-profile-id", profile.wallet);
-  setText("wallet-profile-subtitle", `${String(profile.summary.freshness || "unknown")} • ${fmt(profile.summary.openPositions || 0, 0)} open positions`);
+  emptyCopy.hidden = true;
+  const closeBtn = el("wallet-profile-close-btn");
+  if (closeBtn) closeBtn.hidden = false;
   const s = profile.summary;
-  if (kpiWrap) {
-    var _s$d, _s$d2, _s$d3, _s$all;
-    kpiWrap.innerHTML = [["24H Realized", fmtSigned((_s$d = s.d24) === null || _s$d === void 0 ? void 0 : _s$d.pnlUsd, 2)], ["7D Realized", fmtSigned((_s$d2 = s.d7) === null || _s$d2 === void 0 ? void 0 : _s$d2.pnlUsd, 2)], ["30D Realized", fmtSigned((_s$d3 = s.d30) === null || _s$d3 === void 0 ? void 0 : _s$d3.pnlUsd, 2)], ["All-Time Realized", fmtSigned((_s$all = s.all) === null || _s$all === void 0 ? void 0 : _s$all.pnlUsd, 2)], ["Wallet Unrealized", fmtSigned(s.unrealizedPnlUsd, 2)], ["Open Positions", fmt(s.openPositions, 0)], ["Exposure", `$${fmtCompact(s.exposureUsd)}`], ["Last Activity", fmtTime(s.lastActivityAt)]].map(([label, value]) => `<div class="profile-kpi"><div>${label}</div><strong>${value}</strong></div>`).join("");
+  const positions = Array.isArray(profile.positions) ? profile.positions : [];
+  const topSymbols = Array.isArray(s.concentration) ? s.concentration : [];
+  const money = value => {
+    const num = toNum(value, NaN);
+    if (!Number.isFinite(num)) return "-";
+    return `${num > 0 ? "+" : num < 0 ? "-" : ""}$${fmt(Math.abs(num), 2)}`;
+  };
+  const shortAddress = shortWalletAddress(profile.wallet);
+  const totalVolume = toNum((_s$all = s.all) === null || _s$all === void 0 ? void 0 : _s$all.volumeUsd, 0);
+  const allTimePnl = toNum((_s$all2 = s.all) === null || _s$all2 === void 0 ? void 0 : _s$all2.pnlUsd, 0);
+  const allTimeTrades = toNum((_s$all3 = s.all) === null || _s$all3 === void 0 ? void 0 : _s$all3.trades, 0);
+  const has24h = Math.abs(toNum((_s$d = s.d24) === null || _s$d === void 0 ? void 0 : _s$d.volumeUsd, 0)) > 0 || Math.abs(toNum((_s$d2 = s.d24) === null || _s$d2 === void 0 ? void 0 : _s$d2.pnlUsd, 0)) > 0 || toNum((_s$d3 = s.d24) === null || _s$d3 === void 0 ? void 0 : _s$d3.trades, 0) > 0;
+  const topSymbolsHtml = topSymbols.length ? topSymbols.map(entry => {
+    const pct = Math.max(0, Math.min(100, Math.round(toNum(entry.sharePct, 0))));
+    const volumeLabel = `$${fmtCompact(entry.volumeUsd || 0)}`;
+    return `
+            <div class="wallet-symbol-row">
+              <div class="wallet-symbol-label">
+                <span class="wallet-symbol-name">${escapeHtml(entry.symbol || "-")}</span>
+                <span class="wallet-symbol-values">
+                  <strong>${escapeHtml(volumeLabel)}</strong>
+                  <span class="wallet-symbol-pct">${escapeHtml(`${pct}%`)}</span>
+                </span>
+              </div>
+              <div class="wallet-symbol-bar"><span style="width:${Math.max(0, Math.min(100, pct))}%"></span></div>
+            </div>
+          `;
+  }).join("") : `<div class="empty-state">No symbol data yet.</div>`;
+  const positionsHtml = positions.length ? `
+      <div class="wallet-positions-table-wrap">
+        <div class="wallet-positions-table-grid">
+          <div class="wallet-positions-head">
+            <div>Symbol</div>
+            <div>Side</div>
+            <div class="is-number">Position USD</div>
+            <div class="is-number">Entry</div>
+            <div class="is-number">Mark</div>
+            <div class="is-number">PnL</div>
+          </div>
+          <div class="wallet-positions-body">
+            ${positions.map(row => {
+    const longSide = toNum(row.size, 0) >= 0 && String(row.side || "").toLowerCase() !== "short";
+    const statusClass = toNum(row.unrealizedPnlUsd, 0) > 0 ? "good" : toNum(row.unrealizedPnlUsd, 0) < 0 ? "bad" : "";
+    return `
+                  <div class="wallet-positions-row">
+                    <div>${escapeHtml(row.symbol || "-")}</div>
+                    <div><span class="wallet-position-side ${longSide ? "long" : "short"}">${escapeHtml(longSide ? "Long" : "Short")}</span></div>
+                    <div class="is-number">${escapeHtml(`$${fmtCompact(row.positionUsd)}`)}</div>
+                    <div class="is-number">${escapeHtml(Number.isFinite(toNum(row.entry, NaN)) ? fmt(row.entry, 4) : "-")}</div>
+                    <div class="is-number">${escapeHtml(Number.isFinite(toNum(row.mark, NaN)) ? fmt(row.mark, 4) : "-")}</div>
+                    <div class="is-number"><span class="wallet-position-status ${statusClass}">${escapeHtml(money(row.unrealizedPnlUsd))}</span></div>
+                  </div>
+                `;
+  }).join("")}
+          </div>
+        </div>
+      </div>
+    ` : `<div class="empty-state">No open positions.</div>`;
+  const summaryParts = [];
+  if (Number.isFinite(toNum((_s$all4 = s.all) === null || _s$all4 === void 0 ? void 0 : _s$all4.winRatePct, NaN))) {
+    summaryParts.push(`Win Rate ${fmt(toNum(s.all.winRatePct, 0), 2)}%`);
   }
-  if (positionsBody) {
-    const rows = Array.isArray(profile.positions) ? profile.positions : [];
-    positionsBody.innerHTML = rows.length ? rows.map(row => `<tr>
-          <td>${row.symbol}</td>
-          <td>${String(row.side || "-").toUpperCase()}</td>
-          <td>$${fmtCompact(row.positionUsd)}</td>
-          <td>${Number.isFinite(toNum(row.entry, NaN)) ? fmt(row.entry, 4) : "-"}</td>
-          <td>${Number.isFinite(toNum(row.mark, NaN)) ? fmt(row.mark, 4) : "-"}</td>
-          <td class="${toNum(row.unrealizedPnlUsd, 0) >= 0 ? "good" : "bad"}">${fmtSigned(row.unrealizedPnlUsd, 2)}</td>
-          <td>${fmtTime(row.updatedAt)}</td>
-        </tr>`).join("") : "<tr><td colspan='7' class='muted'>No open positions tracked.</td></tr>";
+  if (allTimeTrades > 0) {
+    summaryParts.push(`Total Trades ${fmt(allTimeTrades, 0)}`);
   }
-  if (symbolsBody) {
-    const rows = Array.isArray(s.concentration) ? s.concentration : [];
-    symbolsBody.innerHTML = rows.map(row => `<tr>
-          <td>${row.symbol}</td>
-          <td>$${fmtCompact(row.volumeUsd)}</td>
-          <td>${fmt(row.sharePct, 2)}%</td>
-        </tr>`).join("");
-  }
+  const summaryLine = summaryParts.join(" · ");
+  body.innerHTML = `
+    <div class="wallet-detail-header">
+      <div class="wallet-detail-identity">
+        <span class="wallet-detail-label">Wallet</span>
+        <span class="wallet-detail-address">${escapeHtml(shortAddress)}</span>
+        <div class="wallet-detail-actions">
+          <button type="button" class="btn-ghost wallet-copy-btn" data-copy-wallet="${escapeHtml(profile.wallet)}">Copy</button>
+        </div>
+      </div>
+      <div class="wallet-detail-badges">
+        <div class="wallet-detail-badge-pill">
+          <span>Tracked</span>
+          <strong>${escapeHtml(titleCase(String(s.freshness || "unknown")))}</strong>
+        </div>
+        <div class="wallet-detail-badge-pill">
+          <span>Open positions</span>
+          <strong>${escapeHtml(fmt(s.openPositions || positions.length, 0))}</strong>
+        </div>
+      </div>
+    </div>
+    ${summaryLine ? `<div class="wallet-detail-summary">${escapeHtml(summaryLine)}</div>` : ""}
+    <div class="wallet-detail-kpi-grid">
+      <div class="wallet-detail-kpi-card">
+        <span>Total volume</span>
+        <strong>${escapeHtml(`$${fmtCompact(totalVolume)}`)}</strong>
+      </div>
+      <div class="wallet-detail-kpi-card">
+        <span>Wallet PnL</span>
+        <strong class="${allTimePnl >= 0 ? "good" : "bad"}">${escapeHtml(money(allTimePnl))}</strong>
+      </div>
+      <div class="wallet-detail-kpi-card">
+        <span>Total trades</span>
+        <strong>${escapeHtml(fmt(allTimeTrades, 0))}</strong>
+      </div>
+    </div>
+    <div class="wallet-detail-section-block">
+      <h4>All-time</h4>
+      <div class="wallet-detail-section-grid">
+        <div class="wallet-detail-item">
+          <div class="wallet-detail-item-label">Win rate</div>
+          <div class="wallet-detail-item-value">${Number.isFinite(toNum((_s$all5 = s.all) === null || _s$all5 === void 0 ? void 0 : _s$all5.winRatePct, NaN)) ? `${fmt(toNum(s.all.winRatePct, 0), 2)}%` : "N/A"}</div>
+        </div>
+        <div class="wallet-detail-item">
+          <div class="wallet-detail-item-label">First trade</div>
+          <div class="wallet-detail-item-value">${escapeHtml(fmtDateOnly((_s$all6 = s.all) === null || _s$all6 === void 0 ? void 0 : _s$all6.firstTrade))}</div>
+        </div>
+        <div class="wallet-detail-item">
+          <div class="wallet-detail-item-label">Last trade</div>
+          <div class="wallet-detail-item-value">${escapeHtml(fmtDateOnly((_s$all7 = s.all) === null || _s$all7 === void 0 ? void 0 : _s$all7.lastTrade))}</div>
+        </div>
+        <div class="wallet-detail-item">
+          <div class="wallet-detail-item-label">Exposure</div>
+          <div class="wallet-detail-item-value">${escapeHtml(`$${fmtCompact(s.exposureUsd)}`)}</div>
+        </div>
+        <div class="wallet-detail-item">
+          <div class="wallet-detail-item-label">Wallet unrealized</div>
+          <div class="wallet-detail-item-value ${toNum(s.unrealizedPnlUsd, 0) >= 0 ? "good" : "bad"}">${escapeHtml(money(s.unrealizedPnlUsd))}</div>
+        </div>
+      </div>
+    </div>
+    <div class="wallet-detail-section-block">
+      <h4>Last 24 hours</h4>
+      ${has24h ? `<div class="wallet-detail-section-grid">
+              <div class="wallet-detail-item">
+                <div class="wallet-detail-item-label">Trades</div>
+                <div class="wallet-detail-item-value">${escapeHtml(fmt(((_s$d4 = s.d24) === null || _s$d4 === void 0 ? void 0 : _s$d4.trades) || 0, 0))}</div>
+              </div>
+              <div class="wallet-detail-item">
+                <div class="wallet-detail-item-label">Volume</div>
+                <div class="wallet-detail-item-value">${escapeHtml(`$${fmtCompact(((_s$d5 = s.d24) === null || _s$d5 === void 0 ? void 0 : _s$d5.volumeUsd) || 0)}`)}</div>
+              </div>
+              <div class="wallet-detail-item">
+                <div class="wallet-detail-item-label">PnL</div>
+                <div class="wallet-detail-item-value ${toNum((_s$d6 = s.d24) === null || _s$d6 === void 0 ? void 0 : _s$d6.pnlUsd, 0) >= 0 ? "good" : "bad"}">${escapeHtml(money((_s$d7 = s.d24) === null || _s$d7 === void 0 ? void 0 : _s$d7.pnlUsd))}</div>
+              </div>
+            </div>` : `<div class="empty-state">No activity in the last 24 hours.</div>`}
+    </div>
+    <div class="wallet-detail-columns">
+      <div>
+        <h4>Top symbols</h4>
+        <div class="wallet-symbol-bars">${topSymbolsHtml}</div>
+      </div>
+      <div>
+        <h4>Open positions</h4>
+        ${positionsHtml}
+      </div>
+    </div>
+  `;
+  body.querySelectorAll("[data-copy-wallet]").forEach(button => {
+    button.addEventListener("click", async () => {
+      const walletValue = String(button.getAttribute("data-copy-wallet") || "").trim();
+      if (!walletValue) return;
+      const original = button.textContent || "Copy";
+      try {
+        const copied = await copyTextToClipboard(walletValue);
+        button.textContent = copied ? "Copied" : "Copy failed";
+      } catch (_error) {
+        button.textContent = "Copy failed";
+      }
+      window.setTimeout(() => {
+        button.textContent = original;
+      }, 1400);
+    });
+  });
 }
 function applyView(nextView, options = {}) {
-  var _el2, _el3;
   const skipRoute = Boolean(options.skipRoute);
   const replaceRoute = Boolean(options.replaceRoute);
   state.view = nextView;
@@ -2743,10 +3199,24 @@ function applyView(nextView, options = {}) {
     renderWalletProfile();
   }
   document.querySelectorAll(".tab-btn").forEach(btn => {
-    btn.classList.toggle("active", btn.dataset.view === nextView);
+    const isActive = btn.dataset.view === nextView;
+    btn.classList.toggle("active", isActive);
+    btn.setAttribute("aria-pressed", isActive ? "true" : "false");
   });
-  (_el2 = el("exchange-view")) === null || _el2 === void 0 ? void 0 : _el2.classList.toggle("active", nextView === "exchange");
-  (_el3 = el("wallets-view")) === null || _el3 === void 0 ? void 0 : _el3.classList.toggle("active", nextView === "wallets");
+  const exchangeView = el("exchange-view");
+  const walletsView = el("wallets-view");
+  if (exchangeView) {
+    const isActive = nextView === "exchange";
+    exchangeView.classList.toggle("active", isActive);
+    exchangeView.hidden = !isActive;
+    exchangeView.setAttribute("aria-hidden", isActive ? "false" : "true");
+  }
+  if (walletsView) {
+    const isActive = nextView === "wallets";
+    walletsView.classList.toggle("active", isActive);
+    walletsView.hidden = !isActive;
+    walletsView.setAttribute("aria-hidden", isActive ? "false" : "true");
+  }
   if (!skipRoute) {
     syncRouteFromState({
       replace: replaceRoute
@@ -2772,7 +3242,6 @@ async function refreshExchange() {
     }
     state.exchange = data;
     renderExchange();
-    renderIndexerProgressPanel();
     return data;
   });
 }
@@ -2826,8 +3295,9 @@ async function refreshVolumeSeries() {
     return state.volumeSeries;
   });
 }
-async function refreshWallets() {
+async function refreshWallets(options = {}) {
   return runSingleFlight("wallets", async () => {
+    var _data$filters, _data$filters2;
     const params = new URLSearchParams({
       timeframe: state.timeframe,
       q: state.walletSearch,
@@ -2836,8 +3306,16 @@ async function refreshWallets() {
       sort: state.walletSortKey,
       dir: state.walletSortDir
     });
+    appendWalletFilterParams(params, state.walletFilters);
+    if (options.force) {
+      params.set("force", "1");
+    }
     const data = await fetchJson(`/api/wallets?${params.toString()}`);
     state.wallets = data;
+    state.walletAppliedFilters = Array.isArray(data === null || data === void 0 ? void 0 : (_data$filters = data.filters) === null || _data$filters === void 0 ? void 0 : _data$filters.applied) ? data.filters.applied : [];
+    state.walletAvailableSymbols = Array.isArray(data === null || data === void 0 ? void 0 : (_data$filters2 = data.filters) === null || _data$filters2 === void 0 ? void 0 : _data$filters2.availableSymbols) ? data.filters.availableSymbols : [];
+    renderWalletFilterSuggestions();
+    renderWalletFilterSummary();
     renderWallets();
     return data;
   });
@@ -2845,6 +3323,7 @@ async function refreshWallets() {
 async function inspectWallet(wallet) {
   if (!wallet) return;
   state.selectedWallet = wallet;
+  renderWallets();
   return runSingleFlight("walletProfile", async () => {
     try {
       state.walletProfile = await fetchJson(`/api/live-trades/wallet/${encodeURIComponent(wallet)}`);
@@ -2865,23 +3344,8 @@ async function refreshAll() {
     await inspectWallet(state.selectedWallet).catch(() => null);
   }
 }
-async function setTrackedWallet() {
-  const input = el("account-input");
-  const wallet = input ? input.value.trim() : "";
-  await postJson("/api/config/account", {
-    account: wallet
-  });
-  state.walletPage = 1;
-  await refreshAll();
-}
-async function loadInitialWallet() {
-  const cfg = await fetchJson("/api/config/account");
-  if (el("account-input")) {
-    el("account-input").value = cfg.account || "";
-  }
-}
 function bindEvents() {
-  var _el4, _el5, _el6, _el7, _el8, _el9, _el10, _el11, _el12, _el13, _el14, _el15, _el16, _el17, _el18, _el19;
+  var _el3, _el4, _el5, _el6, _el7, _el8, _el9, _el10, _el11, _el12, _el13, _el14, _el15, _el16, _el17, _el18, _el19, _el20, _el21, _el22, _el23, _el24, _el25, _el26;
   document.querySelectorAll(".tab-btn").forEach(btn => {
     btn.addEventListener("click", () => applyView(btn.dataset.view));
   });
@@ -2895,65 +3359,113 @@ function bindEvents() {
       await refreshAll();
     });
   });
-  (_el4 = el("apply-account-btn")) === null || _el4 === void 0 ? void 0 : _el4.addEventListener("click", async () => {
-    await setTrackedWallet();
-  });
-  (_el5 = el("refresh-all-btn")) === null || _el5 === void 0 ? void 0 : _el5.addEventListener("click", async () => {
-    await postJson("/api/snapshot/refresh", {});
-    await postJson("/api/indexer/discover", {}).catch(() => null);
-    await postJson("/api/indexer/scan", {}).catch(() => null);
-    await refreshAll();
-  });
-  (_el6 = el("wallet-refresh-btn")) === null || _el6 === void 0 ? void 0 : _el6.addEventListener("click", async () => {
-    await refreshWallets();
+  (_el3 = el("wallet-refresh-btn")) === null || _el3 === void 0 ? void 0 : _el3.addEventListener("click", async () => {
+    await refreshWallets({
+      force: true
+    });
     if (state.selectedWallet) await inspectWallet(state.selectedWallet);
   });
-  (_el7 = el("wallet-reindex-btn")) === null || _el7 === void 0 ? void 0 : _el7.addEventListener("click", async () => {
-    const confirmed = window.confirm("Reindex from zero for all discovered wallets?\n\nThis keeps the discovered wallet registry, but clears per-wallet indexing progress/history.");
-    if (!confirmed) return;
-    try {
-      await postJson("/api/indexer/reset", {
-        preserveKnownWallets: true,
-        resetWalletStore: true,
-        clearHistoryFiles: true
-      });
-      await postJson("/api/indexer/discover", {}).catch(() => null);
-      await postJson("/api/indexer/scan", {}).catch(() => null);
-      state.walletPage = 1;
-      state.selectedWallet = null;
-      state.walletProfile = null;
-      await refreshAll();
-    } catch (error) {
-      window.alert(`Reindex reset failed: ${error.message}`);
-    }
-  });
-  (_el8 = el("wallet-search")) === null || _el8 === void 0 ? void 0 : _el8.addEventListener("input", async event => {
+  (_el4 = el("wallet-search")) === null || _el4 === void 0 ? void 0 : _el4.addEventListener("input", event => {
     state.walletSearch = event.target.value || "";
     state.walletPage = 1;
-    await refreshWallets();
+    renderWalletFilterSummary();
+    if (walletSearchDebounceTimer) {
+      window.clearTimeout(walletSearchDebounceTimer);
+    }
+    walletSearchDebounceTimer = window.setTimeout(() => {
+      refreshWallets().catch(() => null);
+    }, 180);
   });
-  (_el9 = el("wallet-page-size")) === null || _el9 === void 0 ? void 0 : _el9.addEventListener("change", async event => {
+  (_el5 = el("wallet-filter-btn")) === null || _el5 === void 0 ? void 0 : _el5.addEventListener("click", () => {
+    openWalletFiltersModal();
+  });
+  (_el6 = el("wallet-clear-filters-btn")) === null || _el6 === void 0 ? void 0 : _el6.addEventListener("click", async () => {
+    await clearWalletFilters();
+  });
+  (_el7 = el("wallet-filter-apply-btn")) === null || _el7 === void 0 ? void 0 : _el7.addEventListener("click", async () => {
+    await applyWalletFiltersFromModal();
+  });
+  (_el8 = el("wallet-filter-reset-btn")) === null || _el8 === void 0 ? void 0 : _el8.addEventListener("click", () => {
+    state.walletFilters = defaultWalletFilters();
+    writeWalletFiltersToModal();
+  });
+  (_el9 = el("wallet-filter-close-btn")) === null || _el9 === void 0 ? void 0 : _el9.addEventListener("click", () => {
+    closeWalletFiltersModal();
+  });
+  (_el10 = el("wallet-filter-modal")) === null || _el10 === void 0 ? void 0 : _el10.addEventListener("click", event => {
+    if (event.target === event.currentTarget) {
+      closeWalletFiltersModal();
+    }
+  });
+  (_el11 = el("wallet-filter-modal")) === null || _el11 === void 0 ? void 0 : _el11.addEventListener("input", () => {
+    syncWalletFilterGroupState(readWalletFiltersFromModal());
+  });
+  (_el12 = el("wallet-filter-modal")) === null || _el12 === void 0 ? void 0 : _el12.addEventListener("change", () => {
+    syncWalletFilterGroupState(readWalletFiltersFromModal());
+  });
+  (_el13 = el("wallet-filter-modal")) === null || _el13 === void 0 ? void 0 : _el13.addEventListener("toggle", event => {
+    const group = event.target;
+    if (!(group instanceof HTMLDetailsElement) || !group.matches("[data-wallet-filter-group]") || !group.open) return;
+    document.querySelectorAll("#wallet-filter-modal [data-wallet-filter-group]").forEach(node => {
+      if (node !== group) node.open = false;
+    });
+  });
+  document.addEventListener("keydown", event => {
+    const modal = el("wallet-filter-modal");
+    if (modal && !modal.hidden) {
+      if (event.key === "Escape") {
+        closeWalletFiltersModal();
+        return;
+      }
+      trapWalletFilterModalFocus(event);
+      return;
+    }
+    if (event.key === "Escape") {
+      closeWalletFiltersModal();
+    }
+  });
+  (_el14 = el("wallet-filter-summary")) === null || _el14 === void 0 ? void 0 : _el14.addEventListener("click", async event => {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) return;
+    const chip = target.closest("[data-remove-wallet-filter]");
+    if (!(chip instanceof HTMLElement)) return;
+    await removeWalletFilterChip(chip.getAttribute("data-remove-wallet-filter"), chip.getAttribute("data-remove-wallet-filter-value"));
+  });
+  (_el15 = el("wallet-page-size")) === null || _el15 === void 0 ? void 0 : _el15.addEventListener("change", async event => {
     state.walletPageSize = Number(event.target.value || 20);
     state.walletPage = 1;
     await refreshWallets();
   });
-  (_el10 = el("wallet-prev-btn")) === null || _el10 === void 0 ? void 0 : _el10.addEventListener("click", async () => {
+  (_el16 = el("wallet-prev-btn")) === null || _el16 === void 0 ? void 0 : _el16.addEventListener("click", async () => {
     state.walletPage = Math.max(1, state.walletPage - 1);
     await refreshWallets();
   });
-  (_el11 = el("wallet-next-btn")) === null || _el11 === void 0 ? void 0 : _el11.addEventListener("click", async () => {
+  (_el17 = el("wallet-next-btn")) === null || _el17 === void 0 ? void 0 : _el17.addEventListener("click", async () => {
     const pages = state.wallets && state.wallets.pages ? state.wallets.pages : 1;
     state.walletPage = Math.min(pages, state.walletPage + 1);
     await refreshWallets();
   });
-  (_el12 = el("wallet-table-body")) === null || _el12 === void 0 ? void 0 : _el12.addEventListener("click", async event => {
+  (_el18 = el("wallet-table-body")) === null || _el18 === void 0 ? void 0 : _el18.addEventListener("click", async event => {
     const target = event.target;
     if (!(target instanceof HTMLElement)) return;
     const btn = target.closest(".inspect-btn");
-    const row = target.closest(".wallet-list-row");
-    const wallet = (btn === null || btn === void 0 ? void 0 : btn.getAttribute("data-wallet")) || (row === null || row === void 0 ? void 0 : row.getAttribute("data-wallet"));
+    if (!btn) return;
+    const wallet = btn.getAttribute("data-wallet");
     if (!wallet) return;
     await inspectWallet(wallet);
+    const detailCard = el("wallet-profile-panel");
+    if (detailCard) {
+      detailCard.scrollIntoView({
+        behavior: "smooth",
+        block: "start"
+      });
+    }
+  });
+  (_el19 = el("wallet-profile-close-btn")) === null || _el19 === void 0 ? void 0 : _el19.addEventListener("click", () => {
+    state.selectedWallet = null;
+    state.walletProfile = null;
+    renderWallets();
+    renderWalletProfile();
   });
   document.querySelectorAll("[data-wallet-sort-key]").forEach(btn => {
     btn.addEventListener("click", async () => {
@@ -2969,7 +3481,7 @@ function bindEvents() {
       await refreshWallets();
     });
   });
-  (_el13 = el("volume-filter")) === null || _el13 === void 0 ? void 0 : _el13.addEventListener("input", event => {
+  (_el20 = el("volume-filter")) === null || _el20 === void 0 ? void 0 : _el20.addEventListener("input", event => {
     state.volumeFilter = String(event.target.value || "");
     state.volumeRankPage = 1;
     renderExchange();
@@ -2983,21 +3495,21 @@ function bindEvents() {
       renderExchange();
     });
   });
-  (_el14 = el("volume-prev-btn")) === null || _el14 === void 0 ? void 0 : _el14.addEventListener("click", () => {
+  (_el21 = el("volume-prev-btn")) === null || _el21 === void 0 ? void 0 : _el21.addEventListener("click", () => {
     state.volumeRankPage = Math.max(1, state.volumeRankPage - 1);
     renderExchange();
   });
-  (_el15 = el("volume-next-btn")) === null || _el15 === void 0 ? void 0 : _el15.addEventListener("click", () => {
+  (_el22 = el("volume-next-btn")) === null || _el22 === void 0 ? void 0 : _el22.addEventListener("click", () => {
     var _state$exchange11;
     const totalRows = Math.max(0, Number(state.volumeRankFilteredTotal || (Array.isArray((_state$exchange11 = state.exchange) === null || _state$exchange11 === void 0 ? void 0 : _state$exchange11.volumeRank) ? state.exchange.volumeRank.length : 0)));
     const totalPages = Math.max(1, Math.ceil(totalRows / Math.max(1, state.volumeRankPageSize)));
     state.volumeRankPage = Math.min(totalPages, state.volumeRankPage + 1);
     renderExchange();
   });
-  (_el16 = el("seriesDaily")) === null || _el16 === void 0 ? void 0 : _el16.addEventListener("click", () => updateSeriesToggle("daily"));
-  (_el17 = el("seriesWeekly")) === null || _el17 === void 0 ? void 0 : _el17.addEventListener("click", () => updateSeriesToggle("weekly"));
-  (_el18 = el("seriesMonthly")) === null || _el18 === void 0 ? void 0 : _el18.addEventListener("click", () => updateSeriesToggle("monthly"));
-  (_el19 = el("chartCumulative")) === null || _el19 === void 0 ? void 0 : _el19.addEventListener("click", () => updateChartType("line"));
+  (_el23 = el("seriesDaily")) === null || _el23 === void 0 ? void 0 : _el23.addEventListener("click", () => updateSeriesToggle("daily"));
+  (_el24 = el("seriesWeekly")) === null || _el24 === void 0 ? void 0 : _el24.addEventListener("click", () => updateSeriesToggle("weekly"));
+  (_el25 = el("seriesMonthly")) === null || _el25 === void 0 ? void 0 : _el25.addEventListener("click", () => updateSeriesToggle("monthly"));
+  (_el26 = el("chartCumulative")) === null || _el26 === void 0 ? void 0 : _el26.addEventListener("click", () => updateChartType("line"));
   const volumeChart = el("volumeChart");
   if (volumeChart) {
     volumeChart.addEventListener("wheel", handleChartWheel, {
@@ -3114,6 +3626,8 @@ async function init() {
     window.__PF_APP_BOOT_STEP = "bind_events";
   }
   bindEvents();
+  closeWalletFiltersModal();
+  renderWalletProfile();
   if (typeof window !== "undefined") {
     window.__PF_APP_BOOT_STEP = "background_motion";
   }
@@ -3124,10 +3638,6 @@ async function init() {
   applyRouteFromLocation({
     replace: true
   });
-  if (typeof window !== "undefined") {
-    window.__PF_APP_BOOT_STEP = "load_initial_wallet";
-  }
-  await loadInitialWallet().catch(() => null);
   if (typeof window !== "undefined") {
     window.__PF_APP_BOOT_STEP = "refresh_exchange";
   }
@@ -3141,7 +3651,10 @@ async function init() {
   }
   startPollingLoop("exchange", () => refreshExchange(), 8000);
   startPollingLoop("volumeSeries", () => refreshVolumeSeries(), 30000);
-  startPollingLoop("wallets", () => refreshWallets(), 12000);
+  startPollingLoop("wallets", () => {
+    if (state.view !== "wallets" && !state.selectedWallet) return Promise.resolve(null);
+    return refreshWallets();
+  }, 12000);
   startPollingLoop("walletProfile", () => {
     if (!state.selectedWallet) return Promise.resolve(null);
     return inspectWallet(state.selectedWallet);

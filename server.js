@@ -240,6 +240,9 @@ const ONCHAIN_PROGRAM_IDS = (() => {
     .filter(Boolean);
   return Array.from(new Set(raw));
 })();
+const TRIGGER_MENTION_ADDRESSES = Array.from(
+  new Set([...ONCHAIN_PROGRAM_IDS, ...ONCHAIN_DEPOSIT_VAULTS].filter(Boolean))
+);
 const ONCHAIN_EXCLUDE_ADDRESSES = String(process.env.PACIFICA_ONCHAIN_EXCLUDE_ADDRESSES || "")
   .split(",")
   .map((item) => normalizeAddress(item))
@@ -1721,6 +1724,7 @@ async function main() {
     triggerStore: liveWalletTriggerStore,
     logger: console,
     programIds: ONCHAIN_PROGRAM_IDS,
+    mentionAddresses: TRIGGER_MENTION_ADDRESSES,
     maxConcurrentTx: Math.max(1, Number(process.env.PACIFICA_SOLANA_LOG_TRIGGER_MAX_CONCURRENCY || 4)),
     maxWalletCandidates: Math.max(
       1,

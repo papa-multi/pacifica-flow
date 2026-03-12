@@ -181,6 +181,20 @@ class SolanaLogsTriggerMonitor {
           .filter(Boolean)
       )
     );
+    this.mentionAddresses = Array.from(
+      new Set(
+        (Array.isArray(options.mentionAddresses) ? options.mentionAddresses : this.programIds)
+          .map((item) => normalizeWallet(item))
+          .filter(Boolean)
+      )
+    );
+    this.mentionAddresses = Array.from(
+      new Set(
+        (Array.isArray(options.mentionAddresses) ? options.mentionAddresses : this.programIds)
+          .map((item) => normalizeWallet(item))
+          .filter(Boolean)
+      )
+    );
     this.maxConcurrentTx = Math.max(1, Number(options.maxConcurrentTx || 4));
     this.maxWalletCandidates = Math.max(1, Number(options.maxWalletCandidates || 6));
     this.txTimeoutMs = Math.max(1000, Number(options.txTimeoutMs || 10000));
@@ -199,7 +213,7 @@ class SolanaLogsTriggerMonitor {
     this.subscriptionIds = new Map();
 
     this.status = {
-      enabled: this.enabled && Boolean(this.wsUrl) && this.programIds.length > 0,
+      enabled: this.enabled && Boolean(this.wsUrl) && this.mentionAddresses.length > 0 && this.programIds.length > 0,
       wsUrl: this.wsUrl || null,
       subscriptions: 0,
       connection: "idle",
@@ -252,7 +266,7 @@ class SolanaLogsTriggerMonitor {
       this.status.connection = "open";
       this.pendingSubscribeIds.clear();
       this.subscriptionIds.clear();
-      this.programIds.forEach((programId) => {
+      this.mentionAddresses.forEach((programId) => {
         const id = ++this.rpcRequestId;
         this.pendingSubscribeIds.set(id, programId);
         ws.send(

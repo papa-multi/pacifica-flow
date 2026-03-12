@@ -187,6 +187,10 @@ class WalletFirstLivePositionsMonitor {
     this.walletStore = options.walletStore || null;
     this.hotWalletWsMonitor = options.hotWalletWsMonitor || null;
     this.triggerStore = options.triggerStore || null;
+    this.publicActiveWalletsProvider =
+      typeof options.publicActiveWalletsProvider === "function"
+        ? options.publicActiveWalletsProvider
+        : null;
     const entryCandidates = Array.isArray(options.restClientEntries)
       ? options.restClientEntries
       : [];
@@ -313,11 +317,13 @@ class WalletFirstLivePositionsMonitor {
     this.walletList = [];
     this.warmWalletList = [];
     this.highValueWalletList = [];
+    this.publicActiveWalletList = [];
     this.walletPriorityMeta = new Map();
     this.walletCursor = 0;
     this.openWalletCursor = 0;
     this.warmWalletCursor = 0;
     this.highValueWalletCursor = 0;
+    this.publicActiveWalletCursor = 0;
     this.recentActiveWalletCursor = 0;
     this.priorityWalletQueue = [];
     this.priorityWalletSet = new Set();
@@ -383,6 +389,7 @@ class WalletFirstLivePositionsMonitor {
       recentActiveWallets: 0,
       warmWallets: 0,
       highValueWallets: 0,
+      publicActiveWallets: 0,
       hotWsActiveWallets: 0,
       hotWsOpenConnections: 0,
       hotWsDroppedPromotions: 0,
@@ -637,6 +644,30 @@ class WalletFirstLivePositionsMonitor {
     this.updateCoverage();
   }
 
+  ensurePublicActiveWalletList() {
+    if (!this.publicActiveWalletsProvider) {
+      this.publicActiveWalletList = [];
+      this.status.publicActiveWallets = 0;
+      return;
+    }
+    const rows = this.publicActiveWalletsProvider();
+    const filtered = Array.isArray(rows)
+      ? rows
+          .map((wallet) => normalizeWallet(wallet))
+          .filter(Boolean)
+          .filter((wallet) =>
+            this.shardCount > 1
+              ? stableWalletHash(wallet) % this.shardCount === this.shardIndex
+              : true
+          )
+      : [];
+    this.publicActiveWalletList = filtered;
+    this.status.publicActiveWallets = filtered.length;
+    if (this.publicActiveWalletCursor >= this.publicActiveWalletList.length) {
+      this.publicActiveWalletCursor = 0;
+    }
+  }
+
   loadPersistedState() {
     this.loadedPersistedState = true;
     if (!this.persistPath) return;
@@ -864,7 +895,7 @@ class WalletFirstLivePositionsMonitor {
           recentTradeCount: priorityMeta ? priorityMeta.recentTradeCount : 0,
           liveActiveRank: priorityMeta ? priorityMeta.liveActiveRank : 0,
           priorityBoost: priorityMeta ? priorityMeta.priorityBoost : 0,
-          pinMs: this.warmReconcileMaxAgeMs,
+          pinMs: Math.max(this.tradeHoldMs || 0, Math.floor(this.hotReconcileMaxAgeMs / 2)),
         });
       }
     });
@@ -875,7 +906,10 @@ class WalletFirstLivePositionsMonitor {
       return;
     }
     if (!this.highValueWalletList.length) return;
-    const target = Math.max(this.hotWalletsPerPass * 2, this.recentActiveWalletsPerPass, 64);
+    const target = Math.min(
+      Math.max(Math.floor(this.hotWalletsPerPass / 2), Math.floor(this.recentActiveWalletsPerPass / 2), 48),
+      96
+    );
     const picked = [];
     const seen = new Set();
     this.pickRotatingWallets(
@@ -903,8 +937,45 @@ class WalletFirstLivePositionsMonitor {
         priorityBoost: meta.priorityBoost,
         pinMs:
           Number(meta.openPositions || 0) > 0
-            ? this.hotReconcileMaxAgeMs * 4
-            : this.warmReconcileMaxAgeMs,
+            ? this.hotReconcileMaxAgeMs * 3
+            : Math.max(this.tradeHoldMs || 0, Math.floor(this.warmReconcileMaxAgeMs / 2)),
+      });
+    });
+  }
+
+  promotePublicActiveWallets(now = Date.now()) {
+    if (!this.hotWalletWsMonitor || typeof this.hotWalletWsMonitor.promoteWallet !== "function") {
+      return;
+    }
+    if (!this.publicActiveWalletList.length) return;
+    const target = Math.min(Math.max(Math.floor(this.hotWalletsPerPass / 3), 32), 64);
+    const picked = [];
+    const seen = new Set();
+    this.pickRotatingWallets(
+      this.publicActiveWalletList,
+      Math.min(target, this.publicActiveWalletList.length),
+      "publicActiveWalletCursor",
+      seen,
+      picked
+    );
+    picked.forEach((wallet, idx) => {
+      const meta = this.walletPriorityMeta.get(wallet) || null;
+      this.hotWalletWsMonitor.promoteWallet(wallet, {
+        at: now,
+        reason: "public_active_wallet",
+        forceTier: Number(meta && meta.openPositions || 0) > 0 ? "hot" : "warm",
+        openPositions: Number(meta && meta.openPositions || 0) > 0,
+        recentVolumeUsd: meta ? meta.recentVolumeUsd : 0,
+        recentTradeCount: meta ? meta.recentTradeCount : 0,
+        liveActiveRank: idx + 1,
+        priorityBoost: Math.max(
+          35_000,
+          Number(meta && meta.priorityBoost ? meta.priorityBoost : 0) + 20_000
+        ),
+        pinMs:
+          Number(meta && meta.openPositions || 0) > 0
+            ? this.hotReconcileMaxAgeMs * 3
+            : Math.max(this.tradeHoldMs || 0, Math.floor(this.warmReconcileMaxAgeMs / 2)),
       });
     });
   }
@@ -931,7 +1002,9 @@ class WalletFirstLivePositionsMonitor {
         pinMs: this.hotReconcileMaxAgeMs * 4,
       });
     });
+    this.ensurePublicActiveWalletList();
     this.promoteHighValueWallets(Date.now());
+    this.promotePublicActiveWallets(Date.now());
   }
 
   observeWalletScanDuration(durationMs) {
@@ -991,10 +1064,12 @@ class WalletFirstLivePositionsMonitor {
 
   pickBatchWallets(availableSlots = 0) {
     this.ensureWalletList();
+    this.ensurePublicActiveWalletList();
     this.consumeExternalTriggers();
     if (!this.walletList.length) return [];
     const now = Date.now();
     this.pruneRecentActiveWallets(now);
+    this.promotePublicActiveWallets(now);
     this.promoteHighValueWallets(now);
 
     const target = this.computeBatchTarget(availableSlots);
@@ -1022,6 +1097,16 @@ class WalletFirstLivePositionsMonitor {
         recentActiveWallets,
         Math.min(target - picked.length, this.recentActiveWalletsPerPass, recentActiveWallets.length),
         "recentActiveWalletCursor",
+        seen,
+        picked
+      );
+    }
+
+    if (picked.length < target && this.publicActiveWalletList.length > 0 && this.hotWalletsPerPass > 0) {
+      this.pickRotatingWallets(
+        this.publicActiveWalletList,
+        Math.min(target - picked.length, this.hotWalletsPerPass, this.publicActiveWalletList.length),
+        "publicActiveWalletCursor",
         seen,
         picked
       );
@@ -1073,6 +1158,7 @@ class WalletFirstLivePositionsMonitor {
     this.status.recentActiveWallets = recentActiveWallets.length;
     this.status.warmWallets = this.warmWalletList.length;
     this.status.highValueWallets = this.highValueWalletList.length;
+    this.status.publicActiveWallets = this.publicActiveWalletList.length;
     this.status.priorityQueueDepth = this.priorityWalletQueue.length;
     this.status.hotReconcileDueWallets = hotDueWallets.length;
     this.status.warmReconcileDueWallets = warmDueWallets.length;
@@ -1111,8 +1197,10 @@ class WalletFirstLivePositionsMonitor {
         preferHealthy && requests >= 4
           ? Math.max(0, Math.round((1 - Math.max(0, Math.min(1, successRate))) * 50))
           : 0;
+      const sinceLastUseMs = Math.max(0, now - Number(state.lastUsedAt || 0));
+      const recencyPenalty = sinceLastUseMs <= 0 ? 40 : Math.max(0, Math.round((250 - Math.min(250, sinceLastUseMs)) / 5));
       const score =
-        inflight * 100 + latencyPenalty + timeoutPenalty + rateLimitPenalty + healthPenalty;
+        inflight * 100 + latencyPenalty + timeoutPenalty + rateLimitPenalty + healthPenalty + recencyPenalty;
       if (!best) {
         best = { idx, state, score };
         continue;
