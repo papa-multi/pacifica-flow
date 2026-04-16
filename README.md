@@ -130,19 +130,6 @@
 
 </details>
 
-## Run
-
-```bash
-npm install
-npm start
-```
-
-Open:
-
-```bash
-http://localhost:3200
-```
-
 ## Services
 
 - `pacifica-ui-api.service` for the UI/API shell
