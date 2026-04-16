@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Pacifica Wallet Dataset Materializer periodically
+
+[Timer]
+OnBootSec=45s
+OnUnitActiveSec=2min
+Unit=pacifica-wallet-materializer.service
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,10 @@
+[Unit]
+Description=Pacifica Wallet Explorer V2 Pending State Remote Sync Timer
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=2min
+Unit=pacifica-wallet-explorer-v2-pending-state-remote-sync.service
+
+[Install]
+WantedBy=timers.target

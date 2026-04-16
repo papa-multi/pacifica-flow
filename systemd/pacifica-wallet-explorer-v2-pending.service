@@ -1,0 +1,21 @@
+[Unit]
+Description=Pacifica Wallet Explorer V2 Pending Wallet Lane
+After=network-online.target
+Wants=network-online.target
+PartOf=pacifica-wallet-explorer-v2.target pacifica-flow.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/pacifica-flow
+EnvironmentFile=/root/pacifica-flow/config/runtime.env
+Nice=15
+IOSchedulingClass=idle
+OOMScoreAdjust=400
+ExecStart=/root/pacifica-flow/scripts/systemd/run_wallet_explorer_v2_heavy_lane.sh
+Restart=always
+RestartSec=5
+TimeoutStopSec=20
+
+[Install]
+WantedBy=pacifica-wallet-explorer-v2.target

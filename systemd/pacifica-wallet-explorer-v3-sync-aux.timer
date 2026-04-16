@@ -1,0 +1,11 @@
+[Unit]
+Description=Sync Wallet Explorer v3 Snapshot To Auxiliary Worker
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=5min
+Persistent=true
+Unit=pacifica-wallet-explorer-v3-sync-aux.service
+
+[Install]
+WantedBy=timers.target

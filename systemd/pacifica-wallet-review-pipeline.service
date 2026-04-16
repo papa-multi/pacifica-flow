@@ -1,0 +1,10 @@
+[Unit]
+Description=Pacifica Wallet Review Pipeline Snapshot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/root/pacifica-flow
+ExecStart=/root/pacifica-flow/scripts/systemd/build_wallet_review_pipeline_snapshot.sh
+

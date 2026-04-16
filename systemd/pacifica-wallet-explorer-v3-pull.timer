@@ -1,0 +1,11 @@
+[Unit]
+Description=Pull Wallet Explorer v3 Snapshot From Remote Writer
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=2min
+Persistent=true
+Unit=pacifica-wallet-explorer-v3-pull.service
+
+[Install]
+WantedBy=timers.target

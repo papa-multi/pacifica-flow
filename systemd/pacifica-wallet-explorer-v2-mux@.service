@@ -1,0 +1,21 @@
+[Unit]
+Description=Pacifica Wallet Explorer V2 Multiplex Worker %i
+After=network-online.target
+Wants=network-online.target
+PartOf=pacifica-wallet-explorer-v2.target pacifica-flow.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/pacifica-flow
+EnvironmentFile=/root/pacifica-flow/config/runtime.env
+Nice=12
+IOSchedulingClass=idle
+OOMScoreAdjust=300
+ExecStart=/root/pacifica-flow/scripts/systemd/run_wallet_explorer_v2_mux.sh %i
+Restart=always
+RestartSec=3
+TimeoutStopSec=20
+
+[Install]
+WantedBy=pacifica-wallet-explorer-v2.target

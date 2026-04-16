@@ -1,0 +1,14 @@
+[Unit]
+Description=Pull Wallet Explorer v3 From Remote Writer
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/root/pacifica-flow
+EnvironmentFile=-/root/pacifica-flow/config/runtime.env
+ExecStart=/bin/bash /root/pacifica-flow/scripts/systemd/pull_wallet_explorer_v3_remote.sh
+Nice=5
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7

@@ -1,0 +1,18 @@
+[Unit]
+Description=Pacifica Wallet Explorer V2 Materializer
+After=network-online.target
+Wants=network-online.target
+PartOf=pacifica-flow.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/root/pacifica-flow
+EnvironmentFile=/root/pacifica-flow/config/runtime.env
+Nice=15
+IOSchedulingClass=idle
+ExecStart=/root/pacifica-flow/scripts/systemd/run_wallet_explorer_v2_materializer.sh
+TimeoutStartSec=0
+
+[Install]
+WantedBy=multi-user.target

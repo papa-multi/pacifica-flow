@@ -1,0 +1,472 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PacificaFlow | Wallet Performance</title>
+    <link rel="icon" type="image/png" href="/favicon.png?v=20260412-walletperf1" />
+    <link rel="shortcut icon" type="image/png" href="/favicon.png?v=20260412-walletperf1" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png?v=20260412-walletperf1" />
+    <link rel="stylesheet" href="/theme.css?v=20260310-perf1" />
+    <link rel="stylesheet" href="/styles.css?v=20260411-volumerankhero10" />
+    <link rel="stylesheet" href="/wallet-performance/styles.css?v=20260413-wpfix8" />
+  </head>
+  <body class="wp-body">
+    <div class="wp-bg" aria-hidden="true">
+      <img class="wp-bg-image" src="/assets/bg_new_2048.webp" alt="" onerror="this.onerror=null;this.src='/assets/bg_new.png';" />
+      <div class="wp-bg-overlay"></div>
+    </div>
+
+    <div class="app-layout">
+      <aside class="sidebar">
+        <a class="brand sidebar-brand sidebar-brand-collapsed" href="/" aria-label="PacificaFlow home">
+          <span class="brand-mark">
+            <img src="/favicon.png?v=20260325-brand1" alt="Pacifica logo" width="40" height="40" decoding="async" />
+          </span>
+        </a>
+        <a class="brand sidebar-brand sidebar-brand-expanded" href="/" aria-label="PacificaFlow home">
+          <span class="brand-mark">
+            <img src="/favicon.png?v=20260325-brand1" alt="Pacifica logo" width="40" height="40" decoding="async" />
+          </span>
+          <span class="brand-stack">
+            <strong class="brand-wordmark-text">PacificaFlow</strong>
+            <span class="brand-sub">Exchange Intelligence Console</span>
+          </span>
+        </a>
+
+        <nav class="sidebar-nav">
+          <a class="tab-link" href="/">
+            <span class="nav-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M5 18V11"></path>
+                <path d="M12 18V6"></path>
+                <path d="M19 18V13"></path>
+                <path d="M4 18.5H20"></path>
+              </svg>
+            </span>
+            <span class="nav-label">Exchange Overview</span>
+          </a>
+          <a class="tab-link" href="/wallets-explorer/">
+            <span class="nav-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M4 8.5A2.5 2.5 0 0 1 6.5 6H18a2 2 0 0 1 2 2v1.5"></path>
+                <path d="M4 8.5v7A2.5 2.5 0 0 0 6.5 18H18a2 2 0 0 0 2-2v-5.5H15a2 2 0 0 1 0-4h5"></path>
+                <path d="M15 13h.01"></path>
+              </svg>
+            </span>
+            <span class="nav-label">Wallet Explorer</span>
+          </a>
+          <a class="tab-link" href="/coin/BTC">
+            <span class="nav-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 3 19 7v10l-7 4-7-4V7l7-4Z"></path>
+                <path d="M9.5 9.5h5v5h-5z"></path>
+              </svg>
+            </span>
+            <span class="nav-label">Coin Analysis</span>
+          </a>
+          <a class="tab-link active" href="/wallet-performance/" aria-current="page">
+            <span class="nav-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M4 18.5H20"></path>
+                <path d="M7 16v-4"></path>
+                <path d="M12 16V8"></path>
+                <path d="M17 16v-7"></path>
+              </svg>
+            </span>
+            <span class="nav-label">Wallet Performance</span>
+          </a>
+          <a class="tab-link" href="/social-cart/">
+            <span class="nav-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M5 7.5A1.5 1.5 0 0 1 6.5 6h8A1.5 1.5 0 0 1 16 7.5v9A1.5 1.5 0 0 1 14.5 18h-8A1.5 1.5 0 0 1 5 16.5z"></path>
+                <path d="M14 10l5-5"></path>
+                <path d="M15.5 5H19v3.5"></path>
+              </svg>
+            </span>
+            <span class="nav-label">Social Cart</span>
+          </a>
+          <a class="tab-link" href="/settings/" data-auth-when="authed" hidden>
+            <span class="nav-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7Z"></path>
+                <path d="M4.5 12a7.5 7.5 0 0 1 .08-1.1l1.72-.38a5.8 5.8 0 0 1 .77-1.87l-.96-1.49a7.5 7.5 0 0 1 1.56-1.56l1.49.96a5.8 5.8 0 0 1 1.87-.77L10.45 3.5A7.5 7.5 0 0 1 11.55 3h.9a7.5 7.5 0 0 1 1.1.08l.38 1.72a5.8 5.8 0 0 1 1.87.77l1.49-.96a7.5 7.5 0 0 1 1.56 1.56l-.96 1.49a5.8 5.8 0 0 1 .77 1.87l1.72.38A7.5 7.5 0 0 1 19.5 12a7.5 7.5 0 0 1-.08 1.1l-1.72.38a5.8 5.8 0 0 1-.77 1.87l.96 1.49a7.5 7.5 0 0 1-1.56 1.56l-1.49-.96a5.8 5.8 0 0 1-1.87.77l-.38 1.72A7.5 7.5 0 0 1 12 20.5h-.9a7.5 7.5 0 0 1-1.1-.08l-.38-1.72a5.8 5.8 0 0 1-1.87-.77l-1.49.96a7.5 7.5 0 0 1-1.56-1.56l.96-1.49a5.8 5.8 0 0 1-.77-1.87l-1.72-.38A7.5 7.5 0 0 1 4.5 12Z"></path>
+              </svg>
+            </span>
+            <span class="nav-label">Settings</span>
+          </a>
+          <a class="tab-link" href="/copy-trading/" data-auth-when="copy-trading" hidden>
+            <span class="nav-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M6 8.5h12"></path>
+                <path d="M8 12h8"></path>
+                <path d="M10 15.5h4"></path>
+                <path d="M7 5.5h10a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2v-9a2 2 0 0 1 2-2Z"></path>
+              </svg>
+            </span>
+            <span class="nav-label">Copy Trading</span>
+          </a>
+        </nav>
+      </aside>
+
+      <main class="shell">
+        <div class="shell-container">
+          <div class="wp-app">
+            <div id="wp-runtime-error" class="wp-runtime-error" hidden></div>
+
+            <section class="wp-hero">
+              <div class="wp-hero-copy">
+                <h1>Wallet Performance</h1>
+              </div>
+            </section>
+
+            <section class="wp-table-panel glass-panel wp-table-focused">
+              <header class="wp-panel-head wp-panel-head-no-title">
+                <div class="wp-panel-actions">
+                  <label class="wp-search-field" for="wp-search-input">
+                    <span>Wallet</span>
+                    <input id="wp-search-input" type="text" placeholder="Search wallet address" autocomplete="off" spellcheck="false" />
+                  </label>
+                  <button id="wp-open-filters" class="wp-btn" type="button">Filters</button>
+                </div>
+              </header>
+
+              <div class="wp-table-wrap">
+                <table class="wp-table">
+                  <thead>
+                    <tr>
+                      <th>
+                        <button class="wp-sort-btn" type="button" data-sort="wallet">Wallet</button>
+                      </th>
+                      <th>
+                        <button class="wp-sort-btn" type="button" data-sort="pnl7d">7D PnL</button>
+                      </th>
+                      <th>
+                        <button class="wp-sort-btn" type="button" data-sort="pnl30d">30D PnL</button>
+                      </th>
+                      <th>
+                        <button class="wp-sort-btn" type="button" data-sort="totalPnlUsd">Total PnL</button>
+                      </th>
+                      <th>
+                        <button class="wp-sort-btn" type="button" data-sort="displayOpenPositions">Open Positions</button>
+                      </th>
+                      <th class="wp-col-actions">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody id="wp-table-body">
+                    <tr>
+                      <td colspan="6" class="wp-empty-cell">Loading wallet performance…</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+
+              <footer class="wp-pagination">
+                <div class="wp-pagination-copy">
+                  <span id="wp-page-window" class="wp-pill">Rows 0-0</span>
+                  <span id="wp-page-total" class="wp-pill">Total rows: 0 • Total pages: 1</span>
+                </div>
+                <div class="wp-pagination-actions">
+                  <button id="wp-page-prev" class="wp-btn wp-btn-ghost" type="button">Previous</button>
+                  <span id="wp-page-info" class="wp-pill">Page 1 of 1</span>
+                  <button id="wp-page-next" class="wp-btn wp-btn-ghost" type="button">Next</button>
+                </div>
+              </footer>
+            </section>
+
+            <section id="wp-detail-panel" class="wp-detail-panel glass-panel" hidden>
+              <div id="wp-detail-loading" class="wp-detail-loading" hidden>
+                <div class="wp-detail-loading-brand">
+                  <img
+                    class="wp-detail-loading-logo"
+                    src="/favicon.png?v=20260325-brand1"
+                    alt="PacificaFlow"
+                    width="56"
+                    height="56"
+                    decoding="async"
+                  />
+                  <div class="wp-detail-loading-brand-copy">
+                    <strong>PacificaFlow</strong>
+                    <span id="wp-detail-loading-wallet">Loading wallet analytics</span>
+                  </div>
+                </div>
+                <div class="wp-detail-loading-progress-wrap">
+                  <div class="wp-detail-loading-track">
+                    <div id="wp-detail-loading-fill" class="wp-detail-loading-fill" style="width: 0%"></div>
+                  </div>
+                  <div class="wp-detail-loading-meta">
+                    <span id="wp-detail-loading-stage">Preparing dashboard…</span>
+                    <span id="wp-detail-loading-percent">0%</span>
+                  </div>
+                </div>
+              </div>
+
+              <div id="wp-detail-content" class="wp-detail-content">
+                <header class="wp-dashboard-head">
+                  <div class="wp-detail-title">
+                    <span class="wp-panel-kicker">wallet dashboard</span>
+                    <h2 id="wp-detail-wallet">Select a wallet</h2>
+                    <p id="wp-detail-subtitle">Wallet overview</p>
+                    <span id="wp-detail-updated" class="wp-dashboard-updated">Last updated: -</span>
+                  </div>
+                  <div class="wp-dashboard-actions">
+                    <button id="wp-copy-wallet" class="wp-btn wp-btn-ghost" type="button">Copy Wallet</button>
+                    <div class="wp-range-row" role="tablist" aria-label="Performance time range">
+                      <button class="wp-range-btn" type="button" data-range="7d">7D</button>
+                      <button class="wp-range-btn active" type="button" data-range="30d">30D</button>
+                      <button class="wp-range-btn" type="button" data-range="all">All Time</button>
+                    </div>
+                  </div>
+                </header>
+
+                <div id="wp-kpi-grid" class="wp-kpi-grid wp-kpi-grid-7"></div>
+
+                <section class="wp-chart-card wp-chart-card-clean">
+                  <div class="wp-section-head">
+                    <div>
+                      <span id="wp-chart-kicker" class="wp-panel-kicker">Portfolio trajectory</span>
+                      <h3 id="wp-chart-title">Portfolio trajectory</h3>
+                    </div>
+                    <div class="wp-chart-head-right">
+                      <div class="wp-chart-metric-toggle" role="tablist" aria-label="Chart metric">
+                        <button
+                          class="wp-chart-metric-btn active"
+                          type="button"
+                          data-chart-metric="equity"
+                          aria-label="Show equity chart"
+                        >
+                          Equity
+                        </button>
+                        <button
+                          class="wp-chart-metric-btn"
+                          type="button"
+                          data-chart-metric="pnl"
+                          aria-label="Show pnl chart"
+                        >
+                          PnL
+                        </button>
+                      </div>
+                      <span id="wp-chart-meta" class="wp-chart-meta-text">-</span>
+                    </div>
+                  </div>
+                  <div id="wp-chart-shell" class="wp-chart-shell"></div>
+                </section>
+
+                <section class="wp-subpanel wp-open-summary-panel">
+                  <div class="wp-section-head">
+                    <div>
+                      <span class="wp-panel-kicker">Open positions summary</span>
+                      <h3>Open positions</h3>
+                    </div>
+                  </div>
+                  <div class="wp-open-summary-grid">
+                    <div class="wp-open-summary-item">
+                      <span>In Profit</span>
+                      <strong id="wp-open-profit-count">0</strong>
+                    </div>
+                    <div class="wp-open-summary-item">
+                      <span>In Loss</span>
+                      <strong id="wp-open-loss-count">0</strong>
+                    </div>
+                    <div class="wp-open-summary-item">
+                      <span>Net Unrealized</span>
+                      <strong id="wp-open-net-unrealized">$0.00</strong>
+                    </div>
+                  </div>
+                </section>
+
+                <section class="wp-subpanel wp-detail-switcher-panel">
+                  <div class="wp-detail-switcher" role="tablist" aria-label="Wallet dashboard sections">
+                    <button
+                      class="wp-detail-switch-btn active"
+                      type="button"
+                      data-detail-section="history"
+                    >
+                      Deposits / Withdrawals
+                    </button>
+                    <button
+                      class="wp-detail-switch-btn"
+                      type="button"
+                      data-detail-section="positions"
+                    >
+                      Open Positions
+                    </button>
+                  </div>
+                </section>
+
+                <section class="wp-subpanel wp-detail-section-panel" data-detail-section-panel="positions" hidden>
+                  <div class="wp-section-head">
+                    <div>
+                      <span class="wp-panel-kicker">Open Positions</span>
+                      <h3></h3>
+                    </div>
+                    <span id="wp-positions-meta" class="wp-pill">0 positions</span>
+                  </div>
+                  <div class="wp-table-wrap wp-table-wrap-inner">
+                    <table class="wp-table wp-table-detail wp-positions-table">
+                      <colgroup>
+                        <col style="width: 20%" />
+                        <col style="width: 10%" />
+                        <col style="width: 13%" />
+                        <col style="width: 10%" />
+                        <col style="width: 10%" />
+                        <col style="width: 14%" />
+                        <col style="width: 11%" />
+                        <col style="width: 12%" />
+                      </colgroup>
+                      <thead>
+                        <tr>
+                          <th>Token</th>
+                          <th>Size</th>
+                          <th>Position Value</th>
+                          <th>Entry</th>
+                          <th>Mark Price</th>
+                          <th>PnL (ROI%)</th>
+                          <th>Liquidation</th>
+                          <th>Margin</th>
+                        </tr>
+                      </thead>
+                      <tbody id="wp-positions-body">
+                        <tr>
+                          <td colspan="8" class="wp-empty-cell">No wallet selected.</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </section>
+
+                <section class="wp-subpanel wp-detail-section-panel" data-detail-section-panel="history" hidden>
+                  <div class="wp-section-head">
+                    <div>
+                      <span class="wp-panel-kicker">Deposits / Withdrawals</span>
+                      <h3></h3>
+                    </div>
+                    <span id="wp-history-meta" class="wp-pill">0 entries</span>
+                  </div>
+                  <div class="wp-table-wrap wp-table-wrap-inner">
+                    <table class="wp-table wp-table-detail">
+                      <thead>
+                        <tr>
+                          <th>Time</th>
+                          <th>Amount</th>
+                          <th>Token</th>
+                        </tr>
+                      </thead>
+                      <tbody id="wp-history-body">
+                        <tr>
+                          <td colspan="3" class="wp-empty-cell">No wallet selected.</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </section>
+
+              </div>
+            </section>
+          </div>
+        </div>
+      </main>
+    </div>
+
+    <div id="wp-filter-modal" class="wp-modal" hidden>
+      <div class="wp-modal-backdrop" data-close-modal="true"></div>
+      <div class="wp-modal-card glass-panel" role="dialog" aria-modal="true" aria-labelledby="wp-filter-title">
+        <header class="wp-modal-head">
+          <div>
+            <span class="wp-panel-kicker">Custom Criteria</span>
+            <h2 id="wp-filter-title">Filter Wallets</h2>
+          </div>
+          <button id="wp-close-filters" class="wp-btn wp-btn-ghost" type="button">Close</button>
+        </header>
+
+        <div class="wp-filter-grid">
+          <label class="wp-filter-field">
+            <span>Min 7D PnL</span>
+            <input id="wp-filter-min-pnl7d" type="number" step="0.01" />
+          </label>
+          <label class="wp-filter-field">
+            <span>Max 7D PnL</span>
+            <input id="wp-filter-max-pnl7d" type="number" step="0.01" />
+          </label>
+          <label class="wp-filter-field">
+            <span>Min 30D PnL</span>
+            <input id="wp-filter-min-pnl30d" type="number" step="0.01" />
+          </label>
+          <label class="wp-filter-field">
+            <span>Max 30D PnL</span>
+            <input id="wp-filter-max-pnl30d" type="number" step="0.01" />
+          </label>
+          <label class="wp-filter-field">
+            <span>Min Total PnL</span>
+            <input id="wp-filter-min-total-pnl" type="number" step="0.01" />
+          </label>
+          <label class="wp-filter-field">
+            <span>Max Total PnL</span>
+            <input id="wp-filter-max-total-pnl" type="number" step="0.01" />
+          </label>
+          <label class="wp-filter-field">
+            <span>Min Open Positions</span>
+            <input id="wp-filter-min-open-positions" type="number" step="1" min="0" />
+          </label>
+          <label class="wp-filter-field">
+            <span>Max Open Positions</span>
+            <input id="wp-filter-max-open-positions" type="number" step="1" min="0" />
+          </label>
+          <label class="wp-filter-field">
+            <span>Min Equity</span>
+            <input id="wp-filter-min-equity" type="number" step="0.01" min="0" />
+          </label>
+          <label class="wp-filter-field">
+            <span>Max Equity</span>
+            <input id="wp-filter-max-equity" type="number" step="0.01" min="0" />
+          </label>
+        </div>
+
+        <footer class="wp-modal-actions">
+          <button id="wp-clear-filters" class="wp-btn wp-btn-ghost" type="button">Clear</button>
+          <button id="wp-apply-filters" class="wp-btn" type="button">Apply Filters</button>
+        </footer>
+      </div>
+    </div>
+
+    <script>
+      window.__PF_WALLET_PERFORMANCE_BOOTED = false;
+      function __pfWalletPerfShouldIgnoreRuntime(message, source, stack) {
+        var msg = String(message || "");
+        var src = String(source || "");
+        var trace = String(stack || "");
+        var combined = (msg + " " + src + " " + trace).toLowerCase();
+        if (combined.indexOf("cannot redefine property: ethereum") !== -1) return true;
+        if (combined.indexOf("cannot set property ethereum of #<window> which has only a getter") !== -1) return true;
+        if (src.indexOf("chrome-extension://") === 0) return true;
+        if (src.indexOf("moz-extension://") === 0) return true;
+        if (src.indexOf("safari-web-extension://") === 0) return true;
+        if (combined.indexOf("chrome-extension://") !== -1) return true;
+        if (combined.indexOf("moz-extension://") !== -1) return true;
+        return false;
+      }
+      function __pfWalletPerfReportRuntime(message) {
+        var node = document.getElementById("wp-runtime-error");
+        if (!node) return;
+        node.hidden = false;
+        node.textContent = message;
+      }
+      window.addEventListener("error", function (event) {
+        var message = (event && event.message) || "unknown";
+        var source = (event && event.filename) || "";
+        var stack = (event && event.error && event.error.stack) || "";
+        if (__pfWalletPerfShouldIgnoreRuntime(message, source, stack)) return;
+        __pfWalletPerfReportRuntime("Wallet Performance runtime error: " + message);
+      });
+      window.addEventListener("unhandledrejection", function (event) {
+        var reason = event && event.reason;
+        var message = String((reason && reason.message) || reason || "unknown");
+        var stack = String((reason && reason.stack) || "");
+        if (__pfWalletPerfShouldIgnoreRuntime(message, "", stack)) return;
+        __pfWalletPerfReportRuntime("Wallet Performance runtime error: " + message);
+      });
+    </script>
+    <script src="/auth-ui.js?v=20260413-authui1"></script>
+    <script src="/wallet-performance/app.js?v=20260413-wp-noorders1"></script>
+  </body>
+</html>

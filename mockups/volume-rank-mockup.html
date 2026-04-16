@@ -1,0 +1,561 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PacificaFlow - Volume Rank Mockup</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700;800&family=IBM+Plex+Mono:wght@500;600&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --page-width: min(1700px, calc(100vw - 72px));
+      --surface: rgba(248, 250, 252, 0.16);
+      --surface-2: rgba(248, 250, 252, 0.10);
+      --surface-3: rgba(248, 250, 252, 0.05);
+      --stroke: rgba(255, 255, 255, 0.18);
+      --stroke-soft: rgba(255, 255, 255, 0.09);
+      --text: rgba(244, 247, 249, 0.96);
+      --text-strong: rgba(255, 255, 255, 0.98);
+      --muted: rgba(225, 231, 236, 0.68);
+      --muted-2: rgba(220, 226, 232, 0.48);
+      --shadow: 0 28px 80px rgba(3, 9, 14, 0.14);
+      --shadow-soft: 0 14px 34px rgba(3, 9, 14, 0.06);
+      --green: rgba(64, 214, 145, 0.96);
+      --green-2: rgba(32, 191, 121, 0.92);
+      --red: rgba(255, 115, 125, 0.94);
+      --red-2: rgba(238, 72, 97, 0.90);
+      --track: rgba(255, 255, 255, 0.075);
+      --track-stroke: rgba(255, 255, 255, 0.10);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html, body {
+      height: 100%;
+    }
+
+    body {
+      margin: 0;
+      font-family: "Manrope", system-ui, sans-serif;
+      color: var(--text);
+      background:
+        linear-gradient(180deg, rgba(6, 10, 14, 0.10), rgba(6, 10, 14, 0.18)),
+        url("../public/assets/bg_new_2048.webp") center/cover fixed no-repeat;
+      overflow-x: hidden;
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.015), transparent 18%),
+        linear-gradient(90deg, rgba(255, 255, 255, 0.02), transparent 18%, transparent 82%, rgba(255, 255, 255, 0.015));
+      pointer-events: none;
+    }
+
+    .page {
+      position: relative;
+      width: var(--page-width);
+      margin: 0 auto;
+      padding: 42px 0 48px;
+    }
+
+    .context {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 24px;
+      margin-bottom: 22px;
+      padding: 0 6px;
+    }
+
+    .context-copy {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .eyebrow {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.22em;
+      text-transform: uppercase;
+      color: rgba(236, 242, 246, 0.54);
+    }
+
+    .page-title {
+      margin: 0;
+      font-size: 34px;
+      line-height: 0.96;
+      font-weight: 800;
+      letter-spacing: -0.045em;
+      color: var(--text-strong);
+    }
+
+    .page-subtitle {
+      margin: 0;
+      font-size: 14px;
+      line-height: 1.5;
+      color: var(--muted);
+      letter-spacing: -0.01em;
+    }
+
+    .context-meta {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      color: var(--muted-2);
+      font-size: 12px;
+    }
+
+    .meta-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 34px;
+      padding: 0 14px;
+      border-radius: 999px;
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      background: rgba(252, 253, 254, 0.08);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.10);
+      backdrop-filter: blur(10px) saturate(106%);
+      -webkit-backdrop-filter: blur(10px) saturate(106%);
+    }
+
+    .panel {
+      position: relative;
+      border-radius: 30px;
+      border: 1px solid var(--stroke);
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.30), rgba(255, 255, 255, 0.22)),
+        rgba(246, 248, 250, 0.18);
+      box-shadow:
+        var(--shadow),
+        inset 0 1px 0 rgba(255, 255, 255, 0.14);
+      backdrop-filter: blur(4px) saturate(34%) brightness(1.08);
+      -webkit-backdrop-filter: blur(4px) saturate(34%) brightness(1.08);
+      overflow: hidden;
+    }
+
+    .panel::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.16), transparent 14%),
+        linear-gradient(180deg, transparent 72%, rgba(255, 255, 255, 0.03));
+      opacity: 0.62;
+    }
+
+    .panel-header {
+      position: relative;
+      z-index: 1;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 24px;
+      align-items: end;
+      padding: 28px 30px 20px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.10);
+    }
+
+    .panel-title {
+      margin: 0;
+      font-size: 24px;
+      line-height: 1;
+      font-weight: 800;
+      letter-spacing: -0.04em;
+      color: rgba(28, 34, 40, 0.94);
+    }
+
+    .panel-subtitle {
+      margin: 8px 0 0;
+      max-width: 640px;
+      font-size: 13px;
+      line-height: 1.5;
+      color: rgba(72, 84, 96, 0.70);
+      letter-spacing: -0.01em;
+    }
+
+    .panel-controls {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .control-pill,
+    .search {
+      min-height: 36px;
+      border-radius: 999px;
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.15), rgba(255, 255, 255, 0.07)),
+        rgba(255, 255, 255, 0.05);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.10);
+      backdrop-filter: blur(4px) saturate(42%);
+      -webkit-backdrop-filter: blur(4px) saturate(42%);
+    }
+
+    .control-pill {
+      display: inline-flex;
+      align-items: center;
+      padding: 0 13px;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: rgba(52, 63, 74, 0.78);
+    }
+
+    .timestamp {
+      font-size: 12px;
+      color: rgba(82, 94, 106, 0.56);
+      white-space: nowrap;
+    }
+
+    .search {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      width: 220px;
+      padding: 0 14px;
+      color: rgba(60, 72, 84, 0.72);
+    }
+
+    .search svg {
+      width: 16px;
+      height: 16px;
+      flex: none;
+      opacity: 0.82;
+    }
+
+    .search span {
+      font-size: 13px;
+      letter-spacing: -0.01em;
+      color: rgba(90, 102, 114, 0.54);
+    }
+
+    .rows {
+      position: relative;
+      z-index: 1;
+      padding: 18px 18px 10px;
+    }
+
+    .row {
+      display: grid;
+      grid-template-columns: 54px 56px 170px minmax(280px, 1fr) 90px 140px;
+      align-items: center;
+      gap: 14px;
+      min-height: 70px;
+      padding: 12px 16px;
+      margin-bottom: 10px;
+      border-radius: 18px;
+      border: 1px solid rgba(255, 255, 255, 0.10);
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.28), rgba(255, 255, 255, 0.20)),
+        rgba(255, 255, 255, 0.12);
+      box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.10),
+        var(--shadow-soft);
+      backdrop-filter: none;
+      -webkit-backdrop-filter: none;
+    }
+
+    .rank {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 16px;
+      font-weight: 800;
+      letter-spacing: -0.03em;
+      color: rgba(76, 87, 97, 0.84);
+    }
+
+    .icon-wrap {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .icon {
+      width: 40px;
+      height: 40px;
+      display: grid;
+      place-items: center;
+      border-radius: 50%;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.16), rgba(255, 255, 255, 0.06)),
+        rgba(255, 255, 255, 0.05);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12);
+      overflow: hidden;
+    }
+
+    .icon img {
+      width: 24px;
+      height: 24px;
+      display: block;
+      object-fit: contain;
+    }
+
+    .symbol {
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      gap: 4px;
+      min-width: 0;
+    }
+
+    .ticker {
+      font-size: 17px;
+      line-height: 1;
+      font-weight: 800;
+      letter-spacing: -0.03em;
+      color: rgba(28, 34, 40, 0.94);
+    }
+
+    .name {
+      font-size: 11px;
+      line-height: 1.1;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: rgba(92, 103, 114, 0.54);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .bar-cell {
+      display: flex;
+      align-items: center;
+      min-width: 0;
+    }
+
+    .bar-track {
+      position: relative;
+      width: 100%;
+      height: 10px;
+      border-radius: 999px;
+      border: 1px solid var(--track-stroke);
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.07), rgba(255, 255, 255, 0.03)),
+        rgba(255, 255, 255, 0.06);
+      overflow: hidden;
+    }
+
+    .bar-fill {
+      position: absolute;
+      inset: 0 auto 0 0;
+      border-radius: inherit;
+      box-shadow: 0 0 10px rgba(64, 214, 145, 0.14);
+    }
+
+    .bar-fill.up {
+      background: linear-gradient(90deg, var(--green), var(--green-2));
+    }
+
+    .bar-fill.down {
+      background: linear-gradient(90deg, var(--red), var(--red-2));
+      box-shadow: 0 0 10px rgba(255, 115, 125, 0.14);
+    }
+
+    .share,
+    .volume {
+      font-family: "IBM Plex Mono", ui-monospace, monospace;
+      font-size: 13px;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+      white-space: nowrap;
+    }
+
+    .share {
+      text-align: center;
+      color: rgba(44, 54, 63, 0.90);
+    }
+
+    .volume {
+      text-align: right;
+      color: rgba(24, 31, 38, 0.94);
+    }
+
+    .panel-footer {
+      position: relative;
+      z-index: 1;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 10px 22px 22px;
+      color: rgba(88, 99, 110, 0.54);
+      font-size: 12px;
+    }
+
+    .footer-note {
+      color: rgba(92, 103, 114, 0.44);
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    .pager {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      padding: 6px 10px;
+      border-radius: 999px;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0.03)),
+        rgba(255, 255, 255, 0.02);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.10);
+    }
+
+    .pager-btn {
+      width: 22px;
+      height: 22px;
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      border: 1px solid rgba(255, 255, 255, 0.10);
+      background: rgba(255, 255, 255, 0.06);
+      color: rgba(244, 248, 251, 0.82);
+    }
+
+    .pager strong {
+      color: rgba(34, 41, 48, 0.94);
+      font-weight: 700;
+    }
+
+    @media (max-width: 1260px) {
+      :root {
+        --page-width: min(100vw - 32px, 1700px);
+      }
+
+      .row {
+        grid-template-columns: 48px 52px 150px minmax(220px, 1fr) 82px 124px;
+        gap: 12px;
+      }
+    }
+
+    @media (max-width: 960px) {
+      .context,
+      .panel-header {
+        grid-template-columns: 1fr;
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+      }
+
+      .panel-controls {
+        width: 100%;
+        justify-content: flex-start;
+      }
+
+      .search {
+        width: 100%;
+      }
+
+      .rows {
+        overflow-x: auto;
+      }
+
+      .row {
+        min-width: 860px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <div class="context">
+      <div class="context-copy">
+        <div class="eyebrow">PacificaFlow / Exchange Overview</div>
+        <h1 class="page-title">Volume Rank</h1>
+        <p class="page-subtitle">A wide desktop ranking strip built as a neutral frosted-glass section inside the live site frame.</p>
+      </div>
+      <div class="context-meta">
+        <span class="meta-chip">Desktop Mockup</span>
+      </div>
+    </div>
+
+    <section class="panel">
+      <div class="panel-header">
+        <div>
+          <h2 class="panel-title">Volume Rank</h2>
+          <p class="panel-subtitle">Market dominance by token with restrained glass surfaces, crisp PNG logos, and a simple green/red share system.</p>
+        </div>
+        <div class="panel-controls">
+          <span class="control-pill">ALL</span>
+          <div class="search">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <circle cx="11" cy="11" r="7"></circle>
+              <path d="M20 20l-3.8-3.8"></path>
+            </svg>
+            <span>Filter symbol</span>
+          </div>
+          <span class="timestamp">updated 1m ago</span>
+        </div>
+      </div>
+
+      <div class="rows" id="rows"></div>
+
+      <div class="panel-footer">
+        <span class="footer-note">10 assets / volume share</span>
+        <div class="pager">
+          <span class="pager-btn">&#8249;</span>
+          <strong>1</strong>
+          <span>/</span>
+          <span>4</span>
+          <span class="pager-btn">&#8250;</span>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    const rows = [
+      { rank: 1, symbol: "BTC", name: "Bitcoin", icon: "./assets/btc.png", share: 34.8, volume: "$82.19B", trend: "up" },
+      { rank: 2, symbol: "ETH", name: "Ethereum", icon: "./assets/eth.png", share: 21.4, volume: "$44.94B", trend: "up" },
+      { rank: 3, symbol: "SOL", name: "Solana", icon: "./assets/sol.png", share: 9.8, volume: "$6.13B", trend: "down" },
+      { rank: 4, symbol: "HYPE", name: "Hyperliquid", icon: "./assets/hype.png", share: 4.9, volume: "$3.22B", trend: "up" },
+      { rank: 5, symbol: "BNB", name: "BNB Chain", icon: "./assets/bnb.png", share: 2.8, volume: "$1.95B", trend: "up" },
+      { rank: 6, symbol: "XRP", name: "XRP Ledger", icon: "./assets/xrp.png", share: 1.9, volume: "$587.63M", trend: "down" },
+      { rank: 7, symbol: "ZEC", name: "Zcash", icon: "./assets/zec.png", share: 1.7, volume: "$528.07M", trend: "up" },
+      { rank: 8, symbol: "ENA", name: "Ethena", icon: "./assets/ena.png", share: 1.4, volume: "$371.29M", trend: "up" },
+      { rank: 9, symbol: "XPL", name: "Plasma", icon: "./assets/xpl.png", share: 1.1, volume: "$364.50M", trend: "down" },
+      { rank: 10, symbol: "ASTER", name: "Aster", icon: "./assets/aster.png", share: 0.9, volume: "$361.34M", trend: "up" }
+    ];
+
+    const container = document.getElementById("rows");
+    container.innerHTML = rows.map((row) => {
+      const width = Math.max(6, row.share);
+      return `
+        <article class="row">
+          <div class="rank">${row.rank}</div>
+          <div class="icon-wrap">
+            <div class="icon">
+              <img src="${row.icon}" alt="${row.symbol} logo" loading="eager" decoding="async" />
+            </div>
+          </div>
+          <div class="symbol">
+            <div class="ticker">${row.symbol}</div>
+            <div class="name">${row.name}</div>
+          </div>
+          <div class="bar-cell">
+            <div class="bar-track">
+              <div class="bar-fill ${row.trend}" style="width:${width}%"></div>
+            </div>
+          </div>
+          <div class="share">${row.share.toFixed(1)}%</div>
+          <div class="volume">${row.volume}</div>
+        </article>
+      `;
+    }).join("");
+  </script>
+</body>
+</html>

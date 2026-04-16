@@ -1,0 +1,17 @@
+[Unit]
+Description=Pacifica Wallet Explorer Public Detail Worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/root/pacifica-flow
+EnvironmentFile=-/root/pacifica-flow/config/runtime.env
+Environment=PACIFICA_PUBLIC_DETAIL_LOCAL_WORKERS=8
+Environment=PACIFICA_PUBLIC_DETAIL_HOT_LIMIT=160
+Environment=PACIFICA_PUBLIC_DETAIL_NON_HOT_LIMIT=60
+ExecStart=/bin/bash /root/pacifica-flow/scripts/systemd/run_wallet_explorer_public_detail_worker.sh
+Nice=5
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7

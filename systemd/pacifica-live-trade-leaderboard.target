@@ -1,0 +1,3 @@
+[Unit]
+Description=PacificaFlow Live Trade Leaderboard Workers
+Wants=pacifica-live-trade-leaderboard@0.service pacifica-live-trade-leaderboard@1.service pacifica-live-trade-leaderboard@2.service pacifica-live-trade-leaderboard@3.service pacifica-live-trade-leaderboard@4.service pacifica-live-trade-leaderboard@5.service pacifica-live-trade-leaderboard@6.service pacifica-live-trade-leaderboard@7.service

@@ -1,0 +1,18 @@
+[Unit]
+Description=PacificaFlow Live Trade Leaderboard API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/pacifica-flow
+Environment=PACIFICA_LIVE_TRADE_HOST=0.0.0.0
+Environment=PACIFICA_LIVE_TRADE_PORT=3335
+ExecStart=/root/pacifica-flow/scripts/systemd/run_live_trade_leaderboard_api.sh
+Restart=always
+RestartSec=3
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

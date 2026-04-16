@@ -1,0 +1,15 @@
+[Unit]
+Description=PacificaFlow Activation Soak Monitor
+After=network-online.target pacifica-ui-api.service pacifica-wallet-indexer.service pacifica-onchain-discovery.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/pacifica-flow
+ExecStart=/usr/bin/node /root/pacifica-flow/scripts/activation_soak_monitor.js
+Restart=always
+RestartSec=5
+Environment=PACIFICA_MONITOR_INTERVAL_MS=30000
+
+[Install]
+WantedBy=pacifica-flow.target

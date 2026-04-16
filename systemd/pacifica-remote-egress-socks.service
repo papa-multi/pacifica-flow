@@ -1,0 +1,15 @@
+[Unit]
+Description=PacificaFlow Remote Egress SOCKS Tunnel
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+EnvironmentFile=-/root/pacifica-flow/config/runtime.env
+ExecStart=/bin/bash -lc 'exec /usr/bin/ssh -N -D 127.0.0.1:19080 -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o BatchMode=yes -o StrictHostKeyChecking=accept-new -p "${PACIFICA_LIVE_REMOTE_PORT:-22}" "${PACIFICA_LIVE_REMOTE_USER:-root}@${PACIFICA_LIVE_REMOTE_HOST}"'
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

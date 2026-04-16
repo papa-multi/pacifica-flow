@@ -1,0 +1,10 @@
+[Unit]
+Description=Pacifica Wallet Explorer V2 Heavy Remote Sync
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/root/pacifica-flow
+ExecStart=/root/pacifica-flow/scripts/systemd/sync_wallet_explorer_heavy_remote.sh

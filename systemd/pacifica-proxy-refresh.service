@@ -5,13 +5,10 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-WorkingDirectory=/root/pacifica-proxy-lab
-Environment=PACIFICA_PROXY_LAB_CONCURRENCY=96
-Environment=PACIFICA_PROXY_LAB_TIMEOUT_MS=6000
-Environment=PACIFICA_PROXY_LAB_POSITIONS_ROUNDS=2
-Environment=PACIFICA_PROXY_LAB_PRICES_ROUNDS=0
-Environment=PACIFICA_PROXY_LAB_LEADERBOARD_ROUNDS=0
-Environment=PACIFICA_PROXY_LAB_USE_FILE=promote
-Environment=PACIFICA_PROXY_LAB_MIN_NEW_PROXIES=1
-ExecStartPre=/usr/bin/bash -n /root/pacifica-proxy-lab/scripts/refresh_and_apply.sh
-ExecStart=/root/pacifica-proxy-lab/scripts/refresh_and_apply.sh
+WorkingDirectory=/root/pacifica-flow
+Environment=PACIFICA_PROXY_TEST_CONCURRENCY=96
+Environment=PACIFICA_PROXY_TEST_TIMEOUT_MS=6000
+Environment=PACIFICA_POSITIONS_PROXY_POOL_MIN_OK=200
+Environment=PACIFICA_DETECTOR_PROXY_POOL_MIN_OK=200
+ExecStartPre=/usr/bin/bash -n /root/pacifica-flow/scripts/refresh_live_proxy_pools.sh
+ExecStart=/root/pacifica-flow/scripts/refresh_live_proxy_pools.sh

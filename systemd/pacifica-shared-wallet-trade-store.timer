@@ -1,0 +1,10 @@
+[Unit]
+Description=Pacifica Shared Wallet Trade Store Builder Timer
+
+[Timer]
+OnBootSec=3min
+OnUnitInactiveSec=15min
+Unit=pacifica-shared-wallet-trade-store.service
+
+[Install]
+WantedBy=timers.target

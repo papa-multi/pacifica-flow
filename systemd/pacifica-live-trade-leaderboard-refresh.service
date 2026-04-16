@@ -1,0 +1,10 @@
+[Unit]
+Description=PacificaFlow Live Trade Leaderboard Refresh
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/root/pacifica-flow
+ExecStart=/root/pacifica-flow/scripts/systemd/run_live_trade_leaderboard_refresh.sh

@@ -1,0 +1,11 @@
+[Unit]
+Description=PacificaFlow Live Positions Watchdog
+After=network-online.target pacifica-live-positions.target
+Wants=network-online.target pacifica-live-positions.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/root/pacifica-flow
+ExecStart=/root/pacifica-flow/scripts/systemd/check_live_positions_health.sh
+

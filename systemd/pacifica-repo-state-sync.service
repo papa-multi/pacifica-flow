@@ -1,0 +1,12 @@
+[Unit]
+Description=PacificaFlow Repo State Snapshot and Push
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/root/pacifica-flow
+ExecStart=/bin/bash -lc '/root/pacifica-flow/scripts/systemd/run_repo_state_sync.sh'
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7

@@ -1,0 +1,20 @@
+[Unit]
+Description=Pacifica Wallet Review Runtime Worker %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/pacifica-flow
+EnvironmentFile=/root/pacifica-flow/config/runtime.env
+ExecStart=/bin/bash -lc '/root/pacifica-flow/scripts/systemd/run_wallet_review_runtime.sh %i "${PACIFICA_WALLET_REVIEW_RUNTIME_INSTANCES:-4}"'
+Restart=always
+RestartSec=2
+TimeoutStopSec=20
+KillMode=mixed
+Nice=-2
+OOMScoreAdjust=-500
+
+[Install]
+WantedBy=multi-user.target

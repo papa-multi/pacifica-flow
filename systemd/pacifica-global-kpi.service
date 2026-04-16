@@ -18,7 +18,7 @@ Environment=PACIFICA_INDEXER_ENABLED=false
 Environment=PACIFICA_INDEXER_RUNNER_ENABLED=false
 Environment=PACIFICA_ONCHAIN_ENABLED=false
 Environment=PACIFICA_ONCHAIN_RUNNER_ENABLED=false
-ExecStart=/usr/bin/env PORT=3203 /usr/bin/npm run worker:global-kpi
+ExecStart=/usr/bin/env PATH=/usr/local/bin:/usr/bin:/bin PORT=3203 npm run worker:global-kpi
 Restart=always
 RestartSec=3
 TimeoutStopSec=30

@@ -1,0 +1,11 @@
+[Unit]
+Description=Run PacificaFlow Repo State Snapshot Hourly
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+RandomizedDelaySec=5m
+Unit=pacifica-repo-state-sync.service
+
+[Install]
+WantedBy=timers.target

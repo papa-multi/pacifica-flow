@@ -19,10 +19,18 @@ Environment=PACIFICA_INDEXER_RUNNER_ENABLED=true
 Environment=PACIFICA_ONCHAIN_ENABLED=false
 Environment=PACIFICA_ONCHAIN_RUNNER_ENABLED=false
 Environment=PACIFICA_INDEXER_DISCOVERY_ONLY=false
-ExecStart=/usr/bin/env PORT=3201 /usr/bin/npm run worker:wallet-indexer
+Environment=PACIFICA_SOLANA_LOG_TRIGGER_ENABLED=false
+Environment=PACIFICA_LIVE_TRADE_ATTRIBUTION_DB_ENABLED=false
+Environment=PACIFICA_LIVE_TRADE_WALLET_ATTRIBUTION_ENABLED=false
+Environment=PACIFICA_LIVE_TRADE_TX_ATTRIBUTION_ENABLED=false
+Environment=PACIFICA_LIVE_WALLET_FIRST_ENABLED=false
+Environment=PACIFICA_POSITION_LIFECYCLE_LOOP_ENABLED=false
+Environment=PACIFICA_WALLET_METRICS_HISTORY_LOOP_ENABLED=false
+Environment=NODE_OPTIONS=--max-old-space-size=4096
+ExecStart=/usr/bin/env PATH=/usr/local/bin:/usr/bin:/bin PORT=3201 npm run worker:wallet-indexer
 Restart=always
 RestartSec=3
-TimeoutStopSec=30
+TimeoutStopSec=15
 
 [Install]
 WantedBy=pacifica-flow.target

@@ -421,6 +421,29 @@ class PositionLifecycleStore {
     };
   }
 
+  listWallets() {
+    return Object.values(this.state.wallets || {}).map((summary) => ({
+      wallet: String(summary && summary.wallet ? summary.wallet : "").trim(),
+      firstSeenAt: toNum(summary && summary.firstSeenAt, 0) || null,
+      lastSeenAt: toNum(summary && summary.lastSeenAt, 0) || null,
+      lastLifecycleEventAt: toNum(summary && summary.lastLifecycleEventAt, 0) || null,
+      lastOpenedAt: toNum(summary && summary.lastOpenedAt, 0) || null,
+      lastClosedAt: toNum(summary && summary.lastClosedAt, 0) || null,
+      observedPositions: toNum(summary && summary.observedPositions, 0),
+      openedCount: toNum(summary && summary.openedCount, 0),
+      increaseCount: toNum(summary && summary.increaseCount, 0),
+      reduceCount: toNum(summary && summary.reduceCount, 0),
+      closeCount: toNum(summary && summary.closeCount, 0),
+      currentOpenPositions: toNum(summary && summary.currentOpenPositions, 0),
+      currentExposureUsd: Number(toNum(summary && summary.currentExposureUsd, 0).toFixed(2)),
+      currentAvgOpenAgeMs: toNum(summary && summary.currentAvgOpenAgeMs, 0) || null,
+      totalObservedHoldingMs: toNum(summary && summary.totalObservedHoldingMs, 0),
+      completedPositionCount: toNum(summary && summary.completedPositionCount, 0),
+      avgCompletedHoldingMs: toNum(summary && summary.avgCompletedHoldingMs, 0) || null,
+      avgObservedHoldingMs: toNum(summary && summary.avgObservedHoldingMs, 0) || null,
+    }));
+  }
+
   getPositionSummary(wallet, positionKey, row = null, nowMs = Date.now()) {
     const id = positionIdentity({
       wallet,
@@ -462,6 +485,58 @@ class PositionLifecycleStore {
       lastChangeAt: toNum(record.lastChangeAt, 0) || null,
       lastChangeType: String(record.lastChangeType || "").trim() || null,
     };
+  }
+
+  listPositions(nowMs = Date.now()) {
+    return Object.values(this.state.positions || {}).map((record) => {
+      const currentOpenedAt = toNum(
+        record && (record.currentOpenedAt || record.currentFirstSeenAt || record.firstSeenAt),
+        0
+      );
+      const currentAgeMs =
+        record && record.currentOpen && currentOpenedAt > 0
+          ? Math.max(0, nowMs - currentOpenedAt)
+          : null;
+      const completedPositionCount = toNum(record && record.completedPositionCount, 0);
+      return {
+        id: String(record && record.id ? record.id : "").trim(),
+        wallet: String(record && record.wallet ? record.wallet : "").trim(),
+        positionKey: String(record && record.positionKey ? record.positionKey : "").trim(),
+        symbol: String(record && record.symbol ? record.symbol : "").trim().toUpperCase(),
+        side: String(record && record.side ? record.side : "").trim().toLowerCase(),
+        isolated: Boolean(record && record.isolated),
+        firstSeenAt: toNum(record && record.firstSeenAt, 0) || null,
+        lastSeenAt: toNum(record && record.lastSeenAt, 0) || null,
+        lastUpdatedAt: toNum(record && record.lastUpdatedAt, 0) || null,
+        currentOpen: Boolean(record && record.currentOpen),
+        firstOpenedAt: toNum(record && record.firstOpenedAt, 0) || null,
+        currentOpenedAt: toNum(record && record.currentOpenedAt, 0) || null,
+        currentFirstSeenAt: toNum(record && record.currentFirstSeenAt, 0) || null,
+        currentLastSeenAt: toNum(record && record.currentLastSeenAt, 0) || null,
+        openedCount: toNum(record && record.openedCount, 0),
+        increaseCount: toNum(record && record.increaseCount, 0),
+        reduceCount: toNum(record && record.reduceCount, 0),
+        closeCount: toNum(record && record.closeCount, 0),
+        currentAgeMs,
+        completedPositionCount,
+        totalObservedHoldingMs: toNum(record && record.totalObservedHoldingMs, 0),
+        avgCompletedHoldingMs:
+          completedPositionCount > 0
+            ? Number(
+                (
+                  toNum(record && record.totalObservedHoldingMs, 0) /
+                  Math.max(1, completedPositionCount)
+                ).toFixed(0)
+              )
+            : null,
+        lastClosedAt: toNum(record && record.lastClosedAt, 0) || null,
+        lastChangeAt: toNum(record && record.lastChangeAt, 0) || null,
+        lastChangeType: String(record && record.lastChangeType ? record.lastChangeType : "").trim() || null,
+        lastKnownPositionUsd: Number(toNum(record && record.lastKnownPositionUsd, 0).toFixed(2)),
+        lastKnownSize: Number(toNum(record && record.lastKnownSize, 0).toFixed(8)),
+        freshness: String(record && record.freshness ? record.freshness : "").trim().toLowerCase() || null,
+      };
+    });
   }
 
   getStatus() {

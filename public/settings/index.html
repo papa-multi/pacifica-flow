@@ -1,0 +1,295 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PacificaFlow | Settings</title>
+    <link rel="icon" type="image/png" href="/favicon.png?v=20260414-settings15" />
+    <link rel="shortcut icon" type="image/png" href="/favicon.png?v=20260414-settings15" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png?v=20260414-settings15" />
+    <link rel="stylesheet" href="/theme.css?v=20260310-perf1" />
+    <link rel="stylesheet" href="/styles.css?v=20260414-copytrade-shell9" />
+    <link rel="stylesheet" href="/settings/styles.css?v=20260414-settings15" />
+  </head>
+  <body class="wp-body settings-body">
+    <div class="wp-bg" aria-hidden="true">
+      <img class="wp-bg-image" src="/assets/bg_new_2048.webp" alt="" onerror="this.onerror=null;this.src='/assets/bg_new.png';" />
+      <div class="wp-bg-overlay"></div>
+    </div>
+
+    <div class="app-layout">
+      <aside class="sidebar">
+        <a class="brand sidebar-brand sidebar-brand-collapsed" href="/" aria-label="PacificaFlow home">
+          <span class="brand-mark">
+            <img src="/favicon.png?v=20260325-brand1" alt="Pacifica logo" width="40" height="40" decoding="async" />
+          </span>
+        </a>
+        <a class="brand sidebar-brand sidebar-brand-expanded" href="/" aria-label="PacificaFlow home">
+          <span class="brand-mark">
+            <img src="/favicon.png?v=20260325-brand1" alt="Pacifica logo" width="40" height="40" decoding="async" />
+          </span>
+          <span class="brand-stack">
+            <strong class="brand-wordmark-text">PacificaFlow</strong>
+            <span class="brand-sub">Exchange Intelligence Console</span>
+          </span>
+        </a>
+
+        <nav class="sidebar-nav">
+          <a class="tab-link" href="/">
+            <span class="nav-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 18V11"></path><path d="M12 18V6"></path><path d="M19 18V13"></path><path d="M4 18.5H20"></path></svg>
+            </span>
+            <span class="nav-label">Exchange Overview</span>
+          </a>
+          <a class="tab-link" href="/wallets-explorer/">
+            <span class="nav-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8.5A2.5 2.5 0 0 1 6.5 6H18a2 2 0 0 1 2 2v1.5"></path><path d="M4 8.5v7A2.5 2.5 0 0 0 6.5 18H18a2 2 0 0 0 2-2v-5.5H15a2 2 0 0 1 0-4h5"></path><path d="M15 13h.01"></path></svg>
+            </span>
+            <span class="nav-label">Wallet Explorer</span>
+          </a>
+          <a class="tab-link" href="/coin/BTC">
+            <span class="nav-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 19 7v10l-7 4-7-4V7l7-4Z"></path><path d="M9.5 9.5h5v5h-5z"></path></svg>
+            </span>
+            <span class="nav-label">Coin Analysis</span>
+          </a>
+          <a class="tab-link" href="/wallet-performance/">
+            <span class="nav-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 18.5H20"></path><path d="M7 16v-4"></path><path d="M12 16V8"></path><path d="M17 16v-7"></path></svg>
+            </span>
+            <span class="nav-label">Wallet Performance</span>
+          </a>
+          <a class="tab-link active" href="/settings/" aria-current="page">
+            <span class="nav-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7Z"></path><path d="M4.5 12a7.5 7.5 0 0 1 .08-1.1l1.72-.38a5.8 5.8 0 0 1 .77-1.87l-.96-1.49a7.5 7.5 0 0 1 1.56-1.56l1.49.96a5.8 5.8 0 0 1 1.87-.77L10.45 3.5A7.5 7.5 0 0 1 11.55 3h.9a7.5 7.5 0 0 1 1.1.08l.38 1.72a5.8 5.8 0 0 1 1.87.77l1.49-.96a7.5 7.5 0 0 1 1.56 1.56l-.96 1.49a5.8 5.8 0 0 1 .77 1.87l1.72.38A7.5 7.5 0 0 1 19.5 12a7.5 7.5 0 0 1-.08 1.1l-1.72.38a5.8 5.8 0 0 1-.77 1.87l.96 1.49a7.5 7.5 0 0 1-1.56 1.56l-1.49-.96a5.8 5.8 0 0 1-1.87.77l-.38 1.72A7.5 7.5 0 0 1 12 20.5h-.9a7.5 7.5 0 0 1-1.1-.08l-.38-1.72a5.8 5.8 0 0 1-1.87-.77l-1.49.96a7.5 7.5 0 0 1-1.56-1.56l.96-1.49a5.8 5.8 0 0 1-.77-1.87l-1.72-.38A7.5 7.5 0 0 1 4.5 12Z"></path></svg>
+            </span>
+            <span class="nav-label">Settings</span>
+          </a>
+          <a class="tab-link" href="/copy-trading/" data-auth-when="copy-trading" hidden>
+            <span class="nav-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 8.5h12"></path><path d="M8 12h8"></path><path d="M10 15.5h4"></path><path d="M7 5.5h10a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2v-9a2 2 0 0 1 2-2Z"></path></svg>
+            </span>
+            <span class="nav-label">Copy Trading</span>
+          </a>
+          <a class="tab-link" href="/social-cart/">
+            <span class="nav-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7.5A1.5 1.5 0 0 1 6.5 6h8A1.5 1.5 0 0 1 16 7.5v9A1.5 1.5 0 0 1 14.5 18h-8A1.5 1.5 0 0 1 5 16.5z"></path><path d="M14 10l5-5"></path><path d="M15.5 5H19v3.5"></path></svg>
+            </span>
+            <span class="nav-label">Social Cart</span>
+          </a>
+        </nav>
+      </aside>
+
+      <main class="shell">
+        <div class="shell-container">
+          <div class="settings-app">
+            <div id="settings-runtime-error" class="wp-runtime-error" hidden></div>
+
+            <section class="settings-intro glass-panel">
+              <div class="settings-hero-copy">
+                <span class="wp-panel-kicker">Account</span>
+                <h1>Settings</h1>
+                <p>Manage your profile and security from the same PacificaFlow shell used across the product.</p>
+              </div>
+              <div class="settings-hero-meta">
+                <span id="settings-auth-pill" class="wp-pill">Guest</span>
+                <span id="settings-copy-pill" class="wp-pill">Copy Trading locked</span>
+              </div>
+            </section>
+
+            <nav class="settings-tabs glass-panel" aria-label="Settings sections">
+              <a class="settings-tab active" href="#profile">Profile</a>
+              <a class="settings-tab" href="#security">Security</a>
+              <a class="settings-tab" href="#api-keys">API Keys</a>
+            </nav>
+
+            <section class="settings-grid">
+              <article class="settings-card glass-panel" id="profile">
+                <div class="wp-section-head">
+                  <div>
+                    <span class="wp-panel-kicker">Profile</span>
+                    <h3>Your account</h3>
+                  </div>
+                </div>
+                <div class="settings-profile">
+                  <div class="settings-avatar" id="settings-avatar">P</div>
+                  <div class="settings-profile-copy">
+                    <div class="settings-profile-line">
+                      <strong id="settings-display-name">Trader</strong>
+                      <span id="settings-provider-badge" class="settings-provider-badge">Guest</span>
+                    </div>
+                    <span id="settings-email">Sign in to view your profile</span>
+                  </div>
+                </div>
+                <div class="settings-profile-meta">
+                  <div class="settings-meta-item">
+                    <span>Connected login</span>
+                    <strong id="settings-linked-login">-</strong>
+                  </div>
+                  <div class="settings-meta-item">
+                    <span>Account status</span>
+                    <strong id="settings-account-status">Signed out</strong>
+                  </div>
+                  <div class="settings-meta-item">
+                    <span>Joined</span>
+                    <strong id="settings-member-since">Member since -</strong>
+                  </div>
+                  <div class="settings-meta-item">
+                    <span>Account ID</span>
+                    <strong id="settings-account-id">-</strong>
+                  </div>
+                </div>
+                <form id="settings-profile-form" class="settings-form">
+                  <label class="wp-search-field">
+                    <span>Display name</span>
+                    <input id="settings-display-input" type="text" placeholder="Trader name" autocomplete="name" />
+                  </label>
+                  <button class="wp-btn" type="submit">Save changes</button>
+                </form>
+              </article>
+
+              <article class="settings-card glass-panel" id="security">
+                <div class="wp-section-head">
+                  <div>
+                    <span class="wp-panel-kicker">Security</span>
+                    <h3>Authenticator & recovery</h3>
+                  </div>
+                </div>
+                <div class="settings-security-summary">
+                  <p class="settings-note" id="settings-mfa-copy">
+                    Enable Google Authenticator to unlock Copy Trading and sign in with two-factor protection.
+                  </p>
+                  <div class="settings-security-grid">
+                    <div class="settings-status-card">
+                      <span>Status</span>
+                      <strong id="settings-mfa-status">Disabled</strong>
+                    </div>
+                    <div class="settings-status-card">
+                      <span>Eligibility</span>
+                      <strong id="settings-copy-status">Locked</strong>
+                    </div>
+                  </div>
+                  <div class="settings-actions">
+                    <button id="settings-mfa-setup" class="wp-btn" type="button">Set up Authenticator</button>
+                    <button id="settings-mfa-manage" class="wp-btn wp-btn-ghost" type="button">Manage authenticator</button>
+                  </div>
+                </div>
+
+                <div class="settings-security-split">
+                  <div class="settings-security-block">
+                    <div class="wp-section-head settings-inner-head">
+                      <div>
+                        <span class="wp-panel-kicker">Setup</span>
+                        <h4>Authenticator pairing</h4>
+                      </div>
+                    </div>
+                    <div class="settings-setup-steps" aria-label="Authenticator setup steps">
+                      <div class="settings-setup-step">
+                        <span>1</span>
+                        <div>
+                          <strong>Scan the QR code</strong>
+                          <p>Open Google Authenticator and scan the code to add PacificaFlow.</p>
+                        </div>
+                      </div>
+                      <div class="settings-setup-step">
+                        <span>2</span>
+                        <div>
+                          <strong>Or enter the manual key</strong>
+                          <p>Use the secret key if you cannot scan the QR code.</p>
+                        </div>
+                      </div>
+                      <div class="settings-setup-step">
+                        <span>3</span>
+                        <div>
+                          <strong>Confirm with a 6-digit code</strong>
+                          <p>Enter the current code from your authenticator to activate protection.</p>
+                        </div>
+                      </div>
+                    </div>
+                    <div class="settings-qr-wrap">
+                      <div class="settings-qr-frame" id="settings-qr-frame">
+                        <span id="settings-qr-placeholder">Generate a setup code to display the QR code here.</span>
+                        <img id="settings-qr-image" alt="Google Authenticator QR code" hidden />
+                      </div>
+                      <div class="settings-qr-copy">
+                        <p id="settings-setup-copy">
+                          Scan the QR code with Google Authenticator, or enter the manual key if you prefer.
+                        </p>
+                        <div class="settings-secret-row">
+                          <span>Secret</span>
+                          <div class="settings-secret-copy">
+                            <code id="settings-secret">-</code>
+                            <button id="settings-secret-copy-btn" class="wp-btn wp-btn-ghost" type="button">Copy key</button>
+                          </div>
+                        </div>
+                        <div class="settings-verify-row">
+                          <label class="wp-search-field">
+                            <span>6-digit code</span>
+                            <input id="settings-mfa-code" inputmode="numeric" autocomplete="one-time-code" placeholder="123456" maxlength="6" />
+                          </label>
+                          <button id="settings-mfa-verify" class="wp-btn" type="button">Verify & Enable</button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="settings-security-foot">
+                    <div>
+                      <span>Protected actions</span>
+                      <strong>Security changes apply immediately after confirmation.</strong>
+                    </div>
+                    <button id="settings-security-reset" class="wp-btn wp-btn-ghost" type="button">Reset 2FA</button>
+                  </div>
+                </div>
+              </article>
+            </section>
+
+            <section class="settings-card glass-panel settings-api-card" id="api-keys">
+              <div class="wp-section-head">
+                <div>
+                  <span class="wp-panel-kicker">API Keys</span>
+                  <h3>Pacifica access</h3>
+                </div>
+              </div>
+              <p class="settings-note">
+                Add Pacifica credentials here for integrations and future automation. Keys are stored per account and shown masked after saving.
+              </p>
+              <div class="settings-api-grid">
+                <form id="settings-api-form" class="settings-api-form">
+                  <label class="wp-search-field">
+                    <span>Account wallet</span>
+                    <input id="settings-api-account-wallet" type="text" placeholder="Paste the Pacifica account address" autocomplete="off" spellcheck="false" />
+                  </label>
+                  <label class="wp-search-field">
+                    <span>Agent wallet public key</span>
+                    <input id="settings-api-agent-wallet" type="text" placeholder="Paste the generated agent wallet key" autocomplete="off" spellcheck="false" />
+                  </label>
+                  <label class="wp-search-field">
+                    <span>Agent private key</span>
+                    <input id="settings-api-agent-private-key" type="password" placeholder="Paste the agent private key" autocomplete="off" spellcheck="false" />
+                  </label>
+                  <div class="settings-api-actions">
+                    <button class="wp-btn" type="submit">Save Pacifica access</button>
+                    <a class="wp-btn wp-btn-ghost" href="/copy-trading/">Open Copy Trading</a>
+                  </div>
+                </form>
+                <div class="settings-api-list-panel">
+                  <div class="settings-api-list-head">
+                    <div>
+                      <span class="wp-panel-kicker">Saved</span>
+                      <h4 id="settings-api-count">No API keys</h4>
+                    </div>
+                  </div>
+                  <p class="settings-api-status" id="settings-api-status">Validate a saved Pacifica access set to confirm live account access.</p>
+                  <div class="settings-api-list" id="settings-api-list" aria-live="polite"></div>
+                </div>
+              </div>
+            </section>
+          </div>
+        </div>
+      </main>
+    </div>
+
+    <script src="/auth-ui.js?v=20260414-authui10"></script>
+    <script src="/settings/app.js?v=20260414-settings16"></script>
+  </body>
+</html>

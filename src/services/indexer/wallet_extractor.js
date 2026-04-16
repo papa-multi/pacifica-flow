@@ -374,6 +374,9 @@ function extractDepositWalletsFromTransaction(tx, options = {}) {
   const feePayer = accountKeys[0] ? accountKeys[0].pubkey : null;
   const signerWallets = accountKeys.filter((k) => Boolean(k.signer)).map((k) => k.pubkey);
   const runtimeProgramIds = collectProgramIds(tx);
+  const runtimeAccountAddresses = new Set(
+    accountKeys.map((row) => (row && row.pubkey ? row.pubkey : null)).filter(Boolean)
+  );
 
   const configuredPrograms = new Set(
     (Array.isArray(options.programIds) ? options.programIds : [])
@@ -401,7 +404,7 @@ function extractDepositWalletsFromTransaction(tx, options = {}) {
   if (configuredPrograms.size) {
     let hasProgram = false;
     configuredPrograms.forEach((id) => {
-      if (runtimeProgramIds.has(id)) hasProgram = true;
+      if (runtimeProgramIds.has(id) || runtimeAccountAddresses.has(id)) hasProgram = true;
     });
     if (!hasProgram) {
       return {

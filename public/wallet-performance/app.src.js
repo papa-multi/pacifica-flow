@@ -1,0 +1,2064 @@
+"use strict";
+
+(function () {
+  const state = {
+    summary: null,
+    selectedWallet: "",
+    selectedWalletDetail: null,
+    selectedRange: "30d",
+    chartMetric: "equity",
+    selectedDetailSection: "positions",
+    page: 1,
+    pageSize: 20,
+    sort: "totalPnlUsd",
+    dir: "desc",
+    search: "",
+    filters: {
+      minPnl7d: "",
+      maxPnl7d: "",
+      minPnl30d: "",
+      maxPnl30d: "",
+      minTotalPnl: "",
+      maxTotalPnl: "",
+      minOpenPositions: "",
+      maxOpenPositions: "",
+      minEquity: "",
+      maxEquity: "",
+    },
+    detailCache: new Map(),
+    detailRequestId: 0,
+    summaryLoading: false,
+    detailLoading: false,
+    detailLoadingProgress: 0,
+    detailLoadingTicker: 0,
+    summaryVerifyToken: 0,
+    summaryOpenPositionVerified: new Map(),
+  };
+
+  const currencyFormatter = new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: 2,
+  });
+  const compactCurrencyFormatter = new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    notation: "compact",
+    maximumFractionDigits: 2,
+  });
+  const numberFormatter = new Intl.NumberFormat("en-US", {
+    maximumFractionDigits: 2,
+  });
+  const dateFormatter = new Intl.DateTimeFormat("en-GB", {
+    year: "numeric",
+    month: "short",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    timeZone: "UTC",
+  });
+  const dateFormatterExact = new Intl.DateTimeFormat("en-GB", {
+    year: "numeric",
+    month: "short",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    timeZone: "UTC",
+  });
+  const dateAxisFormatter = new Intl.DateTimeFormat("en-GB", {
+    month: "short",
+    day: "2-digit",
+    timeZone: "UTC",
+  });
+  const dateAxisFormatterIntraday = new Intl.DateTimeFormat("en-GB", {
+    hour: "2-digit",
+    minute: "2-digit",
+    timeZone: "UTC",
+  });
+
+  const dom = {
+    runtimeError: document.getElementById("wp-runtime-error"),
+    metaWallets: document.getElementById("wp-meta-wallets"),
+    metaUpdated: document.getElementById("wp-meta-updated"),
+    searchInput: document.getElementById("wp-search-input"),
+    openFilters: document.getElementById("wp-open-filters"),
+    tableBody: document.getElementById("wp-table-body"),
+    pageWindow: document.getElementById("wp-page-window"),
+    pageTotal: document.getElementById("wp-page-total"),
+    pageInfo: document.getElementById("wp-page-info"),
+    pagePrev: document.getElementById("wp-page-prev"),
+    pageNext: document.getElementById("wp-page-next"),
+    detailPanel: document.getElementById("wp-detail-panel"),
+    detailContent: document.getElementById("wp-detail-content"),
+    detailLoading: document.getElementById("wp-detail-loading"),
+    detailLoadingWallet: document.getElementById("wp-detail-loading-wallet"),
+    detailLoadingFill: document.getElementById("wp-detail-loading-fill"),
+    detailLoadingPercent: document.getElementById("wp-detail-loading-percent"),
+    detailLoadingStage: document.getElementById("wp-detail-loading-stage"),
+    detailWallet: document.getElementById("wp-detail-wallet"),
+    detailSubtitle: document.getElementById("wp-detail-subtitle"),
+    detailUpdated: document.getElementById("wp-detail-updated"),
+    copyWallet: document.getElementById("wp-copy-wallet"),
+    kpiGrid: document.getElementById("wp-kpi-grid"),
+    chartKicker: document.getElementById("wp-chart-kicker"),
+    chartTitle: document.getElementById("wp-chart-title"),
+    chartMeta: document.getElementById("wp-chart-meta"),
+    chartShell: document.getElementById("wp-chart-shell"),
+    openProfitCount: document.getElementById("wp-open-profit-count"),
+    openLossCount: document.getElementById("wp-open-loss-count"),
+    openNetUnrealized: document.getElementById("wp-open-net-unrealized"),
+    positionsMeta: document.getElementById("wp-positions-meta"),
+    positionsBody: document.getElementById("wp-positions-body"),
+    historyMeta: document.getElementById("wp-history-meta"),
+    historyBody: document.getElementById("wp-history-body"),
+    filterModal: document.getElementById("wp-filter-modal"),
+    closeFilters: document.getElementById("wp-close-filters"),
+    applyFilters: document.getElementById("wp-apply-filters"),
+    clearFilters: document.getElementById("wp-clear-filters"),
+    rangeButtons: Array.from(document.querySelectorAll(".wp-range-btn")),
+    chartMetricButtons: Array.from(document.querySelectorAll(".wp-chart-metric-btn")),
+    detailSectionButtons: Array.from(document.querySelectorAll("[data-detail-section]")),
+    detailSectionPanels: Array.from(document.querySelectorAll("[data-detail-section-panel]")),
+    sortButtons: Array.from(document.querySelectorAll(".wp-sort-btn")),
+    filterInputs: {
+      minPnl7d: document.getElementById("wp-filter-min-pnl7d"),
+      maxPnl7d: document.getElementById("wp-filter-max-pnl7d"),
+      minPnl30d: document.getElementById("wp-filter-min-pnl30d"),
+      maxPnl30d: document.getElementById("wp-filter-max-pnl30d"),
+      minTotalPnl: document.getElementById("wp-filter-min-total-pnl"),
+      maxTotalPnl: document.getElementById("wp-filter-max-total-pnl"),
+      minOpenPositions: document.getElementById("wp-filter-min-open-positions"),
+      maxOpenPositions: document.getElementById("wp-filter-max-open-positions"),
+      minEquity: document.getElementById("wp-filter-min-equity"),
+      maxEquity: document.getElementById("wp-filter-max-equity"),
+    },
+  };
+
+  let searchDebounce = 0;
+  const REQUIRED_METRIC_RANGES = ["7d", "30d", "all"];
+
+  function shortWallet(wallet) {
+    const text = String(wallet || "").trim();
+    if (text.length <= 12) return text;
+    return text.slice(0, 6) + "..." + text.slice(-4);
+  }
+
+  function safeText(value) {
+    return String(value == null ? "" : value)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+
+  function showRuntimeError(message) {
+    if (!dom.runtimeError) return;
+    dom.runtimeError.hidden = false;
+    dom.runtimeError.textContent = message;
+  }
+
+  function clearRuntimeError() {
+    if (!dom.runtimeError) return;
+    dom.runtimeError.hidden = true;
+    dom.runtimeError.textContent = "";
+  }
+
+  function isFiniteNumber(value) {
+    return Number.isFinite(Number(value));
+  }
+
+  function toStrictNumber(value) {
+    if (value === null || value === undefined) return NaN;
+    if (typeof value === "string" && value.trim() === "") return NaN;
+    return Number(value);
+  }
+
+  function toFiniteOrNull(value) {
+    const num = toStrictNumber(value);
+    return Number.isFinite(num) ? num : null;
+  }
+
+  function fmtCurrency(value) {
+    const num = toStrictNumber(value);
+    if (!Number.isFinite(num)) return "-";
+    if (Math.abs(num) >= 1000000) return compactCurrencyFormatter.format(num);
+    return currencyFormatter.format(num);
+  }
+
+  function fmtSignedCurrency(value) {
+    const num = toStrictNumber(value);
+    if (!Number.isFinite(num)) return "-";
+    const sign = num > 0 ? "+" : "";
+    return sign + fmtCurrency(num);
+  }
+
+  function fmtNumber(value, digits) {
+    const num = toStrictNumber(value);
+    if (!Number.isFinite(num)) return "-";
+    return num.toLocaleString("en-US", {
+      minimumFractionDigits: digits,
+      maximumFractionDigits: digits,
+    });
+  }
+
+  function fmtSignedPct(value) {
+    const num = toStrictNumber(value);
+    if (!Number.isFinite(num)) return "-";
+    const sign = num > 0 ? "+" : "";
+    return sign + fmtNumber(num, 2) + "%";
+  }
+
+  function fmtDateTime(value) {
+    const timestamp = Number(value);
+    if (!Number.isFinite(timestamp) || timestamp <= 0) return "-";
+    return dateFormatter.format(timestamp);
+  }
+
+  function fmtDateTimeExact(value) {
+    const timestamp = Number(value);
+    if (!Number.isFinite(timestamp) || timestamp <= 0) return "-";
+    return dateFormatterExact.format(timestamp) + " UTC";
+  }
+
+  function fmtChartAxisTimestamp(value, rangeKey) {
+    const timestamp = Number(value);
+    if (!Number.isFinite(timestamp) || timestamp <= 0) return "-";
+    if (String(rangeKey || "").toLowerCase() === "1d") {
+      return dateAxisFormatterIntraday.format(timestamp);
+    }
+    return dateAxisFormatter.format(timestamp);
+  }
+
+  function valueClass(value) {
+    const num = Number(value);
+    if (!Number.isFinite(num)) return "";
+    if (num > 0) return "wp-value-positive";
+    if (num < 0) return "wp-value-negative";
+    return "";
+  }
+
+  const MAX_REASONABLE_LEVERAGE = 250;
+
+  function isReasonableLeverage(value) {
+    const num = toStrictNumber(value);
+    return Number.isFinite(num) && num > 0 && num <= MAX_REASONABLE_LEVERAGE;
+  }
+
+  function resolvePositionDisplayMetrics(row) {
+    const safeRow = row && typeof row === "object" ? row : {};
+    const positionValueUsd = toFiniteOrNull(
+      safeRow.positionValueUsd != null ? safeRow.positionValueUsd : safeRow.positionValue
+    );
+    let marginUsd = toFiniteOrNull(
+      safeRow.marginUsd != null ? safeRow.marginUsd : safeRow.margin
+    );
+
+    const leverageCandidates = [
+      safeRow.leverage,
+      safeRow.leverageValue,
+      safeRow.leverage_value,
+      safeRow.lev,
+    ];
+    let leverage = null;
+    for (let index = 0; index < leverageCandidates.length; index += 1) {
+      const candidate = toStrictNumber(leverageCandidates[index]);
+      if (isReasonableLeverage(candidate)) {
+        leverage = candidate;
+        break;
+      }
+    }
+
+    const impliedLeverage =
+      positionValueUsd !== null &&
+      positionValueUsd > 0 &&
+      marginUsd !== null &&
+      marginUsd > 0
+        ? positionValueUsd / marginUsd
+        : null;
+    const impliedIsReasonable = isReasonableLeverage(impliedLeverage);
+
+    if (leverage === null && impliedIsReasonable) {
+      leverage = impliedLeverage;
+    }
+
+    if (leverage !== null && positionValueUsd !== null && positionValueUsd > 0) {
+      if (marginUsd === null || marginUsd <= 0) {
+        marginUsd = positionValueUsd / leverage;
+      } else if (!impliedIsReasonable) {
+        marginUsd = positionValueUsd / leverage;
+      } else {
+        const drift = Math.abs(impliedLeverage - leverage) / Math.max(1, Math.abs(leverage));
+        if (drift > 2) {
+          marginUsd = positionValueUsd / leverage;
+        }
+      }
+    }
+
+    if (leverage === null && positionValueUsd !== null && positionValueUsd > 0 && marginUsd !== null && marginUsd > 0) {
+      const nextImplied = positionValueUsd / marginUsd;
+      if (isReasonableLeverage(nextImplied)) {
+        leverage = nextImplied;
+      }
+    }
+
+    if (leverage === null) leverage = 1;
+
+    return {
+      leverage: metricNumberSafe(leverage, 4),
+      marginUsd: marginUsd !== null && Number.isFinite(marginUsd) && marginUsd >= 0 ? marginUsd : null,
+    };
+  }
+
+  function metricNumberSafe(value, decimals) {
+    const num = toStrictNumber(value);
+    if (!Number.isFinite(num)) return 0;
+    return Number(num.toFixed(decimals));
+  }
+
+  function isStaleOrClosedPositionRow(row) {
+    const safeRow = row && typeof row === "object" ? row : {};
+    const statusTokens = [
+      safeRow.status,
+      safeRow.positionStatus,
+      safeRow.lifecycle,
+      safeRow.lifecycleStage,
+      safeRow.state,
+      safeRow.freshness,
+    ]
+      .map(function (value) {
+        return String(value || "").trim().toLowerCase();
+      })
+      .filter(Boolean);
+    return statusTokens.some(function (token) {
+      return (
+        token === "closed" ||
+        token === "inactive" ||
+        token === "stale" ||
+        token === "expired" ||
+        token === "settled" ||
+        token === "liquidated" ||
+        token === "provisional"
+      );
+    });
+  }
+
+  function normalizeOpenPositions(rows) {
+    const list = Array.isArray(rows) ? rows : [];
+    return list.filter(function (row) {
+      if (!row || typeof row !== "object") return false;
+      if (isStaleOrClosedPositionRow(row)) return false;
+      const side = String(row.side || row.sideLabel || "").toLowerCase();
+      const sizeAbs = Math.abs(
+        Number(
+          row.size != null
+            ? row.size
+            : row.amount != null
+              ? row.amount
+              : row.positionSize != null
+                ? row.positionSize
+                : 0
+        )
+      );
+      const valueAbs = Math.abs(
+        Number(
+          row.positionValueUsd != null
+            ? row.positionValueUsd
+            : row.positionValue != null
+              ? row.positionValue
+              : row.notionalUsd != null
+                ? row.notionalUsd
+                : 0
+        )
+      );
+      const marginAbs = Math.abs(
+        Number(row.marginUsd != null ? row.marginUsd : row.margin != null ? row.margin : 0)
+      );
+      if (Number.isFinite(sizeAbs) && sizeAbs > 0) return true;
+      if (Number.isFinite(valueAbs) && valueAbs > 0) return true;
+      if ((side === "long" || side === "short") && Number.isFinite(marginAbs) && marginAbs > 0) return true;
+      return false;
+    });
+  }
+
+  function resolveSummaryOpenPositions(row) {
+    const safeRow = row && typeof row === "object" ? row : {};
+    if (isStaleOrClosedPositionRow(safeRow)) {
+      return 0;
+    }
+    const candidates = [
+      safeRow.displayOpenPositions,
+      safeRow.openPositions,
+      safeRow.liveOpenPositions,
+      safeRow.open_positions,
+    ];
+    let maxSeen = 0;
+    for (let index = 0; index < candidates.length; index += 1) {
+      const value = toFiniteOrNull(candidates[index]);
+      if (value !== null && value > maxSeen) {
+        maxSeen = value;
+      }
+    }
+    return Math.max(0, Math.round(maxSeen));
+  }
+
+  function setLoadingTable() {
+    dom.tableBody.innerHTML =
+      '<tr><td colspan="6" class="wp-empty-cell">Loading wallet performance…</td></tr>';
+  }
+
+  function buildSummaryQuery() {
+    const params = new URLSearchParams();
+    params.set("page", String(state.page));
+    params.set("page_size", String(state.pageSize));
+    params.set("sort", state.sort);
+    params.set("dir", state.dir);
+    if (state.search.trim()) params.set("q", state.search.trim());
+
+    const filterMap = {
+      minPnl7d: "min_pnl_7d",
+      maxPnl7d: "max_pnl_7d",
+      minPnl30d: "min_pnl_30d",
+      maxPnl30d: "max_pnl_30d",
+      minTotalPnl: "min_total_pnl",
+      maxTotalPnl: "max_total_pnl",
+      minOpenPositions: "min_open_positions",
+      maxOpenPositions: "max_open_positions",
+      minEquity: "min_equity",
+      maxEquity: "max_equity",
+    };
+
+    Object.keys(filterMap).forEach((key) => {
+      const value = state.filters[key];
+      if (value !== "" && value !== null && value !== undefined) {
+        params.set(filterMap[key], String(value));
+      }
+    });
+
+    return params.toString();
+  }
+
+  async function sleep(ms) {
+    const delayMs = Math.max(0, Number(ms || 0));
+    if (!delayMs) return;
+    await new Promise(function (resolve) {
+      window.setTimeout(resolve, delayMs);
+    });
+  }
+
+  async function fetchJson(urlText, options) {
+    const requestOptions = options && typeof options === "object" ? options : {};
+    const retries = Math.max(0, Number(requestOptions.retries == null ? 2 : requestOptions.retries));
+    const retryDelayMs = Math.max(0, Number(requestOptions.retryDelayMs == null ? 250 : requestOptions.retryDelayMs));
+    const timeoutMs = Math.max(0, Number(requestOptions.timeoutMs == null ? 12000 : requestOptions.timeoutMs));
+    let lastError = null;
+
+    for (let attempt = 0; attempt <= retries; attempt += 1) {
+      let response = null;
+      let timeoutId = 0;
+      const controller =
+        typeof AbortController === "function" && timeoutMs > 0
+          ? new AbortController()
+          : null;
+      try {
+        if (controller) {
+          timeoutId = window.setTimeout(function () {
+            controller.abort();
+          }, timeoutMs);
+        }
+        response = await fetch(urlText, {
+          headers: {
+            accept: "application/json",
+            "cache-control": "no-cache",
+            pragma: "no-cache",
+          },
+          cache: "no-store",
+          signal: controller ? controller.signal : undefined,
+        });
+      } catch (error) {
+        if (timeoutId) {
+          window.clearTimeout(timeoutId);
+        }
+        const timedOut = error && (error.name === "AbortError" || String(error.message || "").toLowerCase().includes("abort"));
+        lastError = timedOut
+          ? new Error("Request timeout after " + timeoutMs + "ms for " + urlText)
+          : error;
+        if (attempt < retries) {
+          await sleep(retryDelayMs);
+          continue;
+        }
+        throw lastError;
+      }
+      if (timeoutId) {
+        window.clearTimeout(timeoutId);
+      }
+
+      if (response.ok) {
+        return response.json();
+      }
+
+      var responseText = "";
+      try {
+        responseText = await response.text();
+      } catch (_ignoreReadError) {
+        responseText = "";
+      }
+      var responseSuffix = responseText ? " :: " + responseText.slice(0, 180) : "";
+      var failure = new Error("HTTP " + response.status + " for " + urlText + responseSuffix);
+      lastError = failure;
+
+      if (response.status >= 500 && attempt < retries) {
+        await sleep(retryDelayMs);
+        continue;
+      }
+      throw failure;
+    }
+
+    throw lastError || new Error("Failed to fetch " + urlText);
+  }
+
+  async function loadSummary() {
+    state.summaryLoading = true;
+    setLoadingTable();
+    clearRuntimeError();
+    try {
+      const payload = await fetchJson("/api/wallet-performance?" + buildSummaryQuery());
+      state.summary = payload;
+      renderSummary();
+    } catch (error) {
+      showRuntimeError("Failed to load wallet performance summary: " + String(error && error.message ? error.message : error));
+      dom.tableBody.innerHTML =
+        '<tr><td colspan="6" class="wp-empty-cell">Failed to load wallet data.</td></tr>';
+    } finally {
+      state.summaryLoading = false;
+    }
+  }
+
+  async function verifyVisibleSummaryOpenPositions(rows) {
+    const list = Array.isArray(rows) ? rows : [];
+    const activeToken = ++state.summaryVerifyToken;
+    const now = Date.now();
+    const walletsToVerify = [];
+    let updatedFromCache = false;
+
+    for (let index = 0; index < list.length; index += 1) {
+      const row = list[index] && typeof list[index] === "object" ? list[index] : null;
+      if (!row) continue;
+      const wallet = String(row.wallet || "").trim();
+      if (!wallet) continue;
+      const currentOpen = resolveSummaryOpenPositions(row);
+      if (currentOpen <= 0) continue;
+      const cached = state.summaryOpenPositionVerified.get(wallet);
+      if (cached && now - Number(cached.fetchedAt || 0) <= 2 * 60 * 1000) {
+        const cachedCount = Math.max(0, Number(cached.count || 0));
+        if (cachedCount !== currentOpen) {
+          row.displayOpenPositions = cachedCount;
+          row.openPositions = cachedCount;
+          row.liveOpenPositions = cachedCount;
+          updatedFromCache = true;
+        }
+        continue;
+      }
+      walletsToVerify.push(wallet);
+    }
+
+    if (updatedFromCache) {
+      renderSummary();
+      return;
+    }
+    if (!walletsToVerify.length) return;
+
+    let changed = false;
+    for (let index = 0; index < walletsToVerify.length; index += 1) {
+      if (activeToken !== state.summaryVerifyToken) return;
+      const wallet = walletsToVerify[index];
+      try {
+        const detail = await fetchJson(
+          "/api/wallet-performance/wallet/" + encodeURIComponent(wallet) + "?force=1",
+          { retries: 1, retryDelayMs: 200, timeoutMs: 16000 }
+        );
+        const verifiedOpen = normalizeOpenPositions(detail && detail.positions).length;
+        state.summaryOpenPositionVerified.set(wallet, {
+          count: verifiedOpen,
+          fetchedAt: Date.now(),
+        });
+        const row =
+          state.summary && Array.isArray(state.summary.rows)
+            ? state.summary.rows.find(function (entry) {
+                return entry && entry.wallet === wallet;
+              })
+            : null;
+        if (!row) continue;
+        const currentOpen = resolveSummaryOpenPositions(row);
+        if (verifiedOpen !== currentOpen) {
+          row.displayOpenPositions = verifiedOpen;
+          row.openPositions = verifiedOpen;
+          row.liveOpenPositions = verifiedOpen;
+          changed = true;
+        }
+      } catch (_verifyError) {
+        // Keep current row values when on-demand verification fails.
+      }
+    }
+
+    if (changed && activeToken === state.summaryVerifyToken) {
+      renderSummary();
+    }
+  }
+
+  function renderSummary() {
+    const payload = state.summary || {};
+    const summary = payload.summary || {};
+    const rows = Array.isArray(payload.rows) ? payload.rows : [];
+
+    if (dom.metaWallets) {
+      dom.metaWallets.textContent =
+        numberFormatter.format(Number(summary.positiveWallets || 0)) + " positive wallets";
+    }
+    if (dom.metaUpdated) {
+      dom.metaUpdated.textContent = "Updated " + fmtDateTime(payload.generatedAt);
+    }
+
+    if (!rows.length) {
+      dom.tableBody.innerHTML =
+        '<tr><td colspan="6" class="wp-empty-cell">No wallets match the current filter criteria.</td></tr>';
+    } else {
+      dom.tableBody.innerHTML = rows
+        .map(function (row) {
+          const wallet = safeText(row.wallet);
+          const openPositions = resolveSummaryOpenPositions(row);
+          row.displayOpenPositions = openPositions;
+          row.openPositions = openPositions;
+          row.liveOpenPositions = openPositions;
+          const activeClass = row.wallet === state.selectedWallet ? "wp-row-active" : "";
+          return (
+            '<tr class="' +
+            activeClass +
+            '" data-wallet-row="' +
+            wallet +
+            '">' +
+            '<td><div class="wp-wallet-cell"><div class="wp-wallet-main"><span class="wp-wallet-label">' +
+            safeText(row.walletLabel || shortWallet(row.wallet)) +
+            "</span></div><button class=\"wp-copy-btn\" type=\"button\" data-copy-wallet=\"" +
+            wallet +
+            '">Copy</button></div></td>' +
+            '<td class="' +
+            valueClass(row.pnl7d) +
+            '">' +
+            safeText(fmtSignedCurrency(row.pnl7d)) +
+            "</td>" +
+            '<td class="' +
+            valueClass(row.pnl30d) +
+            '">' +
+            safeText(fmtSignedCurrency(row.pnl30d)) +
+            "</td>" +
+            '<td class="' +
+            valueClass(row.totalPnlUsd) +
+            '">' +
+            safeText(fmtSignedCurrency(row.totalPnlUsd)) +
+            "</td>" +
+            "<td>" +
+            safeText(numberFormatter.format(openPositions)) +
+            "</td>" +
+            '<td class="wp-cell-actions"><button class="wp-btn wp-btn-ghost wp-inspect-btn" type="button" data-wallet-inspect="' +
+            wallet +
+            '">Inspect</button></td>' +
+            "</tr>"
+          );
+        })
+        .join("");
+    }
+
+    const page = Number(summary.page || 1);
+    const pageSize = Number(summary.pageSize || state.pageSize);
+    const totalRows = Number(summary.totalRows || 0);
+    const totalPages = Number(summary.totalPages || 1);
+    state.page = page;
+    state.pageSize = pageSize;
+    const start = totalRows > 0 ? (page - 1) * pageSize + 1 : 0;
+    const end = totalRows > 0 ? Math.min(totalRows, start + rows.length - 1) : 0;
+    dom.pageWindow.textContent = "Rows " + start + "-" + end;
+    dom.pageTotal.textContent =
+      "Total rows: " + numberFormatter.format(totalRows) + " • Total pages: " + numberFormatter.format(totalPages);
+    dom.pageInfo.textContent = "Page " + page + " of " + totalPages;
+    dom.pagePrev.disabled = page <= 1;
+    dom.pageNext.disabled = page >= totalPages;
+
+    verifyVisibleSummaryOpenPositions(rows);
+  }
+
+  function syncSummaryRowWithDetail(wallet, detail) {
+    const normalizedWallet = String(wallet || "").trim();
+    if (!normalizedWallet || !detail || typeof detail !== "object") return;
+    if (!state.summary || !Array.isArray(state.summary.rows)) return;
+
+    const targetRow = state.summary.rows.find(function (row) {
+      return row && row.wallet === normalizedWallet;
+    });
+    if (!targetRow) return;
+
+    const metricsByRange =
+      detail.metricsByRange && typeof detail.metricsByRange === "object" ? detail.metricsByRange : {};
+    const metrics7d = metricsByRange["7d"] && typeof metricsByRange["7d"] === "object" ? metricsByRange["7d"] : null;
+    const metrics30d =
+      metricsByRange["30d"] && typeof metricsByRange["30d"] === "object" ? metricsByRange["30d"] : null;
+    const metricsAll =
+      metricsByRange.all && typeof metricsByRange.all === "object" ? metricsByRange.all : null;
+
+    if (metrics7d && isFiniteNumber(metrics7d.pnlUsd)) {
+      targetRow.pnl7d = Number(metrics7d.pnlUsd);
+    }
+    if (metrics30d && isFiniteNumber(metrics30d.pnlUsd)) {
+      targetRow.pnl30d = Number(metrics30d.pnlUsd);
+    }
+    if (metricsAll && isFiniteNumber(metricsAll.pnlUsd)) {
+      targetRow.totalPnlUsd = Number(metricsAll.pnlUsd);
+      targetRow.pnlAllTime = Number(metricsAll.pnlUsd);
+    }
+    if (detail.account && isFiniteNumber(detail.account.accountEquityUsd)) {
+      targetRow.accountEquityUsd = Number(detail.account.accountEquityUsd);
+    }
+    if (Array.isArray(detail.positions)) {
+      const openPositionsCount = normalizeOpenPositions(detail.positions).length;
+      targetRow.displayOpenPositions = openPositionsCount;
+      targetRow.openPositions = openPositionsCount;
+      targetRow.liveOpenPositions = openPositionsCount;
+    }
+  }
+
+  function validateWalletDetailPayload(payload) {
+    if (!payload || typeof payload !== "object") {
+      throw new Error("Invalid wallet detail payload.");
+    }
+    if (!payload.wallet) {
+      throw new Error("Wallet detail payload missing wallet id.");
+    }
+    if (!payload.metricsByRange || typeof payload.metricsByRange !== "object") {
+      payload.metricsByRange = {};
+    }
+    for (let index = 0; index < REQUIRED_METRIC_RANGES.length; index += 1) {
+      const rangeKey = REQUIRED_METRIC_RANGES[index];
+      const rangeMetricsRaw = payload.metricsByRange[rangeKey];
+      const rangeMetrics =
+        rangeMetricsRaw && typeof rangeMetricsRaw === "object" ? rangeMetricsRaw : {};
+      if (!Array.isArray(rangeMetrics.points)) {
+        rangeMetrics.points = [];
+      }
+      payload.metricsByRange[rangeKey] = rangeMetrics;
+    }
+    if (!Array.isArray(payload.positions)) {
+      payload.positions = [];
+    }
+    if (!Array.isArray(payload.history)) {
+      payload.history = [];
+    }
+    if (!Array.isArray(payload.openOrders)) {
+      payload.openOrders = [];
+    }
+    if (!payload.account || typeof payload.account !== "object") {
+      payload.account = {};
+    }
+    return payload;
+  }
+
+  function walletDetailHasMeaningfulData(payload) {
+    if (!payload || typeof payload !== "object") return false;
+
+    const account = payload.account && typeof payload.account === "object" ? payload.account : {};
+    if (
+      Math.abs(toStrictNumber(account.accountEquityUsd)) > 0 ||
+      Math.abs(toStrictNumber(account.totalMarginUsedUsd)) > 0 ||
+      Math.abs(toStrictNumber(account.availableToSpendUsd)) > 0 ||
+      Math.abs(toStrictNumber(account.availableToWithdrawUsd)) > 0
+    ) {
+      return true;
+    }
+
+    const metricsByRange =
+      payload.metricsByRange && typeof payload.metricsByRange === "object"
+        ? payload.metricsByRange
+        : {};
+    for (let index = 0; index < REQUIRED_METRIC_RANGES.length; index += 1) {
+      const rangeKey = REQUIRED_METRIC_RANGES[index];
+      const bucket =
+        metricsByRange[rangeKey] && typeof metricsByRange[rangeKey] === "object"
+          ? metricsByRange[rangeKey]
+          : {};
+      if (
+        Math.abs(toStrictNumber(bucket.equityUsd)) > 0 ||
+        Math.abs(toStrictNumber(bucket.pnlUsd)) > 0 ||
+        Math.abs(toStrictNumber(bucket.tradingVolumeUsd)) > 0 ||
+        Math.abs(toStrictNumber(bucket.returnPct)) > 0
+      ) {
+        return true;
+      }
+      const points = Array.isArray(bucket.points) ? bucket.points : [];
+      for (let pointIndex = 0; pointIndex < points.length; pointIndex += 1) {
+        const point =
+          points[pointIndex] && typeof points[pointIndex] === "object"
+            ? points[pointIndex]
+            : {};
+        if (
+          Math.abs(toStrictNumber(point.accountEquityUsd)) > 0 ||
+          Math.abs(toStrictNumber(point.pnlUsd)) > 0
+        ) {
+          return true;
+        }
+      }
+    }
+
+    const positions = normalizeOpenPositions(payload.positions);
+    for (let index = 0; index < positions.length; index += 1) {
+      const row = positions[index] && typeof positions[index] === "object" ? positions[index] : {};
+      if (
+        Math.abs(toStrictNumber(row.size != null ? row.size : row.amount)) > 0 ||
+        Math.abs(toStrictNumber(row.positionValueUsd != null ? row.positionValueUsd : row.positionValue)) > 0 ||
+        Math.abs(toStrictNumber(row.entryPrice != null ? row.entryPrice : row.entry)) > 0 ||
+        Math.abs(toStrictNumber(row.markPrice != null ? row.markPrice : row.mark)) > 0 ||
+        Math.abs(toStrictNumber(row.marginUsd)) > 0 ||
+        Math.abs(toStrictNumber(row.pnlUsd)) > 0 ||
+        Math.abs(toStrictNumber(row.roiPct)) > 0 ||
+        Math.abs(toStrictNumber(row.liquidationPrice != null ? row.liquidationPrice : row.liqPrice)) > 0
+      ) {
+        return true;
+      }
+    }
+
+    const history = Array.isArray(payload.history) ? payload.history : [];
+    for (let index = 0; index < history.length; index += 1) {
+      const row = history[index] && typeof history[index] === "object" ? history[index] : {};
+      if (
+        Math.abs(toStrictNumber(row.amount != null ? row.amount : row.delta)) > 0 ||
+        Math.abs(toStrictNumber(row.balance != null ? row.balance : row.balanceAfter)) > 0
+      ) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  function stopDetailLoadingTicker() {
+    if (state.detailLoadingTicker) {
+      window.clearInterval(state.detailLoadingTicker);
+      state.detailLoadingTicker = 0;
+    }
+  }
+
+  function setDetailLoadingProgress(nextValue, stageText) {
+    const value = Math.max(0, Math.min(100, Math.round(Number(nextValue) || 0)));
+    state.detailLoadingProgress = value;
+    if (dom.detailLoadingFill) {
+      dom.detailLoadingFill.style.width = value + "%";
+    }
+    if (dom.detailLoadingPercent) {
+      dom.detailLoadingPercent.textContent = value + "%";
+    }
+    if (stageText && dom.detailLoadingStage) {
+      dom.detailLoadingStage.textContent = stageText;
+    }
+  }
+
+  function focusDetailPanel() {
+    if (!dom.detailPanel) return;
+    window.requestAnimationFrame(function () {
+      dom.detailPanel.scrollIntoView({
+        behavior: "smooth",
+        block: "start",
+        inline: "nearest",
+      });
+    });
+  }
+
+  function startDetailLoading(wallet) {
+    stopDetailLoadingTicker();
+    dom.detailPanel.hidden = false;
+    if (dom.detailContent) {
+      dom.detailContent.hidden = true;
+    }
+    if (dom.detailLoading) {
+      dom.detailLoading.hidden = false;
+      dom.detailLoading.classList.remove("wp-detail-loading-error");
+    }
+    if (dom.detailLoadingWallet) {
+      dom.detailLoadingWallet.textContent = "Loading " + shortWallet(wallet) + " analytics";
+    }
+    setDetailLoadingProgress(0, "Preparing dashboard…");
+    state.detailLoadingTicker = window.setInterval(function () {
+      if (state.detailLoadingProgress >= 97) return;
+      const increment =
+        state.detailLoadingProgress < 30
+          ? 6
+          : state.detailLoadingProgress < 65
+            ? 4
+            : state.detailLoadingProgress < 92
+              ? 2
+              : 1;
+      const nextProgress = Math.min(97, state.detailLoadingProgress + increment);
+      setDetailLoadingProgress(
+        nextProgress,
+        nextProgress >= 93 ? "Finalizing wallet response…" : "Hydrating wallet metrics…"
+      );
+    }, 180);
+  }
+
+  async function finishDetailLoadingSuccess() {
+    stopDetailLoadingTicker();
+    setDetailLoadingProgress(100, "Dashboard ready");
+    await sleep(140);
+    if (dom.detailLoading) {
+      dom.detailLoading.hidden = true;
+    }
+    if (dom.detailContent) {
+      dom.detailContent.hidden = false;
+    }
+  }
+
+  function showDetailLoadFailure(message) {
+    stopDetailLoadingTicker();
+    setDetailLoadingProgress(95, "Unable to load wallet dashboard");
+    if (dom.detailLoading) {
+      dom.detailLoading.hidden = false;
+      dom.detailLoading.classList.add("wp-detail-loading-error");
+    }
+    if (dom.detailContent) {
+      dom.detailContent.hidden = true;
+    }
+    if (dom.detailLoadingPercent) {
+      dom.detailLoadingPercent.textContent = "Error";
+    }
+    if (dom.detailLoadingStage) {
+      dom.detailLoadingStage.textContent =
+        message || "The wallet data is incomplete. Please try again.";
+    }
+  }
+
+  function shouldForceRetryDetail(payload) {
+    const safePayload = payload && typeof payload === "object" ? payload : {};
+    const metricsByRange =
+      safePayload.metricsByRange && typeof safePayload.metricsByRange === "object"
+        ? safePayload.metricsByRange
+        : {};
+    const points30d = Array.isArray(metricsByRange["30d"] && metricsByRange["30d"].points)
+      ? metricsByRange["30d"].points.length
+      : 0;
+    const positions = normalizeOpenPositions(safePayload.positions).length;
+    const history = Array.isArray(safePayload.history) ? safePayload.history.length : 0;
+    const openOrders = Array.isArray(safePayload.openOrders) ? safePayload.openOrders.length : 0;
+    const account =
+      safePayload.account && typeof safePayload.account === "object" ? safePayload.account : {};
+    const accountEquityUsd = Math.abs(toStrictNumber(account.accountEquityUsd || 0));
+    return points30d <= 0 && positions <= 0 && history <= 0 && openOrders <= 0 && accountEquityUsd <= 0;
+  }
+
+  function detailPayloadNeedsHydration(payload) {
+    const safePayload = payload && typeof payload === "object" ? payload : {};
+    const diagnostics =
+      safePayload.diagnostics && typeof safePayload.diagnostics === "object"
+        ? safePayload.diagnostics
+        : {};
+    const positions = normalizeOpenPositions(safePayload.positions);
+    const history = Array.isArray(safePayload.history) ? safePayload.history : [];
+    const openOrders = Array.isArray(safePayload.openOrders) ? safePayload.openOrders : [];
+    const hasNonZeroPnl = positions.some(function (row) {
+      const pnl = Math.abs(toStrictNumber(row && row.pnlUsd));
+      const roi = Math.abs(toStrictNumber(row && row.roiPct));
+      return pnl > 0 || roi > 0;
+    });
+    const likelyFallbackPositions =
+      positions.length > 0 && !hasNonZeroPnl && history.length <= 0 && openOrders.length <= 0;
+    return (
+      Boolean(safePayload.warming) ||
+      Boolean(safePayload.fallbackOnly) ||
+      Boolean(diagnostics.usedFallbackMetrics) ||
+      Boolean(diagnostics.usedFallbackPositions) ||
+      Boolean(likelyFallbackPositions) ||
+      shouldForceRetryDetail(safePayload)
+    );
+  }
+
+  function detailPayloadRichnessScore(payload) {
+    const safePayload = payload && typeof payload === "object" ? payload : {};
+    const metricsByRange =
+      safePayload.metricsByRange && typeof safePayload.metricsByRange === "object"
+        ? safePayload.metricsByRange
+        : {};
+    const points30d = Array.isArray(metricsByRange["30d"] && metricsByRange["30d"].points)
+      ? metricsByRange["30d"].points.length
+      : 0;
+    const positions = normalizeOpenPositions(safePayload.positions);
+    const openOrders = Array.isArray(safePayload.openOrders) ? safePayload.openOrders : [];
+    const history = Array.isArray(safePayload.history) ? safePayload.history : [];
+    const nonZeroPnlPositions = positions.filter(function (row) {
+      const pnl = Math.abs(toStrictNumber(row && row.pnlUsd));
+      const roi = Math.abs(toStrictNumber(row && row.roiPct));
+      return pnl > 0 || roi > 0;
+    }).length;
+    const diagnostics =
+      safePayload.diagnostics && typeof safePayload.diagnostics === "object"
+        ? safePayload.diagnostics
+        : {};
+    let score = 0;
+    score += Math.min(30, points30d);
+    score += positions.length * 3;
+    score += openOrders.length * 4;
+    score += Math.min(50, history.length);
+    score += nonZeroPnlPositions * 6;
+    if (safePayload.warming) score -= 25;
+    if (safePayload.fallbackOnly) score -= 25;
+    if (diagnostics.usedFallbackMetrics) score -= 12;
+    if (diagnostics.usedFallbackPositions) score -= 12;
+    return score;
+  }
+
+  function scheduleWarmWalletRefresh(wallet, requestId, attempt) {
+    const safeAttempt = Math.max(0, Number(attempt || 0));
+    if (safeAttempt > 3) return;
+    window.setTimeout(async function () {
+      if (requestId !== state.detailRequestId) return;
+      if (state.selectedWallet !== wallet) return;
+      try {
+        const refreshedPayload = await fetchJson(
+          "/api/wallet-performance/wallet/" + encodeURIComponent(wallet) + "?force=1",
+          {
+            retries: 1,
+            retryDelayMs: 250,
+            timeoutMs: 9000,
+          }
+        );
+        if (requestId !== state.detailRequestId) return;
+        if (state.selectedWallet !== wallet) return;
+        const validated = validateWalletDetailPayload(refreshedPayload);
+        state.detailCache.set(wallet, validated);
+        state.selectedWalletDetail = validated;
+        syncSummaryRowWithDetail(wallet, validated);
+        renderSummary();
+        renderDetail();
+        if (validated && validated.warming) {
+          scheduleWarmWalletRefresh(wallet, requestId, safeAttempt + 1);
+        }
+      } catch (_error) {
+        if (safeAttempt < 3) {
+          scheduleWarmWalletRefresh(wallet, requestId, safeAttempt + 1);
+        }
+      }
+    }, 1200 + safeAttempt * 900);
+  }
+
+  async function selectWallet(wallet) {
+    const normalizedWallet = String(wallet || "").trim();
+    if (!normalizedWallet) return;
+    state.selectedWallet = normalizedWallet;
+    state.selectedWalletDetail = null;
+    state.selectedRange = "30d";
+    state.selectedDetailSection = "positions";
+    renderSummary();
+    renderDetailLoading();
+    focusDetailPanel();
+
+    const requestId = ++state.detailRequestId;
+    state.detailLoading = true;
+    try {
+      if (state.detailCache.has(normalizedWallet)) {
+        setDetailLoadingProgress(38, "Loading cached wallet profile…");
+        await sleep(90);
+        const cachedPayload = validateWalletDetailPayload(state.detailCache.get(normalizedWallet));
+        if (requestId !== state.detailRequestId) return;
+        if (walletDetailHasMeaningfulData(cachedPayload) && !detailPayloadNeedsHydration(cachedPayload)) {
+          state.selectedWalletDetail = cachedPayload;
+          state.selectedRange = cachedPayload.defaultRange || "30d";
+          syncSummaryRowWithDetail(normalizedWallet, cachedPayload);
+          renderSummary();
+          setDetailLoadingProgress(90, "Rendering dashboard…");
+          renderDetail();
+          await finishDetailLoadingSuccess();
+          return;
+        }
+        setDetailLoadingProgress(52, "Refreshing wallet data…");
+      }
+
+      setDetailLoadingProgress(24, "Requesting wallet data…");
+      const baseUrl = "/api/wallet-performance/wallet/" + encodeURIComponent(normalizedWallet);
+      const payload = await fetchJson(baseUrl, {
+        retries: 2,
+        retryDelayMs: 250,
+        timeoutMs: 12000,
+      });
+      if (requestId !== state.detailRequestId) return;
+      setDetailLoadingProgress(72, "Validating wallet metrics…");
+      let selectedPayload = validateWalletDetailPayload(payload);
+      let hasMeaningfulData = walletDetailHasMeaningfulData(selectedPayload);
+      const shouldHydrate = detailPayloadNeedsHydration(selectedPayload);
+      if (shouldHydrate) {
+        setDetailLoadingProgress(84, "Hydrating wallet metrics…");
+        try {
+          const forcePayload = await fetchJson(baseUrl + "?force=1", {
+            retries: 1,
+            retryDelayMs: 300,
+            timeoutMs: 18000,
+          });
+          if (requestId !== state.detailRequestId) return;
+          const forceValidatedPayload = validateWalletDetailPayload(forcePayload);
+          const currentScore = detailPayloadRichnessScore(selectedPayload);
+          const forceScore = detailPayloadRichnessScore(forceValidatedPayload);
+          if (forceScore >= currentScore || !hasMeaningfulData) {
+            selectedPayload = forceValidatedPayload;
+          }
+          hasMeaningfulData = walletDetailHasMeaningfulData(selectedPayload);
+          setDetailLoadingProgress(89, "Finalizing wallet response…");
+        } catch (_forceError) {
+          setDetailLoadingProgress(88, "Rendering best available wallet snapshot…");
+        }
+      } else if (!hasMeaningfulData) {
+        setDetailLoadingProgress(88, "Rendering dashboard (data sync pending)…");
+      }
+      state.detailCache.set(normalizedWallet, selectedPayload);
+      state.selectedWalletDetail = selectedPayload;
+      state.selectedRange = selectedPayload.defaultRange || "30d";
+      syncSummaryRowWithDetail(normalizedWallet, selectedPayload);
+      renderSummary();
+      setDetailLoadingProgress(90, "Rendering dashboard…");
+      renderDetail();
+      await finishDetailLoadingSuccess();
+      if (selectedPayload && selectedPayload.warming) {
+        scheduleWarmWalletRefresh(normalizedWallet, requestId, 0);
+      }
+    } catch (error) {
+      if (requestId !== state.detailRequestId) return;
+      const staleCached = state.detailCache.get(normalizedWallet);
+      if (staleCached) {
+        try {
+          const fallbackPayload = validateWalletDetailPayload(staleCached);
+          state.selectedWalletDetail = fallbackPayload;
+          state.selectedRange = fallbackPayload.defaultRange || "30d";
+          renderDetail();
+          setDetailLoadingProgress(100, "Dashboard ready (cached)");
+          await finishDetailLoadingSuccess();
+          showRuntimeError("Wallet detail fetch timed out; showing cached data.");
+          return;
+        } catch (_ignoreCachedError) {
+          // continue to hard failure below
+        }
+      }
+      showRuntimeError("Failed to load wallet detail: " + String(error && error.message ? error.message : error));
+      showDetailLoadFailure("Wallet data is incomplete or unavailable. Please retry.");
+    } finally {
+      if (requestId === state.detailRequestId) {
+        state.detailLoading = false;
+      }
+    }
+  }
+
+  function renderDetailLoading() {
+    startDetailLoading(state.selectedWallet);
+  }
+
+  function setDetailSection(sectionName) {
+    const normalized = String(sectionName || "").toLowerCase();
+    const nextSection = normalized === "positions" ? "positions" : "history";
+    state.selectedDetailSection = nextSection;
+    dom.detailSectionButtons.forEach(function (button) {
+      const active = String(button.getAttribute("data-detail-section") || "").toLowerCase() === nextSection;
+      button.classList.toggle("active", active);
+      button.setAttribute("aria-selected", active ? "true" : "false");
+    });
+    dom.detailSectionPanels.forEach(function (panel) {
+      const isCurrent =
+        String(panel.getAttribute("data-detail-section-panel") || "").toLowerCase() === nextSection;
+      panel.hidden = !isCurrent;
+    });
+  }
+
+  function renderDetail() {
+    const detail = state.selectedWalletDetail;
+    if (!detail) {
+      dom.detailPanel.hidden = true;
+      return;
+    }
+    dom.detailPanel.hidden = false;
+
+    const selectedMetrics = (detail.metricsByRange && detail.metricsByRange[state.selectedRange]) || null;
+    const metricsByRange =
+      detail.metricsByRange && typeof detail.metricsByRange === "object"
+        ? detail.metricsByRange
+        : {};
+    const account = detail.account || {};
+    const positions = normalizeOpenPositions(detail.positions);
+    const history = Array.isArray(detail.history) ? detail.history : [];
+
+    dom.detailWallet.textContent = detail.walletLabel || shortWallet(detail.wallet);
+    dom.detailSubtitle.textContent = "Wallet overview";
+    const selectedPoints =
+      selectedMetrics && Array.isArray(selectedMetrics.points)
+        ? selectedMetrics.points
+        : [];
+    const latestPoint =
+      selectedPoints.length > 0 ? selectedPoints[selectedPoints.length - 1] : null;
+    const updatedTimestamp =
+      toFiniteOrNull(
+        detail.generatedAt ||
+          detail.updatedAt ||
+          detail.lastUpdatedAt ||
+          (latestPoint && latestPoint.timestamp)
+      ) || 0;
+    if (dom.detailUpdated) {
+      dom.detailUpdated.textContent =
+        "Last updated: " + (updatedTimestamp > 0 ? fmtDateTimeExact(updatedTimestamp) : "-");
+    }
+
+    dom.rangeButtons.forEach(function (button) {
+      button.classList.toggle("active", button.dataset.range === state.selectedRange);
+    });
+    dom.chartMetricButtons.forEach(function (button) {
+      button.classList.toggle("active", button.dataset.chartMetric === state.chartMetric);
+    });
+
+    renderKpis(selectedMetrics, account);
+    renderChart(selectedMetrics);
+    renderOpenSummary(positions);
+    renderPositions(positions);
+    renderHistory(history, detail.diagnostics && detail.diagnostics.fetch && detail.diagnostics.fetch.balance_history);
+    setDetailSection(state.selectedDetailSection);
+  }
+
+  function renderKpis(metrics, account) {
+    const selectedMetrics = metrics || {
+      equityUsd: 0,
+      pnlUsd: 0,
+      tradingVolumeUsd: 0,
+      returnPct: 0,
+      sharpeRatio: 0,
+      maxDrawdownPct: 0,
+    };
+
+    const items = [
+      {
+        label: "Equity",
+        value: fmtCurrency(selectedMetrics.equityUsd || account.accountEquityUsd || 0),
+        className: "",
+      },
+      {
+        label: "PnL",
+        value: fmtSignedCurrency(selectedMetrics.pnlUsd),
+        className: valueClass(selectedMetrics.pnlUsd),
+      },
+      {
+        label: "Trading Volume",
+        value: fmtCurrency(selectedMetrics.tradingVolumeUsd),
+        className: "",
+      },
+      {
+        label: "Return %",
+        value: fmtSignedPct(selectedMetrics.returnPct),
+        className: valueClass(selectedMetrics.returnPct),
+      },
+      {
+        label: "Sharpe Ratio",
+        value: fmtNumber(selectedMetrics.sharpeRatio, 2),
+        className: valueClass(selectedMetrics.sharpeRatio),
+      },
+      {
+        label: "Max Drawdown",
+        value: fmtNumber(selectedMetrics.maxDrawdownPct, 2) + "%",
+        className: "wp-value-negative",
+      },
+    ];
+
+    dom.kpiGrid.innerHTML = items
+      .map(function (item) {
+        return (
+          '<div class="wp-kpi-card">' +
+          "<span>" +
+          safeText(item.label) +
+          "</span>" +
+          '<strong class="' +
+          safeText(item.className) +
+          '">' +
+          safeText(item.value) +
+          "</strong>" +
+          "</div>"
+        );
+      })
+      .join("");
+  }
+
+  function renderOpenSummary(positions) {
+    const rows = Array.isArray(positions) ? positions : [];
+    let inProfit = 0;
+    let inLoss = 0;
+    let netUnrealized = 0;
+
+    rows.forEach(function (row) {
+      const pnl = toFiniteOrNull(row && row.pnlUsd);
+      if (pnl === null) return;
+      if (pnl > 0) inProfit += 1;
+      if (pnl < 0) inLoss += 1;
+      netUnrealized += pnl;
+    });
+
+    if (dom.openProfitCount) {
+      dom.openProfitCount.textContent = numberFormatter.format(inProfit);
+      dom.openProfitCount.className = "wp-open-value-positive";
+    }
+    if (dom.openLossCount) {
+      dom.openLossCount.textContent = numberFormatter.format(inLoss);
+      dom.openLossCount.className = "wp-open-value-negative";
+    }
+    if (dom.openNetUnrealized) {
+      dom.openNetUnrealized.textContent = fmtSignedCurrency(netUnrealized);
+      dom.openNetUnrealized.className =
+        netUnrealized > 0
+          ? "wp-open-value-positive"
+          : netUnrealized < 0
+          ? "wp-open-value-negative"
+          : "";
+    }
+  }
+
+  function clamp(value, min, max) {
+    return Math.min(Math.max(value, min), max);
+  }
+
+  function buildSmoothLinePath(points) {
+    if (!points.length) return "";
+    if (points.length === 1) {
+      return "M " + points[0].x.toFixed(2) + " " + points[0].y.toFixed(2);
+    }
+    let path = "M " + points[0].x.toFixed(2) + " " + points[0].y.toFixed(2);
+    for (let index = 0; index < points.length - 1; index += 1) {
+      const p0 = points[index - 1] || points[index];
+      const p1 = points[index];
+      const p2 = points[index + 1];
+      const p3 = points[index + 2] || p2;
+      const cp1x = p1.x + (p2.x - p0.x) / 6;
+      const cp1y = p1.y + (p2.y - p0.y) / 6;
+      const cp2x = p2.x - (p3.x - p1.x) / 6;
+      const cp2y = p2.y - (p3.y - p1.y) / 6;
+      path +=
+        " C " +
+        cp1x.toFixed(2) +
+        " " +
+        cp1y.toFixed(2) +
+        " " +
+        cp2x.toFixed(2) +
+        " " +
+        cp2y.toFixed(2) +
+        " " +
+        p2.x.toFixed(2) +
+        " " +
+        p2.y.toFixed(2);
+    }
+    return path;
+  }
+
+  function buildAreaPath(linePath, points, baselineY) {
+    if (!linePath || !points.length) return "";
+    const first = points[0];
+    const last = points[points.length - 1];
+    return (
+      linePath +
+      " L " +
+      last.x.toFixed(2) +
+      " " +
+      baselineY.toFixed(2) +
+      " L " +
+      first.x.toFixed(2) +
+      " " +
+      baselineY.toFixed(2) +
+      " Z"
+    );
+  }
+
+  function chartMetricConfig(metric) {
+    if (metric === "pnl") {
+      return {
+        key: "pnlUsd",
+        label: "PnL",
+        title: "Portfolio trajectory",
+        kicker: "Portfolio trajectory",
+        lineClass: "wp-chart-line-pnl",
+        areaClass: "wp-chart-area-pnl",
+        pointClass: "wp-chart-active-point-pnl",
+        valueFormatter: fmtSignedCurrency,
+      };
+    }
+    return {
+      key: "accountEquityUsd",
+      label: "Equity",
+      title: "Portfolio trajectory",
+      kicker: "Portfolio trajectory",
+      lineClass: "wp-chart-line-equity",
+      areaClass: "wp-chart-area-equity",
+      pointClass: "wp-chart-active-point-equity",
+      valueFormatter: fmtCurrency,
+    };
+  }
+
+  function renderChart(metrics) {
+    const selectedMetrics = metrics || {};
+    const points = Array.isArray(selectedMetrics.points) ? selectedMetrics.points : [];
+    const metric = state.chartMetric === "pnl" ? "pnl" : "equity";
+    const metricConfig = chartMetricConfig(metric);
+    if (dom.chartKicker) dom.chartKicker.textContent = metricConfig.kicker;
+    if (dom.chartTitle) {
+      dom.chartTitle.textContent = metricConfig.title;
+      dom.chartTitle.hidden = !metricConfig.title;
+    }
+    dom.chartMeta.textContent =
+      numberFormatter.format(Number(selectedMetrics.sampleCount || points.length || 0)) +
+      " samples • " +
+      state.selectedRange.toUpperCase() +
+      " • " +
+      metricConfig.label;
+    if (!points.length) {
+      dom.chartShell.innerHTML =
+        '<div class="wp-chart-empty">No ' +
+        safeText(metricConfig.label.toLowerCase()) +
+        " history returned for this range.</div>";
+      return;
+    }
+
+    const width = 1080;
+    const height = 276;
+    const padding = {
+      top: 18,
+      right: 18,
+      bottom: 28,
+      left: 18,
+    };
+    const baselineY = height - padding.bottom;
+    const startX = padding.left;
+    const endX = width - padding.right;
+
+    const rawChartRows = points
+      .map(function (point) {
+        const safePoint = point && typeof point === "object" ? point : {};
+        const timestamp = Number(safePoint.timestamp || 0);
+        if (!Number.isFinite(timestamp) || timestamp <= 0) return null;
+        return {
+          timestamp: timestamp,
+          accountEquityUsd: Number(safePoint.accountEquityUsd || 0),
+          pnlUsd: Number(safePoint.pnlUsd || 0),
+        };
+      })
+      .filter(Boolean)
+      .sort(function (left, right) {
+        return left.timestamp - right.timestamp;
+      });
+
+    const chartRows = [];
+    for (let index = 0; index < rawChartRows.length; index += 1) {
+      const row = rawChartRows[index];
+      const previous = chartRows.length ? chartRows[chartRows.length - 1] : null;
+      if (previous && previous.timestamp === row.timestamp) {
+        chartRows[chartRows.length - 1] = row;
+      } else {
+        chartRows.push(row);
+      }
+    }
+
+    if (!chartRows.length) {
+      dom.chartShell.innerHTML =
+        '<div class="wp-chart-empty">No ' +
+        safeText(metricConfig.label.toLowerCase()) +
+        " history returned for this range.</div>";
+      return;
+    }
+
+    const values = chartRows.map(function (row) {
+      const value = Number(row[metricConfig.key] || 0);
+      return Number.isFinite(value) ? value : 0;
+    });
+    let minValue = Math.min.apply(null, values);
+    let maxValue = Math.max.apply(null, values);
+    if (!Number.isFinite(minValue) || !Number.isFinite(maxValue)) {
+      minValue = 0;
+      maxValue = 0;
+    }
+    const rawRange = Math.abs(maxValue - minValue);
+    const pad = Math.max(rawRange * 0.08, Math.max(1, Math.abs(maxValue) * 0.01, Math.abs(minValue) * 0.01));
+    const domainMin = minValue - pad;
+    const domainMax = maxValue + pad;
+    const domainRange = Math.max(1, domainMax - domainMin);
+
+    const minTimestamp = chartRows.length ? chartRows[0].timestamp : 0;
+    const maxTimestamp = chartRows.length
+      ? chartRows[chartRows.length - 1].timestamp
+      : minTimestamp;
+    const timestampRange = Math.max(1, maxTimestamp - minTimestamp);
+
+    const plotPoints = chartRows.map(function (row) {
+      const x =
+        chartRows.length <= 1
+          ? startX
+          : startX + ((endX - startX) * (row.timestamp - minTimestamp)) / timestampRange;
+      const value = Number(row[metricConfig.key] || 0);
+      const normalized = (value - domainMin) / domainRange;
+      const y = baselineY - normalized * (baselineY - padding.top);
+      return {
+        x: x,
+        y: y,
+        row: row,
+        value: value,
+      };
+    });
+
+    const linePath = buildSmoothLinePath(plotPoints);
+    const areaPath = buildAreaPath(linePath, plotPoints, baselineY);
+    const gridY = [0.2, 0.5, 0.8]
+      .map(function (ratio) {
+        const y = padding.top + (baselineY - padding.top) * ratio;
+        return (
+          '<line class="wp-chart-grid-line" x1="' +
+          startX +
+          '" y1="' +
+          y +
+          '" x2="' +
+          endX +
+          '" y2="' +
+          y +
+          '"></line>'
+        );
+      })
+      .join("");
+
+    const minLabel = metricConfig.valueFormatter(minValue);
+    const maxLabel = metricConfig.valueFormatter(maxValue);
+    const shellWidth = Math.max(
+      320,
+      Math.round(
+        dom.chartShell && dom.chartShell.getBoundingClientRect
+          ? dom.chartShell.getBoundingClientRect().width
+          : dom.chartShell && dom.chartShell.clientWidth
+          ? dom.chartShell.clientWidth
+          : endX - startX
+      )
+    );
+    const axisTickCount = Math.min(8, Math.max(3, Math.floor(shellWidth / 160)));
+    const axisTicks = [];
+    for (let index = 0; index < axisTickCount; index += 1) {
+      const ratio = axisTickCount <= 1 ? 0 : index / (axisTickCount - 1);
+      const tickTimestamp =
+        chartRows.length <= 1 ? minTimestamp : minTimestamp + timestampRange * ratio;
+      const tickX = startX + (endX - startX) * ratio;
+      axisTicks.push({
+        x: tickX,
+        label: fmtChartAxisTimestamp(tickTimestamp, state.selectedRange),
+        anchor: index === 0 ? "start" : index === axisTickCount - 1 ? "end" : "middle",
+      });
+    }
+    const xTickLabels = axisTicks
+      .map(function (tick) {
+        return (
+          '<text class="wp-chart-axis-label" x="' +
+          tick.x.toFixed(2) +
+          '" y="' +
+          (height - 8) +
+          '" text-anchor="' +
+          tick.anchor +
+          '">' +
+          safeText(tick.label) +
+          "</text>"
+        );
+      })
+      .join("");
+
+    dom.chartShell.innerHTML =
+      '<div class="wp-chart-canvas">' +
+      '<svg class="wp-chart-svg" viewBox="0 0 ' +
+      width +
+      " " +
+      height +
+      '" role="img" aria-label="Wallet ' +
+      safeText(metricConfig.label.toLowerCase()) +
+      ' curve">' +
+      gridY +
+      '<path class="wp-chart-area ' +
+      safeText(metricConfig.areaClass) +
+      '" d="' +
+      safeText(areaPath) +
+      '"></path>' +
+      '<path class="wp-chart-line ' +
+      safeText(metricConfig.lineClass) +
+      '" d="' +
+      safeText(linePath) +
+      '"></path>' +
+      '<line class="wp-chart-crosshair" x1="' +
+      startX +
+      '" y1="' +
+      padding.top +
+      '" x2="' +
+      startX +
+      '" y2="' +
+      baselineY +
+      '" data-chart-crosshair-x></line>' +
+      '<line class="wp-chart-crosshair" x1="' +
+      startX +
+      '" y1="' +
+      baselineY +
+      '" x2="' +
+      endX +
+      '" y2="' +
+      baselineY +
+      '" data-chart-crosshair-y></line>' +
+      '<circle class="wp-chart-active-point ' +
+      safeText(metricConfig.pointClass) +
+      '" cx="' +
+      startX +
+      '" cy="' +
+      baselineY +
+      '" r="4.5" data-chart-active-point></circle>' +
+      '<rect class="wp-chart-hitbox" x="' +
+      startX +
+      '" y="' +
+      padding.top +
+      '" width="' +
+      (endX - startX) +
+      '" height="' +
+      (baselineY - padding.top) +
+      '" fill="transparent" data-chart-hitbox></rect>' +
+      '<text x="' +
+      startX +
+      '" y="18" fill="rgba(202,220,236,0.76)" font-size="12">' +
+      safeText(maxLabel) +
+      "</text>" +
+      '<text x="' +
+      startX +
+      '" y="34" fill="rgba(202,220,236,0.72)" font-size="11">' +
+      safeText(minLabel) +
+      "</text>" +
+      xTickLabels +
+      "</svg>" +
+      '<div class="wp-chart-tooltip" data-chart-tooltip>' +
+      '<span class="wp-chart-tooltip-value" data-chart-tooltip-value>-</span>' +
+      '<span class="wp-chart-tooltip-time" data-chart-tooltip-time>-</span>' +
+      "</div>" +
+      "</div>";
+
+    const chartCanvas = dom.chartShell.querySelector(".wp-chart-canvas");
+    const hitbox = dom.chartShell.querySelector("[data-chart-hitbox]");
+    const crosshairX = dom.chartShell.querySelector("[data-chart-crosshair-x]");
+    const crosshairY = dom.chartShell.querySelector("[data-chart-crosshair-y]");
+    const activePoint = dom.chartShell.querySelector("[data-chart-active-point]");
+    const tooltip = dom.chartShell.querySelector("[data-chart-tooltip]");
+    const tooltipValue = dom.chartShell.querySelector("[data-chart-tooltip-value]");
+    const tooltipTime = dom.chartShell.querySelector("[data-chart-tooltip-time]");
+
+    if (!chartCanvas || !hitbox || !crosshairX || !crosshairY || !activePoint || !tooltip || !tooltipValue || !tooltipTime) {
+      return;
+    }
+
+    function nearestPointIndexByX(targetX) {
+      if (!plotPoints.length) return 0;
+      let low = 0;
+      let high = plotPoints.length - 1;
+      while (low < high) {
+        const mid = Math.floor((low + high) / 2);
+        if (plotPoints[mid].x < targetX) {
+          low = mid + 1;
+        } else {
+          high = mid;
+        }
+      }
+      const rightIndex = low;
+      const leftIndex = Math.max(0, rightIndex - 1);
+      if (!plotPoints[rightIndex]) return leftIndex;
+      if (!plotPoints[leftIndex]) return rightIndex;
+      const leftDelta = Math.abs(plotPoints[leftIndex].x - targetX);
+      const rightDelta = Math.abs(plotPoints[rightIndex].x - targetX);
+      return rightDelta < leftDelta ? rightIndex : leftIndex;
+    }
+
+    function hideHover() {
+      crosshairX.style.opacity = "0";
+      crosshairY.style.opacity = "0";
+      activePoint.style.opacity = "0";
+      tooltip.classList.remove("is-visible");
+    }
+
+    function showHover(index, rect) {
+      const safeIndex = clamp(index, 0, plotPoints.length - 1);
+      const active = plotPoints[safeIndex];
+      if (!active) return;
+      crosshairX.setAttribute("x1", String(active.x));
+      crosshairX.setAttribute("x2", String(active.x));
+      crosshairY.setAttribute("y1", String(active.y));
+      crosshairY.setAttribute("y2", String(active.y));
+      activePoint.setAttribute("cx", String(active.x));
+      activePoint.setAttribute("cy", String(active.y));
+      crosshairX.style.opacity = "1";
+      crosshairY.style.opacity = "1";
+      activePoint.style.opacity = "1";
+      tooltipValue.textContent = metricConfig.valueFormatter(active.value);
+      tooltipTime.textContent = fmtDateTimeExact(active.row.timestamp);
+
+      const scaleX = rect.width / width;
+      const scaleY = rect.height / height;
+      const localX = active.x * scaleX;
+      const localY = active.y * scaleY;
+      const tooltipX = clamp(localX, 96, Math.max(96, rect.width - 96));
+      tooltip.style.left = tooltipX.toFixed(1) + "px";
+      tooltip.style.top = localY.toFixed(1) + "px";
+      tooltip.classList.add("is-visible");
+    }
+
+    hitbox.addEventListener("pointermove", function (event) {
+      const canvasRect = chartCanvas.getBoundingClientRect();
+      const hitboxRect = hitbox.getBoundingClientRect();
+      if (!hitboxRect.width || !canvasRect.width) return;
+      const localX = clamp(event.clientX - hitboxRect.left, 0, hitboxRect.width);
+      const normalizedRatio = localX / hitboxRect.width;
+      const targetChartX = startX + (endX - startX) * normalizedRatio;
+      const nextIndex = nearestPointIndexByX(targetChartX);
+      showHover(nextIndex, canvasRect);
+    });
+    hitbox.addEventListener("pointerleave", hideHover);
+    hideHover();
+  }
+
+  function renderPositions(rows) {
+    const positions = Array.isArray(rows) ? rows : [];
+    dom.positionsMeta.textContent =
+      numberFormatter.format(positions.length) + (positions.length === 1 ? " position" : " positions");
+    if (!positions.length) {
+      dom.positionsBody.innerHTML =
+        '<tr><td colspan="8" class="wp-empty-cell">No open positions for this wallet.</td></tr>';
+      return;
+    }
+
+    dom.positionsBody.innerHTML = positions
+      .map(function (row) {
+        const symbol = String(row.symbol || row.token || "-").toUpperCase();
+        const displayMetrics = resolvePositionDisplayMetrics(row);
+        const leverageValue = toFiniteOrNull(displayMetrics.leverage);
+        const leverageText = Number.isFinite(leverageValue)
+          ? fmtNumber(leverageValue, 2).replace(/\.00$/, "")
+          : "1";
+        const sideRaw = String(row.side || row.sideLabel || "").toLowerCase();
+        const isShort = sideRaw === "short" || sideRaw === "sell" || sideRaw === "ask";
+        const sideText = String(row.sideLabel || (isShort ? "Short" : "Long"));
+        const directionBadgeClass = isShort
+          ? "wp-direction-badge-short"
+          : "wp-direction-badge-long";
+        const pnlUsdRaw = toFiniteOrNull(row.pnlUsd);
+        const marginUsd = toFiniteOrNull(displayMetrics.marginUsd);
+        const positionValueUsd = toFiniteOrNull(
+          row.positionValueUsd != null ? row.positionValueUsd : row.positionValue
+        );
+        const roiPctRaw = toFiniteOrNull(row.roiPct);
+        const fallbackUnrealizedPnl = toFiniteOrNull(row.unrealizedPnlUsd);
+        const derivedMarginFromLeverage =
+          positionValueUsd !== null &&
+          positionValueUsd > 0 &&
+          leverageValue !== null &&
+          leverageValue > 0
+            ? positionValueUsd / leverageValue
+            : null;
+        const effectiveMargin =
+          marginUsd !== null && marginUsd > 0
+            ? marginUsd
+            : derivedMarginFromLeverage !== null && derivedMarginFromLeverage > 0
+            ? derivedMarginFromLeverage
+            : null;
+        const pnlUsd =
+          pnlUsdRaw !== null
+            ? pnlUsdRaw
+            : fallbackUnrealizedPnl !== null
+            ? fallbackUnrealizedPnl
+            : 0;
+        const roiPct =
+          roiPctRaw !== null
+            ? roiPctRaw
+            : pnlUsd !== null && effectiveMargin !== null && effectiveMargin > 0
+            ? (pnlUsd / effectiveMargin) * 100
+            : 0;
+        const roiText = fmtSignedPct(roiPct);
+        const pnlText = fmtSignedCurrency(pnlUsd);
+        return (
+          "<tr>" +
+          '<td><span class="wp-position-badge ' +
+          directionBadgeClass +
+          '">' +
+          safeText(symbol) +
+          " " +
+          safeText(leverageText) +
+          "x " +
+          safeText(sideText) +
+          "</span></td>" +
+          "<td>" +
+          safeText(fmtNumber(row.size != null ? row.size : row.amount, 4)) +
+          "</td>" +
+          "<td>" +
+          safeText(fmtCurrency(row.positionValueUsd != null ? row.positionValueUsd : row.positionValue)) +
+          "</td>" +
+          "<td>" +
+          safeText(fmtNumber(row.entryPrice != null ? row.entryPrice : row.entry, 4)) +
+          "</td>" +
+          "<td>" +
+          safeText(fmtNumber(row.markPrice != null ? row.markPrice : row.mark, 4)) +
+          "</td>" +
+          '<td class="' +
+          valueClass(pnlUsd) +
+          '">' +
+          safeText(pnlText) +
+          " (" +
+          safeText(roiText) +
+          ")</td>" +
+          "<td>" +
+          safeText(fmtNumber(row.liquidationPrice != null ? row.liquidationPrice : row.liqPrice, 4)) +
+          "</td>" +
+          "<td>" +
+          safeText(fmtCurrency(marginUsd)) +
+          ' <span class="wp-wallet-sub">' +
+          safeText(row.marginMode || row.margin_type || "Cross") +
+          "</span></td>" +
+          "</tr>"
+        );
+      })
+      .join("");
+  }
+
+  function renderHistory(rows, diagnostics) {
+    const history = Array.isArray(rows) ? rows.slice(0, 40) : [];
+    dom.historyMeta.textContent =
+      numberFormatter.format(Array.isArray(rows) ? rows.length : 0) + " entries loaded";
+    if (!history.length) {
+      const diagError =
+        diagnostics && typeof diagnostics === "object" && diagnostics.error
+          ? String(diagnostics.error)
+          : "";
+      const detailSuffix = diagError
+        ? " Source returned: " + safeText(diagError.slice(0, 120))
+        : "";
+      dom.historyBody.innerHTML =
+        '<tr><td colspan="3" class="wp-empty-cell">No funding history returned for this wallet.' +
+        detailSuffix +
+        "</td></tr>";
+      return;
+    }
+
+    dom.historyBody.innerHTML = history
+      .map(function (row) {
+        const eventType = String(
+          row.eventType || row.event_type || row.type || row.kind || ""
+        ).toLowerCase();
+        const isWithdrawal =
+          eventType.indexOf("withdraw") >= 0 ||
+          eventType.indexOf("outflow") >= 0 ||
+          eventType.indexOf("debit") >= 0;
+        const isDeposit =
+          eventType.indexOf("deposit") >= 0 ||
+          eventType.indexOf("inflow") >= 0 ||
+          eventType.indexOf("credit") >= 0;
+        const signedAmountSource =
+          row.amount != null
+            ? row.amount
+            : row.delta != null
+            ? row.delta
+            : row.change != null
+            ? row.change
+            : row.usdcChange;
+        const amountRaw = Number(signedAmountSource || 0);
+        const signedAmount = isWithdrawal
+          ? -Math.abs(amountRaw)
+          : isDeposit
+          ? Math.abs(amountRaw)
+          : amountRaw;
+        const tokenLabel = String(
+          row.token || row.symbol || row.asset || row.coin || row.currency || "USDC"
+        ).toUpperCase();
+        const tokenClass = isWithdrawal
+          ? "wp-history-pill-withdrawal"
+          : isDeposit
+          ? "wp-history-pill-deposit"
+          : "wp-history-pill-event";
+        const timeText = fmtDateTime(
+          row.createdAt || row.created_at || row.timestamp || row.time
+        );
+        return (
+          "<tr>" +
+          "<td>" +
+          safeText(timeText) +
+          "</td>" +
+          '<td class="' +
+          valueClass(signedAmount) +
+          '">' +
+          safeText(fmtSignedCurrency(signedAmount)) +
+          "</td>" +
+          '<td><span class="wp-history-pill ' +
+          tokenClass +
+          '">' +
+          safeText(tokenLabel) +
+          "</span></td>" +
+          "</tr>"
+        );
+      })
+      .join("");
+  }
+
+  function syncModalInputsFromState() {
+    Object.keys(dom.filterInputs).forEach(function (key) {
+      dom.filterInputs[key].value = state.filters[key] || "";
+    });
+  }
+
+  function syncStateFromModalInputs() {
+    Object.keys(dom.filterInputs).forEach(function (key) {
+      state.filters[key] = String(dom.filterInputs[key].value || "").trim();
+    });
+  }
+
+  function openFilterModal() {
+    syncModalInputsFromState();
+    dom.filterModal.hidden = false;
+  }
+
+  function closeFilterModal() {
+    dom.filterModal.hidden = true;
+  }
+
+  function resetFilters() {
+    state.filters = {
+      minPnl7d: "",
+      maxPnl7d: "",
+      minPnl30d: "",
+      maxPnl30d: "",
+      minTotalPnl: "",
+      maxTotalPnl: "",
+      minOpenPositions: "",
+      maxOpenPositions: "",
+      minEquity: "",
+      maxEquity: "",
+    };
+    syncModalInputsFromState();
+  }
+
+  async function copyText(text, button) {
+    try {
+      await navigator.clipboard.writeText(String(text || ""));
+      if (button) {
+        const previous = button.textContent;
+        button.textContent = "Copied";
+        window.setTimeout(function () {
+          button.textContent = previous;
+        }, 1200);
+      }
+    } catch (_error) {
+      showRuntimeError("Clipboard copy failed.");
+    }
+  }
+
+  function bindEvents() {
+    dom.searchInput.addEventListener("input", function () {
+      window.clearTimeout(searchDebounce);
+      searchDebounce = window.setTimeout(function () {
+        state.search = String(dom.searchInput.value || "").trim();
+        state.page = 1;
+        loadSummary();
+      }, 220);
+    });
+
+    dom.openFilters.addEventListener("click", openFilterModal);
+    dom.closeFilters.addEventListener("click", closeFilterModal);
+    dom.applyFilters.addEventListener("click", function () {
+      syncStateFromModalInputs();
+      state.page = 1;
+      closeFilterModal();
+      loadSummary();
+    });
+    dom.clearFilters.addEventListener("click", function () {
+      resetFilters();
+    });
+    dom.filterModal.addEventListener("click", function (event) {
+      const target = event.target;
+      if (target instanceof Element && target.getAttribute("data-close-modal") === "true") {
+        closeFilterModal();
+      }
+    });
+
+    dom.pagePrev.addEventListener("click", function () {
+      if (state.page <= 1) return;
+      state.page -= 1;
+      loadSummary();
+    });
+    dom.pageNext.addEventListener("click", function () {
+      const totalPages = Number((state.summary && state.summary.summary && state.summary.summary.totalPages) || 1);
+      if (state.page >= totalPages) return;
+      state.page += 1;
+      loadSummary();
+    });
+
+    dom.sortButtons.forEach(function (button) {
+      button.addEventListener("click", function () {
+        const nextSort = button.getAttribute("data-sort") || "totalPnlUsd";
+        if (state.sort === nextSort) {
+          state.dir = state.dir === "desc" ? "asc" : "desc";
+        } else {
+          state.sort = nextSort;
+          state.dir = nextSort === "wallet" ? "asc" : "desc";
+        }
+        state.page = 1;
+        loadSummary();
+      });
+    });
+
+    dom.tableBody.addEventListener("click", function (event) {
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      const copyButton = target.closest("[data-copy-wallet]");
+      if (copyButton) {
+        copyText(copyButton.getAttribute("data-copy-wallet"), copyButton);
+        event.stopPropagation();
+        return;
+      }
+      const inspectButton = target.closest("[data-wallet-inspect]");
+      if (inspectButton) {
+        const wallet = String(inspectButton.getAttribute("data-wallet-inspect") || "").trim();
+        if (!wallet) return;
+        selectWallet(wallet);
+      }
+    });
+
+    dom.copyWallet.addEventListener("click", function () {
+      if (!state.selectedWalletDetail) return;
+      copyText(state.selectedWalletDetail.wallet, dom.copyWallet);
+    });
+
+    dom.rangeButtons.forEach(function (button) {
+      button.addEventListener("click", function () {
+        const range = button.getAttribute("data-range") || "30d";
+        if (range === state.selectedRange) return;
+        state.selectedRange = range;
+        renderDetail();
+      });
+    });
+
+    dom.detailSectionButtons.forEach(function (button) {
+      button.addEventListener("click", function () {
+        const section = button.getAttribute("data-detail-section") || "history";
+        if (section === state.selectedDetailSection) return;
+        setDetailSection(section);
+      });
+    });
+
+    dom.chartMetricButtons.forEach(function (button) {
+      button.addEventListener("click", function () {
+        const metric = button.getAttribute("data-chart-metric") === "pnl" ? "pnl" : "equity";
+        if (metric === state.chartMetric) return;
+        state.chartMetric = metric;
+        renderDetail();
+      });
+    });
+  }
+
+  async function boot() {
+    bindEvents();
+    await loadSummary();
+    window.__PF_WALLET_PERFORMANCE_BOOTED = true;
+  }
+
+  boot().catch(function (error) {
+    showRuntimeError("Wallet Performance boot failed: " + String(error && error.message ? error.message : error));
+  });
+})();

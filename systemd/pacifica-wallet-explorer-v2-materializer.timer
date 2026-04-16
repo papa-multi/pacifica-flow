@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Pacifica Wallet Explorer V2 Materializer periodically
+
+[Timer]
+OnBootSec=5min
+OnUnitInactiveSec=20min
+Unit=pacifica-wallet-explorer-v2-materializer.service
+
+[Install]
+WantedBy=timers.target

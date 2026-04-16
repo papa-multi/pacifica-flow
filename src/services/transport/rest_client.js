@@ -1,5 +1,17 @@
 const { execFile } = require("child_process");
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
 const { RetryableError } = require("./retry_policy");
+
+let UndiciProxyAgent = null;
+try {
+  ({ ProxyAgent: UndiciProxyAgent } = require("undici"));
+} catch (_error) {
+  UndiciProxyAgent = null;
+}
+
+const proxyDispatcherCache = new Map();
 
 function buildUrl(baseUrl, pathname, query = null) {
   const normalizedPath = String(pathname || "").replace(/^\/+/, "");
@@ -45,6 +57,44 @@ function parseRetryDelayMsFromHeaders(headers) {
   return null;
 }
 
+function buildHeaderAccessor(raw = "") {
+  const source = String(raw || "");
+  const blocks = [];
+  let currentBlock = [];
+
+  source.split(/\r?\n/).forEach((line) => {
+    if (/^HTTP\/\d/i.test(line)) {
+      if (currentBlock.length) blocks.push(currentBlock);
+      currentBlock = [line];
+      return;
+    }
+    if (!currentBlock.length) return;
+    currentBlock.push(line);
+  });
+  if (currentBlock.length) blocks.push(currentBlock);
+
+  const selected = blocks.length ? blocks[blocks.length - 1] : [];
+  const map = new Map();
+  selected.slice(1).forEach((line) => {
+    const idx = line.indexOf(":");
+    if (idx <= 0) return;
+    const key = line.slice(0, idx).trim().toLowerCase();
+    const value = line.slice(idx + 1).trim();
+    if (!key) return;
+    if (map.has(key)) {
+      map.set(key, `${map.get(key)}, ${value}`);
+    } else {
+      map.set(key, value);
+    }
+  });
+
+  return {
+    get(name) {
+      return map.get(String(name || "").trim().toLowerCase()) || null;
+    },
+  };
+}
+
 function runCurlRequest({
   method,
   url,
@@ -55,6 +105,10 @@ function runCurlRequest({
 }) {
   const timeoutSec = Math.max(1, Math.ceil(timeoutMs / 1000));
   const marker = `__PF_META__${Date.now()}_${Math.random().toString(16).slice(2, 8)}`;
+  const headerPath = path.join(
+    os.tmpdir(),
+    `pf-curl-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}.headers`
+  );
   const args = [
     "--silent",
     "--show-error",
@@ -63,6 +117,8 @@ function runCurlRequest({
     String(timeoutSec),
     "--request",
     method,
+    "--dump-header",
+    headerPath,
   ];
 
   if (proxyUrl) {
@@ -88,6 +144,20 @@ function runCurlRequest({
         maxBuffer: 8 * 1024 * 1024,
       },
       (error, stdout, stderr) => {
+        const rawHeaders = (() => {
+          try {
+            if (!fs.existsSync(headerPath)) return "";
+            return fs.readFileSync(headerPath, "utf8");
+          } catch (_error) {
+            return "";
+          } finally {
+            try {
+              if (fs.existsSync(headerPath)) fs.unlinkSync(headerPath);
+            } catch (_error) {
+              // Best effort cleanup only.
+            }
+          }
+        })();
         if (error) {
           const message = String(stderr || error.message || "curl_error")
             .trim()
@@ -113,10 +183,29 @@ function runCurlRequest({
         resolve({
           statusCode: Number.isFinite(statusCode) ? statusCode : 0,
           bodyText,
+          headers: buildHeaderAccessor(rawHeaders),
         });
       }
     );
   });
+}
+
+function getFetchDispatcher(proxyUrl) {
+  const raw = String(proxyUrl || "").trim();
+  const normalized = raw && /^[a-z]+:\/\//i.test(raw) ? raw : raw ? `http://${raw}` : "";
+  if (!normalized || !UndiciProxyAgent) return null;
+  if (!proxyDispatcherCache.has(normalized)) {
+    proxyDispatcherCache.set(
+      normalized,
+      new UndiciProxyAgent({
+        uri: normalized,
+        connect: {
+          timeout: 10_000,
+        },
+      })
+    );
+  }
+  return proxyDispatcherCache.get(normalized) || null;
 }
 
 function createRestClient({
@@ -132,11 +221,15 @@ function createRestClient({
   clientId = "default",
 }) {
   const fetchFn = global.fetch;
-  const normalizedTransport =
+  const requestedTransport =
     String(transport || "fetch").toLowerCase() === "curl" ? "curl" : "fetch";
+  const normalizedTransport =
+    requestedTransport === "fetch" && proxyUrl && !UndiciProxyAgent ? "curl" : requestedTransport;
   if (normalizedTransport === "fetch" && typeof fetchFn !== "function") {
     throw new Error("Global fetch is required (Node 18+).");
   }
+  const fetchDispatcher =
+    normalizedTransport === "fetch" ? getFetchDispatcher(proxyUrl) : null;
 
   async function request(method, pathname, options = {}) {
     const cost = Number(options.cost || 1);
@@ -170,6 +263,7 @@ function createRestClient({
             });
             status = Number(curlRes.statusCode || 0);
             text = String(curlRes.bodyText || "");
+            responseHeaders = curlRes.headers || null;
           } else {
             const controller = new AbortController();
             const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -179,6 +273,7 @@ function createRestClient({
                 headers,
                 signal: controller.signal,
                 body: options.body ? JSON.stringify(options.body) : undefined,
+                dispatcher: fetchDispatcher || undefined,
               });
               status = Number(res.status || 0);
               responseHeaders = res.headers;

@@ -1,0 +1,17 @@
+[Unit]
+Description=Pacifica Wallet Dataset Materializer
+After=network-online.target pacifica-wallet-indexers.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/root/pacifica-flow
+ExecStart=/usr/bin/bash /root/pacifica-flow/scripts/systemd/run_wallet_materializer.sh
+User=root
+Group=root
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+
+[Install]
+WantedBy=multi-user.target

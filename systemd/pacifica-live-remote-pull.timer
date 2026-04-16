@@ -1,0 +1,11 @@
+[Unit]
+Description=PacificaFlow Live Remote Pull Timer
+
+[Timer]
+OnBootSec=15s
+OnUnitActiveSec=5s
+AccuracySec=1s
+Unit=pacifica-live-remote-pull.service
+
+[Install]
+WantedBy=timers.target

@@ -1,7 +1,7 @@
 {
   "name": "pacifica-flow",
   "version": "0.1.0",
-  "description": "PacificaFlow: Pacifica-native analytics + self-serve marketplace scaffold",
+  "description": "Pacifica-native analytics, wallet intelligence, copy trading, and workflow control platform",
   "main": "server.js",
   "scripts": {
     "start": "PACIFICA_SERVICE=all node server.js",
@@ -11,19 +11,32 @@
     "start:live": "PACIFICA_SERVICE=live PORT=3202 node server.js",
     "build:app": "node scripts/build_root_bundle.js",
     "build:live-trade": "node scripts/build_live_trade_bundle.js",
+    "build:social-trade": "node scripts/build_social_trade_bundle.js",
+    "build:copy-trading": "node scripts/build_copy_trading_bundle.js",
+    "service:telegram-copilot-bot": "node scripts/telegram_copilot_bot.js",
     "worker:wallet-indexer": "PACIFICA_SERVICE=api PACIFICA_WS_ENABLED=false PACIFICA_SNAPSHOT_ENABLED=false PACIFICA_GLOBAL_KPI_ENABLED=false PACIFICA_INDEXER_ENABLED=true PACIFICA_INDEXER_RUNNER_ENABLED=true PACIFICA_ONCHAIN_ENABLED=false PACIFICA_ONCHAIN_RUNNER_ENABLED=false PACIFICA_INDEXER_DISCOVERY_ONLY=false node server.js",
     "worker:live-positions": "PACIFICA_SERVICE=api PACIFICA_WS_ENABLED=false PACIFICA_SNAPSHOT_ENABLED=false PACIFICA_GLOBAL_KPI_ENABLED=false PACIFICA_INDEXER_ENABLED=false PACIFICA_INDEXER_RUNNER_ENABLED=false PACIFICA_ONCHAIN_ENABLED=false PACIFICA_ONCHAIN_RUNNER_ENABLED=false PACIFICA_LIVE_WALLET_FIRST_ENABLED=true node server.js",
     "worker:onchain-discovery": "PACIFICA_SERVICE=api PACIFICA_WS_ENABLED=false PACIFICA_SNAPSHOT_ENABLED=false PACIFICA_GLOBAL_KPI_ENABLED=false PACIFICA_INDEXER_ENABLED=false PACIFICA_INDEXER_RUNNER_ENABLED=false PACIFICA_ONCHAIN_ENABLED=true PACIFICA_ONCHAIN_RUNNER_ENABLED=true node server.js",
-    "worker:global-kpi": "PACIFICA_SERVICE=api PACIFICA_WS_ENABLED=false PACIFICA_SNAPSHOT_ENABLED=false PACIFICA_GLOBAL_KPI_ENABLED=true PACIFICA_INDEXER_ENABLED=false PACIFICA_INDEXER_RUNNER_ENABLED=false PACIFICA_ONCHAIN_ENABLED=false PACIFICA_ONCHAIN_RUNNER_ENABLED=false node server.js",
-    "service:ui-api": "PACIFICA_SERVICE=all PACIFICA_INDEXER_ENABLED=false PACIFICA_INDEXER_RUNNER_ENABLED=false PACIFICA_ONCHAIN_ENABLED=false PACIFICA_ONCHAIN_RUNNER_ENABLED=false PACIFICA_SNAPSHOT_ENABLED=false PACIFICA_GLOBAL_KPI_ENABLED=false node server.js",
+    "worker:global-kpi": "PACIFICA_SERVICE=api PACIFICA_WS_ENABLED=false PACIFICA_SNAPSHOT_ENABLED=false PACIFICA_GLOBAL_KPI_ENABLED=true PACIFICA_INDEXER_ENABLED=false PACIFICA_INDEXER_RUNNER_ENABLED=false PACIFICA_ONCHAIN_ENABLED=false PACIFICA_ONCHAIN_RUNNER_ENABLED=false PACIFICA_SOLANA_LOG_TRIGGER_ENABLED=false node server.js",
+    "service:ui-api": "PACIFICA_SERVICE=all PACIFICA_INDEXER_ENABLED=false PACIFICA_INDEXER_RUNNER_ENABLED=false PACIFICA_ONCHAIN_ENABLED=false PACIFICA_ONCHAIN_RUNNER_ENABLED=false PACIFICA_SNAPSHOT_ENABLED=false PACIFICA_GLOBAL_KPI_ENABLED=false PACIFICA_MULTI_EGRESS_ENABLED=false PACIFICA_GLOBAL_KPI_USE_MULTI_EGRESS=false node server.js",
+    "service:telegram-report-bot": "node scripts/telegram_report_bot.js",
     "systemd:install": "bash ./scripts/systemd/install.sh",
     "systemd:install:now": "bash ./scripts/systemd/install.sh --now",
     "systemd:status": "bash ./scripts/systemd/status.sh",
     "systemd:uninstall": "bash ./scripts/systemd/uninstall.sh",
+    "state-sync:snapshot": "node scripts/repo_state_sync.js snapshot",
+    "state-sync:restore": "node scripts/repo_state_sync.js restore --fetch",
+    "state-sync:resume": "bash ./scripts/systemd/resume_from_repo_state.sh --fetch --start",
+    "state-sync:status": "node scripts/repo_state_sync.js status",
+    "storage:v3:build": "node scripts/build_wallet_storage_v3.js",
     "start:onchain-lite": "PORT=3400 PACIFICA_SERVICE=api PACIFICA_WS_ENABLED=false SOLANA_RPC_RATE_LIMIT_CAPACITY=3 PACIFICA_ONCHAIN_SIGNATURE_PAGE_LIMIT=20 PACIFICA_ONCHAIN_TX_CONCURRENCY=1 PACIFICA_ONCHAIN_MAX_TX_PER_CYCLE=12 node server.js",
     "audit:deposits": "node scripts/audit_deposit_wallets.js",
     "enrich:deposit-evidence": "node scripts/enrich_deposit_evidence.js",
     "rebuild:wallet-stats": "node scripts/rebuild_wallet_stats_from_history.js",
+    "rebuild:wallet-tracking": "node scripts/materialize_wallet_datasets.js",
+    "wallet-explorer-v2:reset": "python3 scripts/wallet_explorer_v2/reset.py",
+    "wallet-explorer-v2:worker": "python3 scripts/wallet_explorer_v2/worker.py",
+    "wallet-explorer-v2:materialize": "python3 scripts/wallet_explorer_v2/materialize.py",
     "test:proxies": "node scripts/test_pacifica_proxies.js"
   },
   "keywords": [
@@ -39,6 +52,15 @@
     "node": ">=18"
   },
   "dependencies": {
+    "@babel/core": "^7.29.0",
+    "@babel/preset-env": "^7.29.0",
+    "https-proxy-agent": "^7.0.6",
+    "nodemailer": "^6.10.1",
+    "otplib": "^13.4.0",
+    "qrcode": "^1.5.4",
+    "sharp": "^0.34.5",
+    "speakeasy": "^2.0.0",
+    "undici": "^6.24.1",
     "ws": "^8.18.0"
   }
 }

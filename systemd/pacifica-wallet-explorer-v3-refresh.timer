@@ -1,0 +1,11 @@
+[Unit]
+Description=Refresh Wallet Explorer v3 Canonical Snapshot
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=2min
+Persistent=true
+Unit=pacifica-wallet-explorer-v3-refresh.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,253 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+INSTANCE_INDEX="${1:-${PACIFICA_WALLET_EXPLORER_V2_PENDING_INSTANCE_INDEX:-0}}"
+INSTANCE_COUNT="${2:-${PACIFICA_WALLET_EXPLORER_V2_PENDING_INSTANCE_COUNT:-1}}"
+LANE_MODE="${3:-${PACIFICA_WALLET_EXPLORER_V2_PHASE1_LANE_MODE:-auto}}"
+
+if [[ -f "${ROOT_DIR}/config/runtime.env" ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "${ROOT_DIR}/config/runtime.env"
+  set +a
+fi
+
+if [[ "${LANE_MODE}" == "auto" && "${INSTANCE_COUNT}" -gt 1 ]]; then
+  PROBE_INSTANCES="${PACIFICA_WALLET_EXPLORER_V2_PHASE1_PROBE_INSTANCES:-2}"
+  RECOVERY_INSTANCES="${PACIFICA_WALLET_EXPLORER_V2_PHASE1_RECOVERY_INSTANCES:-1}"
+  PROOF_INSTANCES="${PACIFICA_WALLET_EXPLORER_V2_PHASE1_PROOF_INSTANCES:-1}"
+  if (( INSTANCE_INDEX < PROBE_INSTANCES )); then
+    LANE_MODE="probe"
+  elif (( INSTANCE_INDEX < PROBE_INSTANCES + RECOVERY_INSTANCES )); then
+    LANE_MODE="recovery"
+  elif (( INSTANCE_INDEX < PROBE_INSTANCES + RECOVERY_INSTANCES + PROOF_INSTANCES )); then
+    LANE_MODE="proof"
+  fi
+fi
+
+PHASE1_DIR="${ROOT_DIR}/data/wallet_explorer_v2/phase1"
+mkdir -p "${PHASE1_DIR}"
+
+if [[ "${LANE_MODE}" != "auto" || "${INSTANCE_COUNT}" -gt 1 ]]; then
+  export PACIFICA_WALLET_EXPLORER_V2_HEAVY_STATE_PATH="${PHASE1_DIR}/pending_lane_state_${LANE_MODE}_${INSTANCE_INDEX}.json"
+  export PACIFICA_WALLET_EXPLORER_V2_HEAVY_CANDIDATES_PATH="${PHASE1_DIR}/pending_lane_candidates_${LANE_MODE}_${INSTANCE_INDEX}.json"
+  export PACIFICA_WALLET_EXPLORER_V2_ISOLATED_WALLETS_PATH="${PHASE1_DIR}/pending_isolated_wallets_${LANE_MODE}_${INSTANCE_INDEX}.json"
+else
+  export PACIFICA_WALLET_EXPLORER_V2_HEAVY_STATE_PATH="${ROOT_DIR}/data/wallet_explorer_v2/pending_lane_state.json"
+  export PACIFICA_WALLET_EXPLORER_V2_HEAVY_CANDIDATES_PATH="${ROOT_DIR}/data/wallet_explorer_v2/pending_lane_candidates.json"
+  export PACIFICA_WALLET_EXPLORER_V2_ISOLATED_WALLETS_PATH="${ROOT_DIR}/data/wallet_explorer_v2/pending_isolated_wallets.json"
+fi
+
+MASTER_PROXY_FILE="${PACIFICA_MULTI_EGRESS_PROXY_FILE:-${ROOT_DIR}/data/indexer/working_proxies.txt}"
+PHASE1_FORCE_DIRECT="${PACIFICA_WALLET_EXPLORER_V2_PHASE1_FORCE_DIRECT:-false}"
+PROXY_SHARD_DIR="${ROOT_DIR}/data/wallet_explorer_v2/proxy_shards_pending_${LANE_MODE}${INSTANCE_COUNT:+_${INSTANCE_INDEX}}"
+SHARD_COUNT="${PACIFICA_WALLET_EXPLORER_V2_SHARDS:-8}"
+CPU_WORKERS_TOTAL="${PACIFICA_WALLET_EXPLORER_V2_CPU_WORKERS:-4}"
+case "${LANE_MODE}" in
+  probe)
+    PHASE1_TOTAL_PARALLELISM="${PACIFICA_WALLET_EXPLORER_V2_PHASE1_PROBE_TOTAL_PARALLELISM:-${PACIFICA_WALLET_EXPLORER_V2_PHASE1_TOTAL_PARALLELISM:-${PACIFICA_WALLET_EXPLORER_V2_PENDING_PARALLELISM:-16}}}"
+    PHASE1_TOTAL_MAX_ACTIVE="${PACIFICA_WALLET_EXPLORER_V2_PHASE1_PROBE_TOTAL_MAX_ACTIVE:-${PACIFICA_WALLET_EXPLORER_V2_PHASE1_TOTAL_MAX_ACTIVE:-${PACIFICA_WALLET_EXPLORER_V2_PENDING_MAX_ACTIVE:-16}}}"
+    PHASE1_TOTAL_RESERVED_PROXIES="${PACIFICA_WALLET_EXPLORER_V2_PHASE1_PROBE_TOTAL_RESERVED_PROXIES:-${PACIFICA_WALLET_EXPLORER_V2_PHASE1_TOTAL_RESERVED_PROXIES:-${PACIFICA_WALLET_EXPLORER_V2_RESERVED_PROXY_COUNT:-80}}}"
+    PHASE1_TOTAL_UNTRACKED_RESERVED_LANES="${PACIFICA_WALLET_EXPLORER_V2_PHASE1_PROBE_TOTAL_RESERVED_LANES:-${PACIFICA_WALLET_EXPLORER_V2_PHASE1_TOTAL_UNTRACKED_RESERVED_LANES:-${PACIFICA_WALLET_EXPLORER_V2_PENDING_UNTRACKED_RESERVED_LANES:-8}}}"
+    PHASE1_HISTORY_LIMIT="${PACIFICA_WALLET_EXPLORER_V2_PHASE1_HISTORY_LIMIT:-${PACIFICA_WALLET_EXPLORER_V2_HISTORY_LIMIT:-240}}"
+    ;;
+  recovery)
+    PHASE1_TOTAL_PARALLELISM="${PACIFICA_WALLET_EXPLORER_V2_PHASE1_RECOVERY_TOTAL_PARALLELISM:-${PACIFICA_WALLET_EXPLORER_V2_PHASE1_TOTAL_PARALLELISM:-${PACIFICA_WALLET_EXPLORER_V2_PENDING_PARALLELISM:-16}}}"
+    PHASE1_TOTAL_MAX_ACTIVE="${PACIFICA_WALLET_EXPLORER_V2_PHASE1_RECOVERY_TOTAL_MAX_ACTIVE:-${PACIFICA_WALLET_EXPLORER_V2_PHASE1_TOTAL_MAX_ACTIVE:-${PACIFICA_WALLET_EXPLORER_V2_PENDING_MAX_ACTIVE:-16}}}"
+    PHASE1_TOTAL_RESERVED_PROXIES="${PACIFICA_WALLET_EXPLORER_V2_PHASE1_RECOVERY_TOTAL_RESERVED_PROXIES:-${PACIFICA_WALLET_EXPLORER_V2_PHASE1_TOTAL_RESERVED_PROXIES:-${PACIFICA_WALLET_EXPLORER_V2_RESERVED_PROXY_COUNT:-80}}}"
+    PHASE1_TOTAL_UNTRACKED_RESERVED_LANES="${PACIFICA_WALLET_EXPLORER_V2_PHASE1_RECOVERY_TOTAL_RESERVED_LANES:-${PACIFICA_WALLET_EXPLORER_V2_PHASE1_TOTAL_UNTRACKED_RESERVED_LANES:-${PACIFICA_WALLET_EXPLORER_V2_PENDING_UNTRACKED_RESERVED_LANES:-8}}}"
+    PHASE1_HISTORY_LIMIT="${PACIFICA_WALLET_EXPLORER_V2_PHASE1_HISTORY_LIMIT:-${PACIFICA_WALLET_EXPLORER_V2_HISTORY_LIMIT:-240}}"
+    ;;
+  proof)
+    PHASE1_TOTAL_PARALLELISM="${PACIFICA_WALLET_EXPLORER_V2_PHASE1_PROOF_TOTAL_PARALLELISM:-${PACIFICA_WALLET_EXPLORER_V2_PHASE1_TOTAL_PARALLELISM:-${PACIFICA_WALLET_EXPLORER_V2_PENDING_PARALLELISM:-16}}}"
+    PHASE1_TOTAL_MAX_ACTIVE="${PACIFICA_WALLET_EXPLORER_V2_PHASE1_PROOF_TOTAL_MAX_ACTIVE:-${PACIFICA_WALLET_EXPLORER_V2_PHASE1_TOTAL_MAX_ACTIVE:-${PACIFICA_WALLET_EXPLORER_V2_PENDING_MAX_ACTIVE:-16}}}"
+    PHASE1_TOTAL_RESERVED_PROXIES="${PACIFICA_WALLET_EXPLORER_V2_PHASE1_PROOF_TOTAL_RESERVED_PROXIES:-${PACIFICA_WALLET_EXPLORER_V2_PHASE1_TOTAL_RESERVED_PROXIES:-${PACIFICA_WALLET_EXPLORER_V2_RESERVED_PROXY_COUNT:-80}}}"
+    PHASE1_TOTAL_UNTRACKED_RESERVED_LANES="${PACIFICA_WALLET_EXPLORER_V2_PHASE1_PROOF_TOTAL_RESERVED_LANES:-${PACIFICA_WALLET_EXPLORER_V2_PHASE1_TOTAL_UNTRACKED_RESERVED_LANES:-${PACIFICA_WALLET_EXPLORER_V2_PENDING_UNTRACKED_RESERVED_LANES:-8}}}"
+    PHASE1_HISTORY_LIMIT="${PACIFICA_WALLET_EXPLORER_V2_PHASE1_HISTORY_LIMIT:-${PACIFICA_WALLET_EXPLORER_V2_HISTORY_LIMIT:-240}}"
+    ;;
+  *)
+    PHASE1_TOTAL_PARALLELISM="${PACIFICA_WALLET_EXPLORER_V2_PHASE1_TOTAL_PARALLELISM:-${PACIFICA_WALLET_EXPLORER_V2_PENDING_PARALLELISM:-16}}"
+    PHASE1_TOTAL_MAX_ACTIVE="${PACIFICA_WALLET_EXPLORER_V2_PHASE1_TOTAL_MAX_ACTIVE:-${PACIFICA_WALLET_EXPLORER_V2_PENDING_MAX_ACTIVE:-16}}"
+    PHASE1_TOTAL_RESERVED_PROXIES="${PACIFICA_WALLET_EXPLORER_V2_PHASE1_TOTAL_RESERVED_PROXIES:-${PACIFICA_WALLET_EXPLORER_V2_RESERVED_PROXY_COUNT:-80}}"
+    PHASE1_TOTAL_UNTRACKED_RESERVED_LANES="${PACIFICA_WALLET_EXPLORER_V2_PHASE1_TOTAL_UNTRACKED_RESERVED_LANES:-${PACIFICA_WALLET_EXPLORER_V2_PENDING_UNTRACKED_RESERVED_LANES:-8}}"
+    PHASE1_HISTORY_LIMIT="${PACIFICA_WALLET_EXPLORER_V2_PHASE1_HISTORY_LIMIT:-${PACIFICA_WALLET_EXPLORER_V2_HISTORY_LIMIT:-240}}"
+    ;;
+esac
+RESERVED_PROXY_COUNT="${PHASE1_TOTAL_RESERVED_PROXIES}"
+HISTORY_LIMIT="${PHASE1_HISTORY_LIMIT}"
+TIMEOUT_SECONDS="${PACIFICA_WALLET_EXPLORER_V2_TIMEOUT_SECONDS:-25}"
+REQUEST_ATTEMPTS="${PACIFICA_WALLET_EXPLORER_V2_REQUEST_ATTEMPTS:-2}"
+HEAVY_MIN_PAGES="${PACIFICA_WALLET_EXPLORER_V2_HEAVY_MIN_PAGES:-120}"
+HEAVY_MIN_ROWS="${PACIFICA_WALLET_EXPLORER_V2_HEAVY_MIN_ROWS:-50000}"
+HEAVY_MIN_VOLUME_USD="${PACIFICA_WALLET_EXPLORER_V2_HEAVY_MIN_VOLUME_USD:-25000000}"
+HEAVY_MAX_ACTIVE="${PHASE1_TOTAL_MAX_ACTIVE}"
+HEAVY_PARALLELISM="${PHASE1_TOTAL_PARALLELISM}"
+UNTRACKED_RESERVED_LANES="${PHASE1_TOTAL_UNTRACKED_RESERVED_LANES}"
+HEAVY_LOOP_SLEEP_SECONDS="${PACIFICA_WALLET_EXPLORER_V2_HEAVY_LOOP_SLEEP_SECONDS:-5}"
+HEAVY_FLUSH_INTERVAL_PAGES="${PACIFICA_WALLET_EXPLORER_V2_HEAVY_FLUSH_INTERVAL_PAGES:-8}"
+HEAVY_RECORD_FLUSH_PAGES="${PACIFICA_WALLET_EXPLORER_V2_HEAVY_RECORD_FLUSH_PAGES:-24}"
+TAIL_MODE_THRESHOLD="100000"
+
+if [[ "${INSTANCE_COUNT}" -gt 1 ]]; then
+  HEAVY_PARALLELISM="$(( (PHASE1_TOTAL_PARALLELISM + INSTANCE_COUNT - 1) / INSTANCE_COUNT ))"
+  HEAVY_MAX_ACTIVE="$(( (PHASE1_TOTAL_MAX_ACTIVE + INSTANCE_COUNT - 1) / INSTANCE_COUNT ))"
+  UNTRACKED_RESERVED_LANES="$(( (PHASE1_TOTAL_UNTRACKED_RESERVED_LANES + INSTANCE_COUNT - 1) / INSTANCE_COUNT ))"
+  RESERVED_PROXY_COUNT="$(( (PHASE1_TOTAL_RESERVED_PROXIES + INSTANCE_COUNT - 1) / INSTANCE_COUNT ))"
+fi
+
+CPU_WORKERS="${CPU_WORKERS_TOTAL}"
+if [[ "${INSTANCE_COUNT}" -gt 1 ]]; then
+  CPU_WORKERS="$(( (CPU_WORKERS_TOTAL + INSTANCE_COUNT - 1) / INSTANCE_COUNT ))"
+fi
+
+mkdir -p "${PROXY_SHARD_DIR}"
+find "${PROXY_SHARD_DIR}" -maxdepth 1 -type f -name '*.txt' -delete
+
+if [[ "${PHASE1_FORCE_DIRECT,,}" == "1" || "${PHASE1_FORCE_DIRECT,,}" == "true" || "${PHASE1_FORCE_DIRECT,,}" == "yes" ]]; then
+  MASTER_PROXY_FILE="${PHASE1_DIR}/empty_proxies.txt"
+  : > "${MASTER_PROXY_FILE}"
+  RESERVED_PROXY_COUNT=0
+fi
+
+if [[ "${INSTANCE_COUNT}" -gt 1 ]]; then
+  FOCUS_COHORT_SOURCE="${PACIFICA_WALLET_EXPLORER_V2_FOCUS_COHORT_CSV:-}"
+  if [[ -n "${FOCUS_COHORT_SOURCE}" ]]; then
+    FOCUS_COHORT_SHARD="${PHASE1_DIR}/focus_cohort_${INSTANCE_INDEX}.csv"
+    python3 - <<'PY' "${FOCUS_COHORT_SOURCE}" "${FOCUS_COHORT_SHARD}" "${INSTANCE_INDEX}" "${INSTANCE_COUNT}"
+import csv, sys
+from pathlib import Path
+
+def stable_hash(value: str) -> int:
+    h = 5381
+    for ch in value:
+        h = ((h << 5) + h + ord(ch)) & 0xFFFFFFFF
+    return h
+
+src = Path(sys.argv[1])
+dst = Path(sys.argv[2])
+instance_index = int(sys.argv[3])
+instance_count = max(1, int(sys.argv[4]))
+rows = []
+if src.exists():
+    with src.open(newline="") as handle:
+        reader = csv.DictReader(handle)
+        fieldnames = list(reader.fieldnames or [])
+        if fieldnames and "wallet" in fieldnames:
+            for row in reader:
+                wallet = str((row or {}).get("wallet") or "").strip()
+                if wallet and stable_hash(wallet) % instance_count == instance_index:
+                    rows.append(row)
+with dst.open("w", newline="") as handle:
+    writer = csv.DictWriter(handle, fieldnames=["wallet"] if not rows else list(rows[0].keys()))
+    writer.writeheader()
+    for row in rows:
+        writer.writerow(row)
+print(dst)
+PY
+    export PACIFICA_WALLET_EXPLORER_V2_FOCUS_COHORT_CSV="${FOCUS_COHORT_SHARD}"
+  fi
+fi
+
+python3 - <<'PY' "${MASTER_PROXY_FILE}" "${PROXY_SHARD_DIR}" "${RESERVED_PROXY_COUNT}" "${HEAVY_PARALLELISM}" "${INSTANCE_INDEX}" "${INSTANCE_COUNT}"
+import pathlib, sys
+
+src = pathlib.Path(sys.argv[1])
+out_dir = pathlib.Path(sys.argv[2])
+reserved = max(1, int(sys.argv[3]))
+parallelism = max(1, int(sys.argv[4]))
+instance_index = int(sys.argv[5])
+instance_count = max(1, int(sys.argv[6]))
+rows = []
+if src.exists():
+    rows = [
+        line.strip()
+        for line in src.read_text().splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+subset = rows[-(reserved * instance_count):] if len(rows) > (reserved * instance_count) else rows
+if instance_count > 1:
+    subset = [row for idx, row in enumerate(subset) if idx % instance_count == instance_index]
+subset = subset[-reserved:] if len(subset) > reserved else subset
+for lane in range(parallelism):
+    dst = out_dir / f"proxies_heavy_{lane}.txt"
+    dst.write_text("")
+if not subset:
+    raise SystemExit(0)
+per = max(1, (len(subset) + parallelism - 1) // parallelism)
+for lane in range(parallelism):
+    start = lane * per
+    end = min(len(subset), start + per)
+    lane_rows = subset[start:end]
+    dst = out_dir / f"proxies_heavy_{lane}.txt"
+    dst.write_text("\n".join(lane_rows) + ("\n" if lane_rows else ""))
+PY
+
+CPU_SET=""
+if [[ "${CPU_WORKERS}" -gt 0 ]]; then
+  TOTAL_CORES="$(nproc)"
+  if [[ "${INSTANCE_COUNT}" -gt 1 ]]; then
+    CORES_PER_INSTANCE="$(( (TOTAL_CORES + INSTANCE_COUNT - 1) / INSTANCE_COUNT ))"
+    CPU_START="$(( INSTANCE_INDEX * CORES_PER_INSTANCE ))"
+    CPU_END="$(( CPU_START + CORES_PER_INSTANCE - 1 ))"
+    if [[ "${CPU_END}" -ge "${TOTAL_CORES}" ]]; then
+      CPU_END="$(( TOTAL_CORES - 1 ))"
+    fi
+    CPU_SET="${CPU_START}-${CPU_END}"
+  else
+    CPU_END="$(( CPU_WORKERS - 1 ))"
+    if [[ "${CPU_END}" -ge "${TOTAL_CORES}" ]]; then
+      CPU_END="$(( TOTAL_CORES - 1 ))"
+    fi
+    CPU_SET="0-${CPU_END}"
+  fi
+fi
+
+PYTHON_CMD=(
+  python3
+  "${ROOT_DIR}/scripts/wallet_explorer_v2/heavy_lane.py"
+  --proxy-dir "${PROXY_SHARD_DIR}"
+  --shard-count "${SHARD_COUNT}"
+  --history-limit "${HISTORY_LIMIT}"
+  --timeout-seconds "${TIMEOUT_SECONDS}"
+  --request-attempts "${REQUEST_ATTEMPTS}"
+  --min-pages "${HEAVY_MIN_PAGES}"
+  --min-rows "${HEAVY_MIN_ROWS}"
+  --min-volume-usd "${HEAVY_MIN_VOLUME_USD}"
+  --max-active "${HEAVY_MAX_ACTIVE}"
+  --parallelism "${HEAVY_PARALLELISM}"
+  --untracked-reserved-lanes "${UNTRACKED_RESERVED_LANES}"
+  --loop-sleep-seconds "${HEAVY_LOOP_SLEEP_SECONDS}"
+  --flush-interval-pages "${HEAVY_FLUSH_INTERVAL_PAGES}"
+    --record-flush-pages "${HEAVY_RECORD_FLUSH_PAGES}"
+    --tail-mode-threshold "${TAIL_MODE_THRESHOLD}"
+  --lane-mode "${LANE_MODE}"
+)
+
+ASYNC_RUNTIME_ENABLED="${PACIFICA_WALLET_EXPLORER_V2_ASYNC_RUNTIME:-false}"
+if [[ "${ASYNC_RUNTIME_ENABLED,,}" == "1" || "${ASYNC_RUNTIME_ENABLED,,}" == "true" || "${ASYNC_RUNTIME_ENABLED,,}" == "yes" ]]; then
+  PYTHON_CMD=(
+    python3
+    "${ROOT_DIR}/scripts/wallet_explorer_v2/phase1_async_runtime.py"
+    --instance-index "${INSTANCE_INDEX}"
+    --proxy-dir "${PROXY_SHARD_DIR}"
+    --shard-count "${SHARD_COUNT}"
+    --history-limit "${HISTORY_LIMIT}"
+    --timeout-seconds "${TIMEOUT_SECONDS}"
+    --request-attempts "${REQUEST_ATTEMPTS}"
+    --max-active "${HEAVY_MAX_ACTIVE}"
+    --parallelism "${HEAVY_PARALLELISM}"
+    --untracked-reserved-lanes "${UNTRACKED_RESERVED_LANES}"
+    --loop-sleep-seconds "${HEAVY_LOOP_SLEEP_SECONDS}"
+    --flush-interval-pages "${HEAVY_FLUSH_INTERVAL_PAGES}"
+    --record-flush-pages "${HEAVY_RECORD_FLUSH_PAGES}"
+    --tail-mode-threshold "${TAIL_MODE_THRESHOLD}"
+    --lane-mode "${LANE_MODE}"
+  )
+fi
+
+if command -v taskset >/dev/null 2>&1 && [[ -n "${CPU_SET}" ]]; then
+  exec taskset -c "${CPU_SET}" "${PYTHON_CMD[@]}"
+fi
+
+exec "${PYTHON_CMD[@]}"

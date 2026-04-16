@@ -1,0 +1,20 @@
+[Unit]
+Description=Pacifica Wallet Explorer V2 Phase 1 Worker %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/pacifica-flow
+EnvironmentFile=/root/pacifica-flow/config/runtime.env
+ExecStart=/bin/bash -lc '/root/pacifica-flow/scripts/systemd/run_wallet_explorer_v2_pending_lane.sh %i "${PACIFICA_WALLET_EXPLORER_V2_PHASE1_LOCAL_INSTANCES:-4}"'
+Restart=always
+RestartSec=2
+TimeoutStopSec=20
+KillMode=mixed
+Nice=-2
+OOMScoreAdjust=-500
+
+[Install]
+WantedBy=multi-user.target

@@ -10,17 +10,42 @@ User=root
 WorkingDirectory=/root/pacifica-flow
 EnvironmentFile=/root/pacifica-flow/config/runtime.env
 Environment=PORT=3200
+Environment=HOST=127.0.0.1
 Environment=PACIFICA_SERVICE=all
-Environment=PACIFICA_INDEXER_ENABLED=true
+Environment=PACIFICA_WS_ENABLED=false
+Environment=PACIFICA_INDEXER_ENABLED=false
 Environment=PACIFICA_INDEXER_RUNNER_ENABLED=false
 Environment=PACIFICA_ONCHAIN_ENABLED=false
 Environment=PACIFICA_ONCHAIN_RUNNER_ENABLED=false
 Environment=PACIFICA_SNAPSHOT_ENABLED=false
 Environment=PACIFICA_GLOBAL_KPI_ENABLED=false
-ExecStart=/usr/bin/env PORT=3200 /usr/bin/npm run service:ui-api
+Environment=PACIFICA_UI_API_PERSISTED_MARKET_ONLY=true
+Environment=PACIFICA_MARKET_OI_BACKGROUND_ESTIMATION=false
+Environment=PACIFICA_SOLANA_LOG_TRIGGER_ENABLED=false
+Environment=PACIFICA_LIVE_TRADE_ATTRIBUTION_DB_ENABLED=false
+Environment=PACIFICA_LIVE_TRADE_WALLET_ATTRIBUTION_ENABLED=false
+Environment=PACIFICA_LIVE_TRADE_TX_ATTRIBUTION_ENABLED=false
+Environment=PACIFICA_LIVE_WALLET_FIRST_ENABLED=true
+Environment=PACIFICA_POSITION_LIFECYCLE_LOOP_ENABLED=false
+Environment=PACIFICA_WALLET_METRICS_HISTORY_LOOP_ENABLED=false
+Environment=PACIFICA_LIVE_WALLET_FIRST_EXTERNAL_SHARDS=false
+Environment=PACIFICA_INDEXER_EXTERNAL_SHARDS_ENABLED=false
+Environment=PACIFICA_MINIMAL_UI_MODE=false
+Environment=PACIFICA_RUNTIME_STATUS_ENABLED=true
+Environment=PACIFICA_RUNTIME_STATUS_BACKGROUND_REFRESH=false
+Environment=PACIFICA_WALLET_EXPLORER_BACKGROUND_REFRESH=false
+Environment=PACIFICA_EXTERNAL_SHARD_BACKGROUND_REFRESH=false
+Environment=PACIFICA_LIVE_WALLET_FIRST_BACKGROUND_REFRESH=false
+Environment=PACIFICA_EXCHANGE_OVERVIEW_RESPONSE_CACHE_TTL_MS=300000
+Environment=PACIFICA_MULTI_EGRESS_ENABLED=false
+Environment=PACIFICA_GLOBAL_KPI_USE_MULTI_EGRESS=false
+Environment=NODE_OPTIONS=--max-old-space-size=2048
+Nice=-5
+OOMScoreAdjust=-500
+ExecStart=/usr/bin/env PATH=/usr/local/bin:/usr/bin:/bin PORT=3200 npm run service:ui-api
 Restart=always
 RestartSec=3
-TimeoutStopSec=30
+TimeoutStopSec=15
 
 [Install]
 WantedBy=pacifica-flow.target

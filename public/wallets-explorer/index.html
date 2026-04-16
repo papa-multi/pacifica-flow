@@ -1,0 +1,577 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PacificaFlow | Wallet Explorer</title>
+    <link rel="icon" type="image/png" href="/favicon.png?v=20260325-brand1" />
+    <link rel="shortcut icon" type="image/png" href="/favicon.png?v=20260325-brand1" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png?v=20260325-brand1" />
+    <link rel="preload" href="/assets/bg_new_2048.webp?v=20260326-perf5" as="image" type="image/webp" fetchpriority="high" />
+    <style>
+      :root{--pf-sidebar-collapsed:74px;--pf-content-max:1560px;--pf-shell-gap:22px;--pf-bg:#0a1826;--pf-text-main:#f1f7fc;--pf-font-display:"Aptos","Segoe UI Semibold","Segoe UI","Helvetica Neue",Arial,sans-serif;--pf-font-body:"Aptos","Segoe UI","Helvetica Neue",Arial,sans-serif;--pf-font-mono:"Cascadia Mono","SFMono-Regular",Consolas,"Liberation Mono",monospace}
+      *{box-sizing:border-box}html,body{margin:0;min-height:100%}body{background:var(--pf-bg);color:var(--pf-text-main);font-family:var(--pf-font-body);line-height:1.45;overflow-x:hidden}[hidden]{display:none!important}
+      .bg-scene,.bg-layer,.bg-image{position:fixed;inset:0}.bg-scene{z-index:-3;pointer-events:none;overflow:hidden}.bg-image{width:100%;height:100%;object-fit:cover;opacity:.46;pointer-events:none}
+      .app-layout{display:flex;min-height:100vh}.sidebar{position:fixed;inset:0 auto 0 0;width:74px;padding:18px 12px}.shell{flex:1;min-width:0;padding-left:calc(var(--pf-sidebar-collapsed) + var(--pf-shell-gap))}.shell-container{width:min(var(--pf-content-max),calc(100vw - 120px));margin:0 auto;padding:24px 0 48px}
+      .sidebar-brand{display:inline-flex;align-items:center;justify-content:center;width:100%;gap:11px}.sidebar-brand-collapsed{display:inline-flex}.sidebar-brand-expanded{display:none}.sidebar:hover .sidebar-brand-collapsed{display:none}.sidebar:hover .sidebar-brand-expanded{display:inline-flex;justify-content:flex-start}.brand-mark{display:inline-flex;align-items:center;justify-content:center;width:44px;height:44px;flex:0 0 44px}.brand-mark img{display:block;width:44px;height:44px}.brand-stack{display:grid;align-content:center;gap:4px;max-width:0;opacity:0;overflow:hidden;transform:translateX(-5px)}.sidebar:not(:hover) .brand-stack{display:none!important;max-width:0!important;width:0!important;min-width:0!important;flex:0 0 0!important;opacity:0!important;margin-left:0!important;overflow:hidden;pointer-events:none}.sidebar:not(:hover) .brand-mark{margin:0 auto}.sidebar:not(:hover) .sidebar-brand-collapsed{width:44px!important;max-width:44px!important;margin-inline:auto!important;justify-content:center!important;gap:0!important;overflow:hidden!important}.sidebar:hover .brand-stack{display:grid!important;max-width:176px;opacity:1;transform:translateX(0)}
+    </style>
+    <link rel="preload" href="/styles.css?v=20260411-volumerankhero10" as="style" onload="this.onload=null;this.rel='stylesheet'" />
+    <noscript><link rel="stylesheet" href="/styles.css?v=20260411-volumerankhero10" /></noscript>
+  </head>
+  <body>
+    <div id="pf-runtime-error" class="lt-runtime-error" hidden></div>
+    <div class="bg-scene" aria-hidden="true">
+      <img class="bg-image" src="/assets/bg_new_2048.webp?v=20260326-perf5" width="2048" height="1152" alt="" fetchpriority="high" decoding="async" />
+      <div class="bg-layer bg-main"></div>
+      <div class="bg-layer bg-grade"></div>
+      <div class="bg-layer bg-water-motion"></div>
+      <div class="bg-layer bg-rock-impact"></div>
+      <div class="bg-layer bg-symbol-impact"></div>
+      <div class="bg-layer bg-splash"></div>
+      <div class="bg-layer bg-atmosphere"></div>
+    </div>
+    <div class="app-layout">
+      <aside class="sidebar">
+        <a class="brand sidebar-brand sidebar-brand-collapsed" href="/" aria-label="PacificaFlow home">
+          <span class="brand-mark">
+            <img src="/favicon.png?v=20260325-brand1" alt="Pacifica logo" width="40" height="40" decoding="async" />
+          </span>
+        </a>
+        <a class="brand sidebar-brand sidebar-brand-expanded" href="/" aria-label="PacificaFlow home">
+          <span class="brand-mark">
+            <img src="/favicon.png?v=20260325-brand1" alt="Pacifica logo" width="40" height="40" decoding="async" />
+          </span>
+          <span class="brand-stack">
+            <strong class="brand-wordmark-text">PacificaFlow</strong>
+            <span class="brand-sub">Exchange Intelligence Console</span>
+          </span>
+        </a>
+
+        <nav class="sidebar-nav">
+          <a class="tab-link" href="/">
+            <span class="nav-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M5 18V11"></path>
+                <path d="M12 18V6"></path>
+                <path d="M19 18V13"></path>
+                <path d="M4 18.5H20"></path>
+              </svg>
+            </span>
+            <span class="nav-label">Exchange Overview</span>
+          </a>
+          <a class="tab-link active" href="/wallets-explorer/" aria-current="page">
+            <span class="nav-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M4 8.5A2.5 2.5 0 0 1 6.5 6H18a2 2 0 0 1 2 2v1.5"></path>
+                <path d="M4 8.5v7A2.5 2.5 0 0 0 6.5 18H18a2 2 0 0 0 2-2v-5.5H15a2 2 0 0 1 0-4h5"></path>
+                <path d="M15 13h.01"></path>
+              </svg>
+            </span>
+            <span class="nav-label">Wallet Explorer</span>
+          </a>
+          <a class="tab-link" href="/coin/BTC">
+            <span class="nav-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 3 19 7v10l-7 4-7-4V7l7-4Z"></path>
+                <path d="M9.5 9.5h5v5h-5z"></path>
+              </svg>
+            </span>
+            <span class="nav-label">Coin Analysis</span>
+          </a>
+          <a class="tab-link" href="/wallet-performance/">
+            <span class="nav-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M4 18.5H20"></path>
+                <path d="M7 16v-4"></path>
+                <path d="M12 16V8"></path>
+                <path d="M17 16v-7"></path>
+              </svg>
+            </span>
+            <span class="nav-label">Wallet Performance</span>
+          </a>
+          <a class="tab-link" href="/social-cart/">
+            <span class="nav-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M5 7.5A1.5 1.5 0 0 1 6.5 6h8A1.5 1.5 0 0 1 16 7.5v9A1.5 1.5 0 0 1 14.5 18h-8A1.5 1.5 0 0 1 5 16.5z"></path>
+                <path d="M14 10l5-5"></path>
+                <path d="M15.5 5H19v3.5"></path>
+              </svg>
+            </span>
+            <span class="nav-label">Social Cart</span>
+          </a>
+        </nav>
+      </aside>
+
+      <main class="shell">
+        <div class="shell-container">
+          <section id="wallets-view" class="view active" aria-hidden="false">
+            <section class="wallet-explorer-stage">
+              <header class="view-header">
+                <div class="view-header-copy">
+                  <p class="view-kicker">Pacifica Intelligence</p>
+                  <h1>Wallet Explorer</h1>
+                  <p class="view-subtitle">
+                    Discover lifecycle, performance, and ranking of tracked wallets.
+                  </p>
+                </div>
+              </header>
+
+              <section class="panel controls-panel wallet-controls">
+                <input id="wallet-search" type="search" placeholder="Search wallet" autocomplete="off" spellcheck="false" />
+                <select id="wallet-page-size">
+                  <option value="20">20 / page</option>
+                  <option value="50">50 / page</option>
+                  <option value="100">100 / page</option>
+                </select>
+                <span id="wallet-last-updated" class="muted-pill">Updated -</span>
+                <span id="wallet-total-label-inline" class="muted-pill" hidden>0 wallets</span>
+                <span id="wallet-page-label-inline" hidden>Page 1 / 1</span>
+              </section>
+
+              <div id="wallet-filter-summary" class="wallet-filter-summary" hidden></div>
+
+              <section class="panel">
+                <div class="panel-header">
+                  <h2>WALLET EXPLORER</h2>
+                  <span id="wallet-total-label" class="muted-pill">0 wallets</span>
+                </div>
+                <div class="table-wrap">
+                  <table class="wallet-table">
+                    <thead>
+                      <tr>
+                        <th>Wallet</th>
+                        <th><button type="button" class="table-sort-btn" data-wallet-sort-key="trades" data-sort-label="Trades"><span>Trades</span><span data-wallet-sort-indicator>↑↓</span></button></th>
+                        <th><button type="button" class="table-sort-btn" data-wallet-sort-key="volumeUsd" data-sort-label="Volume"><span>Volume</span><span data-wallet-sort-indicator>↑↓</span></button></th>
+                        <th><button type="button" class="table-sort-btn" data-wallet-sort-key="totalWins" data-sort-label="Total Wins"><span>Total Wins</span><span data-wallet-sort-indicator>↑↓</span></button></th>
+                        <th><button type="button" class="table-sort-btn" data-wallet-sort-key="totalLosses" data-sort-label="Total Losses"><span>Total Losses</span><span data-wallet-sort-indicator>↑↓</span></button></th>
+                        <th><button type="button" class="table-sort-btn" data-wallet-sort-key="pnlUsd" data-sort-label="PnL"><span>PnL</span><span data-wallet-sort-indicator>↑↓</span></button></th>
+                        <th><button type="button" class="table-sort-btn" data-wallet-sort-key="drawdownPct" data-sort-label="Max Drawdown"><span>Max Drawdown</span><span data-wallet-sort-indicator>↑↓</span></button></th>
+                        <th><button type="button" class="table-sort-btn" data-wallet-sort-key="returnPct" data-sort-label="Return %"><span>Return %</span><span data-wallet-sort-indicator>↑↓</span></button></th>
+                        <th><button type="button" class="table-sort-btn" data-wallet-sort-key="accountEquityUsd" data-sort-label="Account Equity"><span>Account Equity</span><span data-wallet-sort-indicator>↑↓</span></button></th>
+                        <th><button type="button" class="table-sort-btn" data-wallet-sort-key="openPositions" data-sort-label="Open Positions"><span>Open Positions</span><span data-wallet-sort-indicator>↑↓</span></button></th>
+                        <th><button type="button" class="table-sort-btn" data-wallet-sort-key="winRate" data-sort-label="Win Rate"><span>Win Rate</span><span data-wallet-sort-indicator>↑↓</span></button></th>
+                        <th><button type="button" class="table-sort-btn" data-wallet-sort-key="firstTrade" data-sort-label="First Trade"><span>First Trade</span><span data-wallet-sort-indicator>↑↓</span></button></th>
+                        <th><button type="button" class="table-sort-btn" data-wallet-sort-key="lastTrade" data-sort-label="Last Trade"><span>Last Trade</span><span data-wallet-sort-indicator>↑↓</span></button></th>
+                        <th><span>Action</span></th>
+                      </tr>
+                    </thead>
+                    <tbody id="wallet-table-body">
+                      <tr><td colspan="14" class="muted">Wallet data is loading.</td></tr>
+                    </tbody>
+                  </table>
+                </div>
+
+                <div class="pagination-row wallet-pagination-row">
+                  <button id="wallet-prev-btn" class="btn-ghost" type="button">Prev</button>
+                  <span id="wallet-page-label">Page 1 / 1</span>
+                  <button id="wallet-next-btn" class="btn-ghost" type="button">Next</button>
+                </div>
+              </section>
+
+              <aside id="wallet-profile-panel" class="wallet-detail-drawer" hidden>
+                <div class="wallet-detail-head">
+                  <div class="wallet-detail-copy">
+                    <span id="wallet-profile-kicker" class="view-kicker">Wallet Overview</span>
+                    <div class="wallet-detail-id-row">
+                      <h3 id="wallet-profile-id">Select a wallet</h3>
+                      <button id="wallet-profile-copy-btn" class="wallet-copy-btn wallet-profile-copy-btn" type="button" hidden>Copy</button>
+                    </div>
+                    <p id="wallet-profile-subtitle" class="view-subtitle">Simple wallet performance and concentration overview.</p>
+                  </div>
+                  <button id="wallet-profile-close-btn" class="btn-ghost" type="button">Close</button>
+                </div>
+                <div id="wallet-profile-empty-copy" class="empty-state" hidden></div>
+                <div class="wallet-detail-body">
+                  <div class="profile-kpis" id="wallet-profile-kpis"></div>
+                  <div id="wallet-profile-meta" class="wallet-profile-meta-grid"></div>
+                  <section class="wallet-detail-section">
+                    <div class="panel-header">
+                      <h2>VOLUME CONCENTRATION</h2>
+                    </div>
+                    <div id="wallet-profile-symbols" class="wallet-profile-concentration"></div>
+                  </section>
+                </div>
+              </aside>
+            </section>
+          </section>
+        </div>
+      </main>
+    </div>
+
+    <div id="wallet-filter-modal" class="filter-modal-backdrop" hidden aria-hidden="true">
+      <div class="filter-modal wallet-filter-modal-shell" role="dialog" aria-modal="true" aria-labelledby="wallet-filter-title" tabindex="-1">
+        <div class="filter-modal-head wallet-filter-head">
+          <div class="wallet-filter-head-copy">
+            <span class="wallet-filter-kicker">Wallet Explorer</span>
+            <h2 id="wallet-filter-title">Refine Wallets</h2>
+            <p>Search precisely with a cleaner metric filter system. Type exact values or drag ranges to tune the result set quickly.</p>
+          </div>
+          <button id="wallet-filter-close-btn" class="btn-ghost" type="button">Close</button>
+        </div>
+
+        <div class="filter-modal-groups">
+          <details class="filter-group" data-wallet-filter-group="activity" open>
+            <summary class="filter-group-summary">
+              <span class="filter-group-title">Activity & status</span>
+              <span class="filter-group-meta">
+                <span class="filter-group-count" data-wallet-filter-group-count="activity">0</span>
+                <span class="filter-group-chevron">+</span>
+              </span>
+            </summary>
+            <div class="filter-card wallet-filter-card">
+              <div class="wallet-filter-grid wallet-filter-grid-2">
+                <label>
+                  <span>Symbols</span>
+                  <input id="wallet-filter-symbols" type="text" list="wallet-symbol-options" placeholder="BTC, ETH, SOL" autocomplete="off" />
+                </label>
+                <label>
+                  <span>Side</span>
+                  <select id="wallet-filter-side">
+                    <option value="">Any side</option>
+                    <option value="long">Long</option>
+                    <option value="short">Short</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Open Position State</span>
+                  <select id="wallet-filter-open-positions">
+                    <option value="">Any state</option>
+                    <option value="yes">Has open positions</option>
+                    <option value="no">No open positions</option>
+                  </select>
+                </label>
+              </div>
+
+              <div class="filter-checkbox-group wallet-filter-status-group">
+                <label><input type="checkbox" data-wallet-filter-status="complete" /> <span>Complete wallets</span></label>
+                <label><input type="checkbox" data-wallet-filter-status="incomplete" /> <span>Incomplete wallets</span></label>
+                <label><input type="checkbox" data-wallet-filter-status="trade_incomplete" /> <span>Trade incomplete</span></label>
+                <label><input type="checkbox" data-wallet-filter-status="funding_incomplete" /> <span>Funding incomplete</span></label>
+              </div>
+            </div>
+          </details>
+
+          <details class="filter-group" data-wallet-filter-group="performance">
+            <summary class="filter-group-summary">
+              <span class="filter-group-title">Performance</span>
+              <span class="filter-group-meta">
+                <span class="filter-group-count" data-wallet-filter-group-count="performance">0</span>
+                <span class="filter-group-chevron">+</span>
+              </span>
+            </summary>
+            <div class="filter-card wallet-filter-card">
+              <div class="wallet-filter-grid wallet-filter-grid-2 wallet-filter-range-stack">
+                <section class="wallet-range-block" data-range-field="trades">
+                  <div class="wallet-range-head">
+                    <strong>Trades</strong>
+                    <span>Min / max or match one exact value by setting both the same.</span>
+                  </div>
+                  <div class="filter-range-grid">
+                    <label>
+                      <span>Minimum</span>
+                      <input id="wallet-filter-min-trades" type="number" min="0" step="1" placeholder="0" />
+                    </label>
+                    <label>
+                      <span>Maximum</span>
+                      <input id="wallet-filter-max-trades" type="number" min="0" step="1" placeholder="No cap" />
+                    </label>
+                  </div>
+                  <div class="wallet-range-slider-grid">
+                    <label class="wallet-range-slider">
+                      <span>Min slider</span>
+                      <input id="wallet-filter-min-trades-slider" type="range" min="0" max="1000000" step="100" data-sync-target="wallet-filter-min-trades" />
+                    </label>
+                    <label class="wallet-range-slider">
+                      <span>Max slider</span>
+                      <input id="wallet-filter-max-trades-slider" type="range" min="0" max="1000000" step="100" data-sync-target="wallet-filter-max-trades" />
+                    </label>
+                  </div>
+                </section>
+
+                <section class="wallet-range-block" data-range-field="volume">
+                  <div class="wallet-range-head">
+                    <strong>Volume USD</strong>
+                    <span>Filter by notional size with exact input or fast slider adjustment.</span>
+                  </div>
+                  <div class="filter-range-grid">
+                    <label>
+                      <span>Minimum</span>
+                      <input id="wallet-filter-min-volume" type="number" min="0" step="1000" placeholder="0" />
+                    </label>
+                    <label>
+                      <span>Maximum</span>
+                      <input id="wallet-filter-max-volume" type="number" min="0" step="1000" placeholder="No cap" />
+                    </label>
+                  </div>
+                  <div class="wallet-range-slider-grid">
+                    <label class="wallet-range-slider">
+                      <span>Min slider</span>
+                      <input id="wallet-filter-min-volume-slider" type="range" min="0" max="1000000000" step="10000" data-sync-target="wallet-filter-min-volume" />
+                    </label>
+                    <label class="wallet-range-slider">
+                      <span>Max slider</span>
+                      <input id="wallet-filter-max-volume-slider" type="range" min="0" max="1000000000" step="10000" data-sync-target="wallet-filter-max-volume" />
+                    </label>
+                  </div>
+                </section>
+
+                <section class="wallet-range-block" data-range-field="pnl">
+                  <div class="wallet-range-head">
+                    <strong>PnL USD</strong>
+                    <span>Support downside and upside filtering with typed values or a slider sweep.</span>
+                  </div>
+                  <div class="filter-range-grid">
+                    <label>
+                      <span>Minimum</span>
+                      <input id="wallet-filter-min-pnl" type="number" step="100" placeholder="-5000" />
+                    </label>
+                    <label>
+                      <span>Maximum</span>
+                      <input id="wallet-filter-max-pnl" type="number" step="100" placeholder="5000" />
+                    </label>
+                  </div>
+                  <div class="wallet-range-slider-grid">
+                    <label class="wallet-range-slider">
+                      <span>Min slider</span>
+                      <input id="wallet-filter-min-pnl-slider" type="range" min="-10000000" max="10000000" step="1000" data-sync-target="wallet-filter-min-pnl" />
+                    </label>
+                    <label class="wallet-range-slider">
+                      <span>Max slider</span>
+                      <input id="wallet-filter-max-pnl-slider" type="range" min="-10000000" max="10000000" step="1000" data-sync-target="wallet-filter-max-pnl" />
+                    </label>
+                  </div>
+                </section>
+
+                <section class="wallet-range-block" data-range-field="win-rate">
+                  <div class="wallet-range-head">
+                    <strong>Win rate</strong>
+                    <span>Focus on stronger hit-rate profiles while keeping adjustment smooth.</span>
+                  </div>
+                  <div class="filter-range-grid">
+                    <label>
+                      <span>Minimum %</span>
+                      <input id="wallet-filter-min-win-rate" type="number" min="0" max="100" step="0.1" placeholder="0" />
+                    </label>
+                    <label>
+                      <span>Maximum %</span>
+                      <input id="wallet-filter-max-win-rate" type="number" min="0" max="100" step="0.1" placeholder="100" />
+                    </label>
+                  </div>
+                  <div class="wallet-range-slider-grid">
+                    <label class="wallet-range-slider">
+                      <span>Min slider</span>
+                      <input id="wallet-filter-min-win-rate-slider" type="range" min="0" max="100" step="1" data-sync-target="wallet-filter-min-win-rate" />
+                    </label>
+                    <label class="wallet-range-slider">
+                      <span>Max slider</span>
+                      <input id="wallet-filter-max-win-rate-slider" type="range" min="0" max="100" step="1" data-sync-target="wallet-filter-max-win-rate" />
+                    </label>
+                  </div>
+                </section>
+              </div>
+            </div>
+          </details>
+
+          <details class="filter-group" data-wallet-filter-group="exposure">
+            <summary class="filter-group-summary">
+              <span class="filter-group-title">Exposure & position posture</span>
+              <span class="filter-group-meta">
+                <span class="filter-group-count" data-wallet-filter-group-count="exposure">0</span>
+                <span class="filter-group-chevron">+</span>
+              </span>
+            </summary>
+            <div class="filter-card wallet-filter-card">
+              <div class="wallet-filter-grid wallet-filter-grid-2 wallet-filter-range-stack">
+                <section class="wallet-range-block">
+                  <div class="wallet-range-head">
+                    <strong>Open positions</strong>
+                    <span>Filter by the number of currently open positions.</span>
+                  </div>
+                  <div class="filter-range-grid">
+                    <label>
+                      <span>Minimum</span>
+                      <input id="wallet-filter-min-open-positions" type="number" min="0" step="1" placeholder="0" />
+                    </label>
+                    <label>
+                      <span>Maximum</span>
+                      <input id="wallet-filter-max-open-positions" type="number" min="0" step="1" placeholder="No cap" />
+                    </label>
+                  </div>
+                  <div class="wallet-range-slider-grid">
+                    <label class="wallet-range-slider">
+                      <span>Min slider</span>
+                      <input id="wallet-filter-min-open-positions-slider" type="range" min="0" max="200" step="1" data-sync-target="wallet-filter-min-open-positions" />
+                    </label>
+                    <label class="wallet-range-slider">
+                      <span>Max slider</span>
+                      <input id="wallet-filter-max-open-positions-slider" type="range" min="0" max="200" step="1" data-sync-target="wallet-filter-max-open-positions" />
+                    </label>
+                  </div>
+                </section>
+
+                <section class="wallet-range-block">
+                  <div class="wallet-range-head">
+                    <strong>Exposure USD</strong>
+                    <span>Control notional exposure using exact values or quick slider moves.</span>
+                  </div>
+                  <div class="filter-range-grid">
+                    <label>
+                      <span>Minimum</span>
+                      <input id="wallet-filter-min-exposure" type="number" min="0" step="1000" placeholder="0" />
+                    </label>
+                    <label>
+                      <span>Maximum</span>
+                      <input id="wallet-filter-max-exposure" type="number" min="0" step="1000" placeholder="No cap" />
+                    </label>
+                  </div>
+                  <div class="wallet-range-slider-grid">
+                    <label class="wallet-range-slider">
+                      <span>Min slider</span>
+                      <input id="wallet-filter-min-exposure-slider" type="range" min="0" max="100000000" step="10000" data-sync-target="wallet-filter-min-exposure" />
+                    </label>
+                    <label class="wallet-range-slider">
+                      <span>Max slider</span>
+                      <input id="wallet-filter-max-exposure-slider" type="range" min="0" max="100000000" step="10000" data-sync-target="wallet-filter-max-exposure" />
+                    </label>
+                  </div>
+                </section>
+              </div>
+            </div>
+          </details>
+
+          <details class="filter-group" data-wallet-filter-group="dates">
+            <summary class="filter-group-summary">
+              <span class="filter-group-title">Timeline</span>
+              <span class="filter-group-meta">
+                <span class="filter-group-count" data-wallet-filter-group-count="dates">0</span>
+                <span class="filter-group-chevron">+</span>
+              </span>
+            </summary>
+            <div class="filter-card wallet-filter-card">
+              <div class="wallet-filter-grid wallet-filter-grid-2">
+                <label>
+                  <span>First trade from</span>
+                  <input id="wallet-filter-first-trade-from" type="date" />
+                </label>
+                <label>
+                  <span>First trade to</span>
+                  <input id="wallet-filter-first-trade-to" type="date" />
+                </label>
+                <label>
+                  <span>Last activity from</span>
+                  <input id="wallet-filter-last-trade-from" type="date" />
+                </label>
+                <label>
+                  <span>Last activity to</span>
+                  <input id="wallet-filter-last-trade-to" type="date" />
+                </label>
+              </div>
+            </div>
+          </details>
+        </div>
+
+        <div class="filter-modal-actions">
+          <datalist id="wallet-symbol-options"></datalist>
+          <button id="wallet-filter-reset-btn" class="btn-ghost" type="button">Reset</button>
+          <button id="wallet-filter-apply-btn" class="btn-ghost" type="button">Apply Filters</button>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      (function () {
+        var errorNodeId = "pf-runtime-error";
+        function showRuntimeError(message) {
+          var node = document.getElementById(errorNodeId);
+          if (!node) return;
+          node.hidden = false;
+          node.textContent = "Dashboard runtime error: " + message;
+          window.__PF_APP_RUNTIME_ERROR_SHOWN = true;
+        }
+        function retryFrontendBundle() {
+          if (window.__PF_APP_SCRIPT_RETRY_ATTEMPTED) return false;
+          if (window.__PF_APP_INSTANCE_LOADED || window.__PF_APP_SCRIPT_EXECUTED || window.__PF_APP_BOOTED) return false;
+          if (document.querySelector('script[data-pf-retry-script="1"]')) return false;
+          var current = document.getElementById("pf-app-entry");
+          if (!current || !current.getAttribute) return false;
+          var src = current.getAttribute("src");
+          if (!src) return false;
+          window.__PF_APP_SCRIPT_RETRY_ATTEMPTED = true;
+          var retrySrc = src + (src.indexOf("?") >= 0 ? "&" : "?") + "retry=" + Date.now();
+          var next = document.createElement("script");
+          next.setAttribute("data-pf-retry-script", "1");
+          next.src = retrySrc;
+          next.async = true;
+          next.onload = function () { window.__PF_APP_SCRIPT_NETWORK_OK = true; };
+          next.onerror = function () { window.__PF_APP_SCRIPT_NETWORK_OK = false; };
+          document.body.appendChild(next);
+          return true;
+        }
+        window.__PF_APP_SHOW_RUNTIME_ERROR = showRuntimeError;
+        window.__PF_APP_SCRIPT_NETWORK_OK = false;
+        window.__PF_APP_SCRIPT_EXECUTED = false;
+        window.__PF_APP_BOOTED = false;
+        window.__PF_APP_BOOT_STEP = "html_init";
+        window.__PF_APP_RUNTIME_ERROR_SHOWN = false;
+        window.__PF_APP_SCRIPT_RETRY_ATTEMPTED = false;
+        window.addEventListener("error", function (event) {
+          var msg = (event && event.message) || "unknown";
+          showRuntimeError(msg);
+        });
+        window.addEventListener("unhandledrejection", function (event) {
+          var reason = event && event.reason;
+          var msg = reason && reason.message ? reason.message : String(reason || "unknown");
+          showRuntimeError(msg);
+        });
+        setTimeout(function () {
+          if (!window.__PF_APP_SCRIPT_NETWORK_OK) {
+            if (retryFrontendBundle()) {
+              setTimeout(function () {
+                if (!window.__PF_APP_SCRIPT_NETWORK_OK) {
+                  showRuntimeError("frontend bundle failed to load. Hard refresh (Ctrl+F5). If this persists, the public host is serving a stale or blocked JS asset.");
+                }
+              }, 8000);
+              return;
+            }
+            showRuntimeError("frontend bundle failed to load. Hard refresh (Ctrl+F5). If this persists, the public host is serving a stale or blocked JS asset.");
+            return;
+          }
+          if (!window.__PF_APP_SCRIPT_EXECUTED) {
+            showRuntimeError("frontend bundle loaded but did not execute. Browser may be using stale or incompatible JS.");
+            return;
+          }
+          if (window.__PF_APP_RUNTIME_ERROR_SHOWN) return;
+          if (!window.__PF_APP_BOOTED) {
+            showRuntimeError("frontend did not finish boot. step=" + (window.__PF_APP_BOOT_STEP || "unknown") + ". Browser JS, API mapping, or stream startup is blocked.");
+          }
+        }, 60000);
+      })();
+    </script>
+    <script>
+      (function () {
+        window.__PF_INSPECT_WALLET = function (wallet) {
+          var value = String(wallet || "").trim();
+          if (!value) return false;
+          var selector = '#wallet-table-body .wallet-list-row[data-wallet="' + CSS.escape(value) + '"]';
+          var row = document.querySelector(selector);
+          if (row && row.dispatchEvent) {
+            row.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
+            return true;
+          }
+          var btn = document.querySelector('#wallet-table-body .inspect-btn[data-wallet="' + CSS.escape(value) + '"]');
+          if (btn && btn.click) {
+            btn.click();
+            return true;
+          }
+          return false;
+        };
+      })();
+    </script>
+    <script
+      id="pf-app-entry"
+      src="/app.js?v=20260413-walletinspect2"
+      onload="window.__PF_APP_SCRIPT_NETWORK_OK = true;"
+      onerror="window.__PF_APP_SCRIPT_NETWORK_OK = false;"
+    ></script>
+  </body>
+</html>

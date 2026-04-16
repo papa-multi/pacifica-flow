@@ -24,9 +24,15 @@ function normalizeTradeLike(row = {}) {
   );
 
   return {
+    historyId:
+      row.history_id !== undefined ? row.history_id : row.historyId !== undefined ? row.historyId : null,
+    orderId: row.order_id !== undefined ? row.order_id : row.orderId !== undefined ? row.orderId : null,
     symbol: String(row.symbol || "").toUpperCase(),
+    side: String(row.side || "").toLowerCase(),
     amount: row.amount !== undefined ? row.amount : "0",
     price: row.price !== undefined ? row.price : "0",
+    entryPrice:
+      row.entry_price !== undefined ? row.entry_price : row.entryPrice !== undefined ? row.entryPrice : "0",
     fee: row.fee !== undefined ? row.fee : "0",
     liquidityPoolFee:
       row.liquidity_pool_fee !== undefined
@@ -43,8 +49,25 @@ function normalizeTradeLike(row = {}) {
         ? row.supplySideFee
         : "0",
     pnl: row.pnl !== undefined ? row.pnl : "0",
+    eventType:
+      row.event_type !== undefined
+        ? String(row.event_type || "").toLowerCase()
+        : row.eventType !== undefined
+        ? String(row.eventType || "").toLowerCase()
+        : "",
+    cause: String(row.cause || "").toLowerCase(),
     timestamp: Number.isFinite(timestamp) ? timestamp : 0,
   };
+}
+
+function classifyTradeExecution(row = {}) {
+  const eventType = String(row.eventType || "").toLowerCase();
+  const fee = toNum(row.fee, 0);
+  if (eventType.includes("maker")) return "maker";
+  if (eventType.includes("taker")) return "taker";
+  if (fee > 0) return "taker";
+  if (fee < 0) return "maker";
+  return "maker";
 }
 
 function normalizeFundingLike(row = {}) {
@@ -79,11 +102,16 @@ function aggregateBucket({ trades = [], funding = [], now, sinceTs = null }) {
     : [];
 
   let volumeUsd = 0;
+  let makerVolumeUsd = 0;
+  let takerVolumeUsd = 0;
+  let feeBearingVolumeUsd = 0;
   let feesPaidUsd = 0;
   let liquidityPoolFeesUsd = 0;
   let feeRebatesUsd = 0;
   let netFeesUsd = 0;
   let pnlUsd = 0;
+  let makerTrades = 0;
+  let takerTrades = 0;
   let wins = 0;
   let losses = 0;
   let firstTrade = null;
@@ -99,10 +127,19 @@ function aggregateBucket({ trades = [], funding = [], now, sinceTs = null }) {
     const feeSigned = toNum(row.fee, 0);
     const liquidityPoolFee = Math.max(0, toNum(row.liquidityPoolFee, 0));
     const pnl = toNum(row.pnl, 0);
+    const executionKind = classifyTradeExecution(row);
 
     volumeUsd += notional;
+    if (executionKind === "taker") {
+      takerTrades += 1;
+      takerVolumeUsd += notional;
+    } else {
+      makerTrades += 1;
+      makerVolumeUsd += notional;
+    }
     if (feeSigned > 0) feesPaidUsd += feeSigned;
     else if (feeSigned < 0) feeRebatesUsd += Math.abs(feeSigned);
+    if (feeSigned > 0 || liquidityPoolFee > 0) feeBearingVolumeUsd += notional;
     liquidityPoolFeesUsd += liquidityPoolFee;
     netFeesUsd += feeSigned;
     pnlUsd += pnl;
@@ -133,12 +170,22 @@ function aggregateBucket({ trades = [], funding = [], now, sinceTs = null }) {
     computedAt: now,
     trades: tradeCount,
     volumeUsd,
+    makerTrades,
+    takerTrades,
+    makerVolumeUsd,
+    takerVolumeUsd,
+    feeBearingVolumeUsd,
+    makerSharePct: volumeUsd > 0 ? (makerVolumeUsd / volumeUsd) * 100 : 0,
+    takerSharePct: volumeUsd > 0 ? (takerVolumeUsd / volumeUsd) * 100 : 0,
     // feesUsd remains "fees paid by wallet" for compatibility with existing consumers.
     feesUsd: feesPaidUsd,
     feesPaidUsd,
     liquidityPoolFeesUsd,
     feeRebatesUsd,
     netFeesUsd,
+    effectiveFeeRateBps: volumeUsd > 0 ? ((feesPaidUsd + liquidityPoolFeesUsd) / volumeUsd) * 10000 : 0,
+    feeBearingRateBps:
+      feeBearingVolumeUsd > 0 ? ((feesPaidUsd + liquidityPoolFeesUsd) / feeBearingVolumeUsd) * 10000 : 0,
     fundingPayoutUsd,
     // Revenue tracks gross wallet-paid trading fees (platform-side net can be derived from netFeesUsd).
     revenueUsd: feesPaidUsd,
@@ -188,6 +235,21 @@ function buildWalletRecord({ wallet, trades = [], funding = [], computedAt = Dat
   return {
     wallet: String(wallet || "").trim(),
     updatedAt: now,
+    trades: all.trades,
+    volumeUsd: all.volumeUsd,
+    feesUsd: all.feesUsd,
+    feesPaidUsd: all.feesPaidUsd,
+    liquidityPoolFeesUsd: all.liquidityPoolFeesUsd,
+    feeRebatesUsd: all.feeRebatesUsd,
+    netFeesUsd: all.netFeesUsd,
+    fundingPayoutUsd: all.fundingPayoutUsd,
+    revenueUsd: all.revenueUsd,
+    pnlUsd: all.pnlUsd,
+    wins: all.wins,
+    losses: all.losses,
+    winRatePct: all.winRatePct,
+    firstTrade: all.firstTrade,
+    lastTrade: all.lastTrade,
     all,
     d30,
     d7,

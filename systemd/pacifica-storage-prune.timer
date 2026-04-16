@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Pacifica storage prune periodically
+
+[Timer]
+OnBootSec=15min
+OnUnitActiveSec=12h
+Unit=pacifica-storage-prune.service
+Persistent=true
+
+[Install]
+WantedBy=timers.target

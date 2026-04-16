@@ -9,6 +9,16 @@ function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
 
+function uniqStrings(list = []) {
+  return Array.from(
+    new Set(
+      (Array.isArray(list) ? list : [])
+        .map((value) => String(value || "").trim())
+        .filter(Boolean)
+    )
+  );
+}
+
 function reasonPriority(reason = "") {
   const text = String(reason || "").trim().toLowerCase();
   if (!text) return 1;
@@ -36,7 +46,7 @@ class HotWalletWsMonitor {
     );
     this.maxWallets = this.initialWallets;
     this.capacityStep = Math.max(1, Number(options.capacityStep || 4));
-    this.soakWindowMs = Math.max(30000, Number(options.soakWindowMs || 3 * 60 * 1000));
+    this.soakWindowMs = Math.max(5000, Number(options.soakWindowMs || 3 * 60 * 1000));
     this.maxScaleErrors = Math.max(0, Number(options.maxScaleErrors || 0));
     this.maxScaleReconnects = Math.max(0, Number(options.maxScaleReconnects || 1));
     this.minScaleUtilizationPct = clamp(
@@ -56,7 +66,19 @@ class HotWalletWsMonitor {
     this.tickMs = Math.max(1000, Number(options.tickMs || 5000));
     this.reconnectMs = Math.max(500, Number(options.reconnectMs || 2000));
     this.pingIntervalMs = Math.max(5000, Number(options.pingIntervalMs || 25000));
+    this.subscribePositions = options.subscribePositions !== false;
+    this.subscribeAccountInfo = options.subscribeAccountInfo !== false;
+    this.subscribeTrades = options.subscribeTrades !== false;
+    this.subscribeOrderUpdates = options.subscribeOrderUpdates !== false;
+    this.retainColdWallets = Boolean(options.retainColdWallets);
+    this.proxyRows = uniqStrings(options.proxyRows || []);
+    this.proxyCursor = 0;
+    this.proxyUsage = new Map();
+    this.walletAllowPredicate =
+      typeof options.walletAllowPredicate === "function" ? options.walletAllowPredicate : null;
     this.onPositions = typeof options.onPositions === "function" ? options.onPositions : null;
+    this.onAccountInfo =
+      typeof options.onAccountInfo === "function" ? options.onAccountInfo : null;
     this.onTrades = typeof options.onTrades === "function" ? options.onTrades : null;
     this.onOrderUpdates =
       typeof options.onOrderUpdates === "function" ? options.onOrderUpdates : null;
@@ -99,6 +121,8 @@ class HotWalletWsMonitor {
       scaleEvents: 0,
       stableSinceAt: Date.now(),
       processRssMb: 0,
+      proxyCount: this.proxyRows.length,
+      proxiesInUse: 0,
       hotWallets: 0,
       warmWallets: 0,
       coldWallets: 0,
@@ -144,10 +168,11 @@ class HotWalletWsMonitor {
   promoteWallet(wallet, meta = {}) {
     const normalized = normalizeWallet(wallet);
     if (!this.status.enabled || !normalized) return false;
+    if (this.walletAllowPredicate && this.walletAllowPredicate(normalized) === false) return false;
     const now = Math.max(0, Number(meta.at || Date.now()));
     const reason = String(meta.reason || "activity").trim() || "activity";
     let record = this.wallets.get(normalized);
-    if (!record) {
+      if (!record) {
       if (this.wallets.size >= this.maxWallets) {
         const evicted = this.evictOneFor(normalized, now);
         if (!evicted) {
@@ -195,6 +220,7 @@ class HotWalletWsMonitor {
       awaitingTriggerLatency: false,
       tier: "cold",
       priorityScore: 0,
+      proxyUrl: null,
     };
   }
 
@@ -255,11 +281,17 @@ class HotWalletWsMonitor {
 
   attachClient(record) {
     const wallet = record.wallet;
+    const proxyUrl = this.chooseProxyUrl();
+    record.proxyUrl = proxyUrl || null;
+    if (record.proxyUrl) {
+      this.proxyUsage.set(record.proxyUrl, Number(this.proxyUsage.get(record.proxyUrl) || 0) + 1);
+    }
     const client = createWsClient({
       url: this.wsUrl,
       logger: this.logger,
       reconnectMs: this.reconnectMs,
       pingIntervalMs: this.pingIntervalMs,
+      proxyUrl: record.proxyUrl,
     });
     record.client = client;
     client.setHandlers({
@@ -270,9 +302,18 @@ class HotWalletWsMonitor {
           this.status.reconnectTransitions += 1;
         }
         if (status === "open") {
-          client.subscribe({ source: "account_positions", account: wallet });
-          client.subscribe({ source: "account_trades", account: wallet });
-          client.subscribe({ source: "account_order_updates", account: wallet });
+          if (this.subscribeAccountInfo) {
+            client.subscribe({ source: "account_info", account: wallet });
+          }
+          if (this.subscribePositions) {
+            client.subscribe({ source: "account_positions", account: wallet });
+          }
+          if (this.subscribeTrades) {
+            client.subscribe({ source: "account_trades", account: wallet });
+          }
+          if (this.subscribeOrderUpdates) {
+            client.subscribe({ source: "account_order_updates", account: wallet });
+          }
         }
         this.refreshStatus();
       },
@@ -289,6 +330,21 @@ class HotWalletWsMonitor {
       },
     });
     client.start();
+  }
+
+  chooseProxyUrl() {
+    if (!this.proxyRows.length) return "";
+    const nowUsage = this.proxyRows
+      .map((proxyUrl, idx) => ({
+        proxyUrl,
+        idx,
+        usage: Number(this.proxyUsage.get(proxyUrl) || 0),
+      }))
+      .sort((left, right) => left.usage - right.usage || left.idx - right.idx);
+    const chosen = nowUsage[0];
+    if (!chosen) return "";
+    this.proxyCursor = (chosen.idx + 1) % this.proxyRows.length;
+    return chosen.proxyUrl;
   }
 
   handleWalletMessage(record, payload) {
@@ -310,6 +366,22 @@ class HotWalletWsMonitor {
         );
       }
       record.awaitingTriggerLatency = false;
+    }
+
+    if (payload.channel === "account_info") {
+      const info =
+        payload.data && typeof payload.data === "object" && !Array.isArray(payload.data)
+          ? payload.data
+          : {};
+      if (this.onAccountInfo) {
+        this.onAccountInfo(wallet, info, {
+          at: now,
+          source: "ws.account_info",
+          li: payload.li || null,
+        });
+      }
+      this.refreshStatus();
+      return;
     }
 
     if (payload.channel === "account_positions") {
@@ -421,6 +493,7 @@ class HotWalletWsMonitor {
   }
 
   evictOneFor(_wallet, now = Date.now()) {
+    if (this.retainColdWallets) return false;
     let candidate = null;
     for (const record of this.wallets.values()) {
       const score = this.computeEvictionScore(record, now);
@@ -447,6 +520,14 @@ class HotWalletWsMonitor {
         record.client.stop();
       } catch (_error) {
         // ignore
+      }
+    }
+    if (record.proxyUrl) {
+      const nextUsage = Math.max(0, Number(this.proxyUsage.get(record.proxyUrl) || 1) - 1);
+      if (nextUsage > 0) {
+        this.proxyUsage.set(record.proxyUrl, nextUsage);
+      } else {
+        this.proxyUsage.delete(record.proxyUrl);
       }
     }
     this.wallets.delete(normalized);
@@ -482,6 +563,7 @@ class HotWalletWsMonitor {
         continue;
       }
       record.tier = "cold";
+      if (this.retainColdWallets) continue;
       if (lastTouch > 0 && now - lastTouch <= this.inactivityMs) continue;
       this.demoteWallet(record.wallet, "inactive");
     }
@@ -504,7 +586,14 @@ class HotWalletWsMonitor {
     if (errorDelta > this.maxScaleErrors) return;
     if (reconnectDelta > this.maxScaleReconnects) return;
     if (this.memoryCeilingMb > 0 && rssMb >= this.memoryCeilingMb) return;
-    this.maxWallets = Math.min(this.capacityCeiling, this.maxWallets + this.capacityStep);
+    const backlogScaleSteps = Math.max(
+      1,
+      Math.min(8, Math.ceil(droppedDelta / Math.max(1, this.capacityStep * 2)))
+    );
+    this.maxWallets = Math.min(
+      this.capacityCeiling,
+      this.maxWallets + this.capacityStep * backlogScaleSteps
+    );
     this.status.maxWallets = this.maxWallets;
     this.status.lastScaleAt = now;
     this.status.scaleEvents = Number(this.status.scaleEvents || 0) + 1;
@@ -526,6 +615,8 @@ class HotWalletWsMonitor {
     this.status.walletsWithOpenPositions = records.filter(
       (row) => Number(row.openPositionsCount || 0) > 0
     ).length;
+    this.status.proxyCount = this.proxyRows.length;
+    this.status.proxiesInUse = this.proxyUsage.size;
     this.status.hotWallets = records.filter((row) => row.tier === "hot").length;
     this.status.warmWallets = records.filter((row) => row.tier === "warm").length;
     this.status.coldWallets = Math.max(

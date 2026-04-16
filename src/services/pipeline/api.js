@@ -729,15 +729,15 @@ function buildMarketSymbolRank(state = {}) {
       return {
         symbol,
         market: `${symbol}USD-PERP`,
-        volumeUsd: toNum(row.volume24h, 0),
+        volumeUsd: toNum(row.volume24h, 0) / 2,
       };
     })
     .filter((row) => row.symbol)
     .sort((a, b) => b.volumeUsd - a.volumeUsd);
 }
 
-// Pacifica exchange-wide 24h volume should come from /info/prices as:
-// sum(volume_24h) across all symbols.
+// Pacifica exchange-wide rolling 24h volume should come from /info/prices as:
+// sum(volume_24h) / 2 across all symbols because Pacifica reports both sides.
 function buildMarketDailyStatsFromPrices(state = {}) {
   const prices = normalizeArray(
     Object.values((state && state.market && state.market.pricesBySymbol) || {})
@@ -747,7 +747,7 @@ function buildMarketDailyStatsFromPrices(state = {}) {
     (acc, row) => {
       const mark = toNum(row.mark, 0);
       const openInterest = toNum(row.openInterest, 0);
-      const volume24h = toNum(row.volume24h, 0);
+      const volume24h = toNum(row.volume24h, 0) / 2;
 
       acc.dailyVolume += volume24h;
       acc.openInterestAtEnd += openInterest * mark;
@@ -816,7 +816,7 @@ function buildExchangeOverviewPayload({ state, transport, wallets, timeframe }) 
       scope: "wallet_indexer",
       walletsIndexed: walletRows.length,
       marketFallbackUsed: !walletRank.length || tf === "24h",
-      dailyVolumeSource: "/api/v1/info/prices:sum(volume_24h)",
+      dailyVolumeSource: "/api/v1/info/prices:sum(volume_24h)/2",
       totalFeesSource:
         "wallet_indexer:sum(max(trade.fee,0))+sum(liquidity_pool_fee, if_available)",
       totalTradingFeesSource: "wallet_indexer:sum(max(trade.fee,0))",
@@ -911,12 +911,31 @@ function buildWalletExplorerPayload({ wallets, query }) {
       const d7 = summarizeBucket(record && record.d7);
       const d30 = summarizeBucket(record && record.d30);
       const all = summarizeBucket(record && record.all);
-      const lastActivity = Math.max(
-        Number(d24.lastTrade || 0),
-        Number(d7.lastTrade || 0),
-        Number(d30.lastTrade || 0),
-        Number(all.lastTrade || 0),
-        Number((record && record.updatedAt) || 0)
+      const fallbackRecord = record && record.wallet ? loadBestLocalWalletRecord(record.wallet) : null;
+      const lastOpenedAt = resolveWalletLastOpenedAt(
+        {
+          summary: {
+            lastOpenedAt:
+              Number(bucket.lastOpenedAt || 0) ||
+              Number(record && record.lastOpenedAt ? record.lastOpenedAt : 0) ||
+              Number(d24.lastOpenedAt || 0) ||
+              Number(d7.lastOpenedAt || 0) ||
+              Number(d30.lastOpenedAt || 0) ||
+              Number(all.lastOpenedAt || 0) ||
+              null,
+            lastOpenedPosition:
+              bucket.lastOpenedPosition ||
+              (record && record.lastOpenedPosition) ||
+              null,
+          },
+          lastOpenedAt:
+            Number(bucket.lastOpenedAt || 0) ||
+            Number(record && record.lastOpenedAt ? record.lastOpenedAt : 0) ||
+            null,
+          lastOpenedPosition: bucket.lastOpenedPosition || (record && record.lastOpenedPosition) || null,
+          positions: Array.isArray(record && record.positions) ? record.positions : [],
+        },
+        fallbackRecord
       );
       return {
         wallet: record.wallet,
@@ -929,7 +948,8 @@ function buildWalletExplorerPayload({ wallets, query }) {
         firstTrade: bucket.firstTrade || null,
         lastTrade: bucket.lastTrade || null,
         updatedAt: record.updatedAt || null,
-        lastActivity: lastActivity || null,
+        lastOpenedAt: lastOpenedAt || null,
+        lastActivity: lastOpenedAt || null,
         d24,
         d7,
         d30,
@@ -1044,9 +1064,28 @@ function buildWalletProfilePayload({ wallets, wallet, timeframe }) {
           totalWins: Number(bucket.wins || 0),
           totalLosses: Number(bucket.losses || 0),
           pnlUsd: toFixed(toNum(bucket.pnlUsd, 0), 2),
+          drawdownPct: toFixed(toNum(bucket.drawdownPct ?? record.drawdownPct, 0), 2),
+          returnPct: toFixed(toNum(bucket.returnPct ?? record.returnPct, 0), 2),
+          accountEquityUsd: toFixed(
+            toNum(bucket.accountEquityUsd ?? record.accountEquityUsd, 0),
+            2
+          ),
+          openPositions: Number(record.openPositions || 0),
           winRate: toFixed(toNum(bucket.winRatePct, 0), 2),
           firstTrade: bucket.firstTrade || null,
           lastTrade: bucket.lastTrade || null,
+          lastOpenedAt:
+            Number(bucket.lastOpenedAt || 0) ||
+            Number(bucket.lastOpenedPosition && bucket.lastOpenedPosition.openedAt ? bucket.lastOpenedPosition.openedAt : 0) ||
+            Number(record.lastOpenedAt || 0) ||
+            Number(record.lastOpenedPosition && record.lastOpenedPosition.openedAt ? record.lastOpenedPosition.openedAt : 0) ||
+            null,
+          lastActivity:
+            Number(bucket.lastOpenedAt || 0) ||
+            Number(bucket.lastOpenedPosition && bucket.lastOpenedPosition.openedAt ? bucket.lastOpenedPosition.openedAt : 0) ||
+            Number(record.lastOpenedAt || 0) ||
+            Number(record.lastOpenedPosition && record.lastOpenedPosition.openedAt ? record.lastOpenedPosition.openedAt : 0) ||
+            null,
           feesUsd: toFixed(toNum(bucket.feesUsd, 0), 2),
           feeRebatesUsd: toFixed(toNum(bucket.feeRebatesUsd, 0), 2),
           netFeesUsd: toFixed(toNum(bucket.netFeesUsd, 0), 2),

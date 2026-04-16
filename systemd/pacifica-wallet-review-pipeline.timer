@@ -1,0 +1,10 @@
+[Unit]
+Description=Refresh Pacifica Wallet Review Pipeline Snapshot
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=5min
+Unit=pacifica-wallet-review-pipeline.service
+
+[Install]
+WantedBy=timers.target

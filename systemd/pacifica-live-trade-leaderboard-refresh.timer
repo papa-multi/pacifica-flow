@@ -1,0 +1,12 @@
+[Unit]
+Description=Run PacificaFlow Live Trade Leaderboard Refresh
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=2min
+AccuracySec=10s
+Persistent=true
+Unit=pacifica-live-trade-leaderboard-refresh.service
+
+[Install]
+WantedBy=timers.target

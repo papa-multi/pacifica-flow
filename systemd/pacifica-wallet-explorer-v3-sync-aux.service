@@ -1,0 +1,14 @@
+[Unit]
+Description=Sync Wallet Explorer v3 Snapshot To Auxiliary Worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/root/pacifica-flow
+EnvironmentFile=-/root/pacifica-flow/config/runtime.env
+ExecStart=/bin/bash /root/pacifica-flow/scripts/systemd/push_wallet_explorer_v3_to_aux_worker.sh
+Nice=5
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7

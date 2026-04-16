@@ -1,7 +1,10 @@
 const LIVE_STALE_MS = 20000;
 const LIVE_DELAYED_MS = 8000;
-const RECONNECT_MAX_MS = 15000;
+const RECONNECT_MAX_MS = 5000;
 const SNAPSHOT_TIMEOUT_MS = 25000;
+const POSITIONS_FEED_TIMEOUT_MS = 8000;
+const POSITIONS_FEED_POLL_MS = 500;
+const LIVE_EVENT_WINDOW_MS = 5 * 60 * 1000;
 const DRAWER_FETCH_TIMEOUT_MS = 8000;
 const WALLET_DETAIL_ENDPOINT_PREFIX = "/api/live-trades/wallet/";
 
@@ -16,7 +19,7 @@ const state = {
   payloadSignature: "",
   activeView: "positions",
   activeWalletGroup: "pnl",
-  positionsSortKey: "openedAt",
+  positionsSortKey: "detectedAt",
   positionsSortDir: "desc",
   walletsSortKey: "pnlAll",
   walletsSortDir: "desc",
@@ -37,8 +40,6 @@ const state = {
   search: "",
   filters: {
     wallet: "",
-    symbol: "",
-    side: "",
     minUsd: 0,
     maxUsd: 0,
     minPnl: 0,
@@ -49,7 +50,7 @@ const state = {
   pagination: {
     positions: {
       page: 1,
-      pageSize: 100,
+      pageSize: 20,
     },
     wallets: {
       page: 1,
@@ -60,15 +61,26 @@ const state = {
     source: "bootstrap",
     connection: "idle",
     paused: false,
-    retryMs: 1000,
+    retryMs: 500,
     eventSource: null,
     fallbackTimer: null,
+    positionsTimer: null,
+    metricsTimer: null,
     healthTimer: null,
     lastPayloadAt: 0,
-    lastEventAt: 0,
+    lastSnapshotAt: 0,
+    lastHeartbeatAt: 0,
+    lastLiveEventAt: 0,
     lastErrorAt: 0,
     lastError: null,
+    positionsRequestSeq: 0,
+    positionsAppliedSeq: 0,
+    positionsLastAppliedGeneratedAt: 0,
+    positionsRequestInFlight: false,
+    positionsRefreshQueued: false,
   },
+  positionsSeenKeys: new Set(),
+  metrics: null,
   drawer: {
     wallet: "",
     loading: false,
@@ -82,8 +94,8 @@ const state = {
 
 const VIEW_CONFIG = {
   positions: {
-    kicker: "Live positions",
-    title: "Positions",
+    kicker: "Live Trade",
+    title: "Position Feed",
   },
   wallets: {
     kicker: "Wallet intelligence",
@@ -98,6 +110,27 @@ function el(id) {
 function n(value, fallback = 0) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function numLoose(value, fallback = NaN) {
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : fallback;
+  }
+  if (typeof value === "string") {
+    const raw = value.trim();
+    if (!raw) return fallback;
+    const normalized = raw
+      .replace(/,/g, "")
+      .replace(/\s+/g, "")
+      .replace(/x$/i, "");
+    const direct = Number(normalized);
+    if (Number.isFinite(direct)) return direct;
+    const match = normalized.match(/-?\d+(?:\.\d+)?/);
+    if (!match) return fallback;
+    const parsed = Number(match[0]);
+    return Number.isFinite(parsed) ? parsed : fallback;
+  }
+  return fallback;
 }
 
 function fmtNum(value, digits = 2) {
@@ -142,7 +175,26 @@ function tsMs(value) {
 function fmtTs(value) {
   const ms = tsMs(value);
   if (!ms) return "-";
-  return new Date(ms).toLocaleString();
+  return `${new Intl.DateTimeFormat("en-US", {
+    timeZone: "UTC",
+    year: "numeric",
+    month: "short",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).format(new Date(ms))} UTC`;
+}
+
+function fmtDateOnly(value) {
+  const ms = tsMs(value);
+  if (!ms) return "-";
+  return new Intl.DateTimeFormat("en-GB", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date(ms));
 }
 
 function fmtAgo(value) {
@@ -203,14 +255,51 @@ function extractPublicTrades(payload) {
 }
 
 function extractWalletPerformance(payload) {
-  const primary = extractRows(payload?.walletPerformance);
+  const primary = extractRows(payload?.walletPerformance).filter((row) =>
+    isPositiveWalletPerformanceRow(row)
+  );
   if (primary.length > 0) return primary;
-  const legacy = extractRows(payload?.wallets);
+  const legacy = extractRows(payload?.wallets).filter((row) =>
+    isPositiveWalletPerformanceRow(row)
+  );
   return legacy;
+}
+
+function resolveWalletPerformanceTotalPnlUsd(row) {
+  const safeRow = row && typeof row === "object" ? row : {};
+  const safeAll = safeRow.all && typeof safeRow.all === "object" ? safeRow.all : {};
+  const candidates = [
+    safeRow.totalPnlUsd,
+    safeRow.totalPnl,
+    safeRow.pnlUsd,
+    safeRow.realizedPnlUsd,
+    safeAll.totalPnlUsd,
+    safeAll.totalPnl,
+    safeAll.pnlUsd,
+    safeAll.realizedPnlUsd,
+  ];
+  for (const candidate of candidates) {
+    const value = Number(candidate);
+    if (Number.isFinite(value)) return value;
+  }
+  return NaN;
+}
+
+function isPositiveWalletPerformanceRow(row) {
+  const totalPnlUsd = resolveWalletPerformanceTotalPnlUsd(row);
+  return Number.isFinite(totalPnlUsd) ? totalPnlUsd > 0 : false;
 }
 
 function extractPositions(payload) {
   const primary = extractRows(payload?.positions);
+  const positionFeedMode = String(
+    payload?.positionFeedMode || payload?.summary?.positionFeedMode || ""
+  )
+    .trim()
+    .toLowerCase();
+  if (positionFeedMode === "current" && primary.length > 0) return primary;
+  const events = extractRows(payload?.positionEvents);
+  if (events.length > 0) return events;
   return primary;
 }
 
@@ -240,6 +329,12 @@ function payloadWalletsTotal(payload) {
   return extractWalletPerformance(payload).length;
 }
 
+function payloadPositionEventsTotal(payload) {
+  const summaryTotal = n(payload?.summary?.positionEventsTotal, NaN);
+  if (Number.isFinite(summaryTotal)) return summaryTotal;
+  return extractPositions(payload).length;
+}
+
 function payloadPositionsTotal(payload) {
   const summaryTotal = n(payload?.summary?.openPositionsTotal, NaN);
   if (Number.isFinite(summaryTotal)) return summaryTotal;
@@ -253,10 +348,10 @@ function positionsSignature(payload) {
   const rows = positionRows.length > 0 ? positionRows : extractPublicTrades(payload);
   const head = asObject(rows[0]);
   return [
-    payloadPositionsTotal(payload),
+    payloadPositionEventsTotal(payload),
     rows.length,
-    tsMs(head.timestamp || head.lastTradeAt || head.updatedAt || head.lastUpdatedAt || 0),
-    String(head.historyId || head.id || head.accountId || head.symbol || ""),
+    tsMs(head.detectedAt || head.timestamp || head.lastTradeAt || head.updatedAt || head.lastUpdatedAt || 0),
+    String(head.eventType || head.historyId || head.id || head.accountId || head.symbol || ""),
   ].join(":");
 }
 
@@ -316,7 +411,13 @@ function escapeHtml(value) {
 }
 
 function normalizeSide(side) {
-  return String(side || "").trim().toLowerCase();
+  const raw = String(side || "").trim().toLowerCase();
+  if (!raw) return "";
+  if (raw === "bid" || raw === "buy" || raw === "long" || raw === "open_long") return "open_long";
+  if (raw === "ask" || raw === "sell" || raw === "short" || raw === "open_short") return "open_short";
+  if (raw === "close_long") return "close_long";
+  if (raw === "close_short") return "close_short";
+  return raw;
 }
 
 function normalizeWallet(value) {
@@ -398,6 +499,242 @@ function resolveWalletIdentity(rawWallet, options = {}) {
     resolved: false,
     kind: "empty",
   };
+}
+
+function normalizePositionEventType(rawType, oldSize = NaN, newSize = NaN) {
+  const raw = String(rawType || "").trim().toLowerCase();
+  const previousSize = n(oldSize, NaN);
+  const nextSize = n(newSize, NaN);
+  if (!raw) {
+    if (Number.isFinite(previousSize) && Number.isFinite(nextSize)) {
+      if (previousSize <= 1e-10 && nextSize > 1e-10) return "position_opened";
+      if (previousSize > 1e-10 && nextSize <= 1e-10) return "position_closed";
+      if (nextSize < previousSize) return "position_closed_partial";
+      if (nextSize > previousSize) return "position_increased";
+    }
+    return "";
+  }
+  if (raw === "position_snapshot") return "";
+  if (raw.includes("position_opened")) return "position_opened";
+  if (raw.includes("position_closed_partial")) return "position_closed_partial";
+  if (raw.includes("position_closed")) return "position_closed";
+  if (raw.includes("position_size_changed")) {
+    if (Number.isFinite(previousSize) && Number.isFinite(nextSize)) {
+      if (previousSize <= 1e-10 && nextSize > 1e-10) return "position_opened";
+      if (nextSize <= 1e-10) return "position_closed";
+      if (nextSize < previousSize) return "position_closed_partial";
+      if (nextSize > previousSize) return "position_increased";
+    }
+    return "position_size_changed";
+  }
+  return raw;
+}
+
+function positionEventLabel(eventType) {
+  const normalized = String(eventType || "").trim().toLowerCase();
+  if (normalized === "position_opened") return "Opened";
+  if (normalized === "position_closed_partial") return "Partial Close";
+  if (normalized === "position_closed") return "Closed";
+  if (normalized === "position_increased") return "Increased";
+  if (normalized === "position_size_changed") return "Size Changed";
+  return titleCase(normalized || "event");
+}
+
+function positionEventTone(eventType) {
+  const normalized = String(eventType || "").trim().toLowerCase();
+  if (normalized === "position_opened" || normalized === "position_increased") return "up";
+  if (normalized === "position_closed_partial" || normalized === "position_closed") return "down";
+  return "cool";
+}
+
+function positionEventBadgeClass(eventType) {
+  const tone = positionEventTone(eventType);
+  return tone === "up" ? "event-up" : tone === "down" ? "event-down" : "event-neutral";
+}
+
+function positionEventSourceLabel(source) {
+  const normalized = String(source || "").trim().toLowerCase();
+  if (!normalized) return "Unknown source";
+  if (normalized.includes("ws_account_info")) return "WS account info";
+  if (normalized.includes("ws_account_trade")) return "WS trade";
+  if (normalized.includes("ws_account_order_update")) return "WS order";
+  if (normalized.includes("wallet_first_positions")) return "REST reconcile";
+  if (normalized.includes("wallet_first_position_change")) return "Live position change";
+  if (normalized.includes("public_trade")) return "Public trade";
+  return titleCase(normalized.replaceAll("_", " "));
+}
+
+function buildPositionEventRows(rows, trackedWallets, liveActiveByWallet) {
+  return safeArray(rows)
+    .map((row, idx) => {
+      const item = asObject(row);
+      const rawSnapshot = asObject(item.raw);
+      const rawType = item.eventType || item.sideEvent || item.cause || item.type;
+      const eventType = normalizePositionEventType(rawType, item.oldSize, item.newSize);
+      if (!eventType) return null;
+      const detectedAt = tsMs(
+        item.detectedAt || item.observedAt || item.updatedAt || item.timestamp || item.at || item.openedAt || 0
+      );
+      const updatedAt = tsMs(item.updatedAt || item.observedAt || item.timestamp || detectedAt || 0);
+      const openedAt = tsMs(item.openedAt || detectedAt || updatedAt || 0);
+      const rawWallet = normalizeWallet(
+        item.wallet || item.walletAddress || item.owner || item.trader || item.account || item.authority || ""
+      );
+      const tracked =
+        Boolean(item.trackedWallet) ||
+        (walletLooksResolved(rawWallet) ? trackedWallets.has(rawWallet) : false);
+      const walletIdentity = resolveWalletIdentity(rawWallet, {
+        tracked,
+        allowUnresolved: true,
+      });
+      const side = normalizeSide(item.side || item.rawSide || "");
+      const oldSize = Number.isFinite(n(item.oldSize, NaN)) ? Math.abs(n(item.oldSize, 0)) : NaN;
+      const newSize = Number.isFinite(n(item.newSize, NaN))
+        ? Math.abs(n(item.newSize, 0))
+        : Number.isFinite(n(item.amount, NaN))
+        ? Math.abs(n(item.amount, 0))
+        : NaN;
+      let sizeDelta = n(item.sizeDelta, NaN);
+      if (!Number.isFinite(sizeDelta) && Number.isFinite(oldSize) && Number.isFinite(newSize)) {
+        sizeDelta = newSize - oldSize;
+      } else if (!Number.isFinite(sizeDelta) && eventType === "position_opened" && Number.isFinite(newSize)) {
+        sizeDelta = newSize;
+      } else if (!Number.isFinite(sizeDelta) && eventType === "position_closed" && Number.isFinite(oldSize)) {
+        sizeDelta = -Math.abs(oldSize);
+      }
+      const sizeDeltaAbs = Number.isFinite(sizeDelta)
+        ? Math.abs(sizeDelta)
+        : Number.isFinite(n(item.sizeDeltaAbs, NaN))
+        ? Math.abs(n(item.sizeDeltaAbs, 0))
+        : NaN;
+      const currentSize = Number.isFinite(newSize)
+        ? newSize
+        : Number.isFinite(n(item.amount, NaN))
+        ? Math.abs(n(item.amount, 0))
+        : Number.isFinite(n(item.size, NaN))
+        ? Math.abs(n(item.size, 0))
+        : NaN;
+      const entry = n(item.entry, n(item.price, NaN));
+      const mark = n(item.mark, n(item.markPrice, NaN));
+      const eventUsd = n(item.eventUsd, n(item.positionUsd, 0));
+      const margin = n(
+        numLoose(item.margin, NaN),
+        n(
+          numLoose(item.marginUsd, NaN),
+          n(numLoose(item.margin_usd, NaN), n(numLoose(rawSnapshot.margin, NaN), numLoose(rawSnapshot.margin_usd, NaN)))
+        )
+      );
+      const leverageSeed = n(
+        numLoose(item.leverage, NaN),
+        n(
+          numLoose(item.lev, NaN),
+          n(
+            numLoose(item.leverageValue, NaN),
+            n(numLoose(item.leverage_value, NaN), n(numLoose(rawSnapshot.leverage, NaN), numLoose(rawSnapshot.lev, NaN)))
+          )
+        )
+      );
+      const leverage =
+        Number.isFinite(leverageSeed) && leverageSeed > 0
+          ? leverageSeed
+          : Number.isFinite(margin) && margin > 0 && Number.isFinite(eventUsd)
+          ? eventUsd / margin
+          : NaN;
+      const pnl = n(item.unrealizedPnlUsd, n(item.pnl, NaN));
+      const freshness = walletIdentity.resolved
+        ? String(item.freshness || rowFreshnessByTs(detectedAt)).trim().toLowerCase() || "unknown"
+        : "unresolved";
+      const status = walletIdentity.resolved ? eventType || freshness : "unresolved";
+      const ageMs = detectedAt ? Math.max(0, Date.now() - detectedAt) : NaN;
+      const positionState = derivePositionState(status, freshness, ageMs);
+      const walletConfidence = String(
+        item.walletConfidence || (walletIdentity.resolved ? "hard_payload" : "unresolved")
+      )
+        .trim()
+        .toLowerCase();
+      const txSignature = String(item.txSignature || item.signature || item.txid || "").trim();
+      const tradeRefRaw =
+        item.tradeRef || item.positionKey || item.historyId || item.orderId || item.i || item.li || null;
+      const tradeRef = tradeRefRaw !== null && tradeRefRaw !== undefined ? String(tradeRefRaw) : "";
+      const tradeRefType = String(
+        item.tradeRefType ||
+          (item.positionKey
+            ? "wallet_position"
+            : item.historyId
+            ? "history_id"
+            : item.orderId || item.i
+            ? "order_id"
+            : item.li
+            ? "li"
+            : "unknown")
+      );
+      const txConfidence = String(item.txConfidence || (txSignature ? "hard_payload" : "unresolved"))
+        .trim()
+        .toLowerCase();
+      const liveWallet = walletIdentity.resolved ? liveActiveByWallet.get(walletIdentity.wallet) : null;
+      return {
+        key: `p:evt:${item.positionKey || item.key || item.wallet || "na"}:${eventType || "event"}:${detectedAt || idx}`,
+        timestamp: detectedAt || updatedAt || openedAt,
+        detectedAt,
+        updatedAt,
+        openedAt,
+        wallet: walletIdentity.wallet,
+        walletLabel: walletIdentity.label,
+        walletTitle: walletIdentity.title,
+        walletResolved: walletIdentity.resolved,
+        trackedWallet: tracked,
+        symbol: String(item.symbol || "-").toUpperCase(),
+        side,
+        oldSize,
+        newSize: Number.isFinite(newSize) ? newSize : NaN,
+        currentSize,
+        sizeDelta,
+        sizeDeltaAbs,
+        size: currentSize,
+        amount: currentSize,
+        eventUsd,
+        positionUsd: n(item.positionUsd, eventUsd),
+        entry,
+        mark,
+        pnl,
+        unrealizedPnlUsd: n(item.unrealizedPnlUsd, pnl),
+        margin,
+        funding: NaN,
+        leverage,
+        roe: NaN,
+        liquidationPrice: NaN,
+        status,
+        freshness,
+        positionState,
+        eventType,
+        eventLabel: positionEventLabel(eventType),
+        eventTone: positionEventTone(eventType),
+        source: String(item.source || "wallet_first_position_change"),
+        sourceLabel: positionEventSourceLabel(item.source || "wallet_first_position_change"),
+        walletSource: String(item.walletSource || "wallet_positions_api").trim().toLowerCase(),
+        walletConfidence,
+        txSignature,
+        txSource: String(item.txSource || (txSignature ? "payload" : "wallet_positions_api"))
+          .trim()
+          .toLowerCase(),
+        txConfidence,
+        tradeRef,
+        tradeRefType,
+        ageMs,
+        activityLevel: activityLevelFromAge(ageMs),
+        walletLiveRank: liveWallet?.rank || null,
+        walletOpenPositions: liveWallet?.openPositions || 0,
+        walletRecentEvents15m: liveWallet?.recentEvents15m || 0,
+        walletRecentEvents1h: liveWallet?.recentEvents1h || 0,
+        raw: item,
+      };
+    })
+    .filter(Boolean)
+    .sort(
+      (a, b) =>
+        Number(b.detectedAt || b.updatedAt || b.openedAt || 0) - Number(a.detectedAt || a.updatedAt || a.openedAt || 0) ||
+        Number(b.updatedAt || 0) - Number(a.updatedAt || 0)
+    );
 }
 
 function rowFreshnessByTs(timestampMs) {
@@ -789,6 +1126,9 @@ function buildRows(payload, options = {}) {
   const includePositions = options.includePositions !== false;
   const includeWallets = options.includeWallets !== false;
   const includeLiveActive = options.includeLiveActive !== false;
+  const positionFeedMode = String(payload?.positionFeedMode || payload?.summary?.positionFeedMode || "")
+    .trim()
+    .toLowerCase();
   const account = normalizeWallet(payload?.environment?.account || "");
   const publicTrades = extractPublicTrades(payload);
   const positionsPrimary = includePositions ? extractPositions(payload) : [];
@@ -847,6 +1187,19 @@ function buildRows(payload, options = {}) {
 
   const positionRows = includePositions
     ? (() => {
+        const primaryContainsPositionEvents = positionsPrimary.some((row) =>
+          Boolean(
+            normalizePositionEventType(
+              row && (row.eventType || row.sideEvent || row.cause || row.type),
+              row && row.oldSize,
+              row && row.newSize
+            )
+          )
+        );
+        if (positionFeedMode !== "current" && primaryContainsPositionEvents) {
+          const positionEventRows = buildPositionEventRows(positionsPrimary, trackedWallets, liveActiveByWallet);
+          if (positionEventRows.length > 0) return positionEventRows;
+        }
         const positionRowsFromPrimary = positionsPrimary
           .map((row, idx) => {
             const item = asObject(row);
@@ -891,8 +1244,11 @@ function buildRows(payload, options = {}) {
               n(item.notionalUsd, Number.isFinite(mark) ? Math.abs(size * mark) : Number.isFinite(entry) ? Math.abs(size * entry) : 0)
             );
             const margin = n(
-              item.margin,
-              n(item.marginUsd, n(item.margin_usd, n(rawSnapshot.margin, n(rawSnapshot.margin_usd, NaN))))
+              numLoose(item.margin, NaN),
+              n(
+                numLoose(item.marginUsd, NaN),
+                n(numLoose(item.margin_usd, NaN), n(numLoose(rawSnapshot.margin, NaN), numLoose(rawSnapshot.margin_usd, NaN)))
+              )
             );
             const funding = n(item.funding, n(item.fundingUsd, n(rawSnapshot.funding, NaN)));
             const pnl = n(item.pnl, n(item.unrealizedPnlUsd, n(item.unrealizedPnl, NaN)));
@@ -915,8 +1271,22 @@ function buildRows(payload, options = {}) {
             const statusRaw = String(item.status || lifecycle.lastChangeType || "").trim().toLowerCase();
             const status = walletIdentity.resolved ? statusRaw || freshness : "unresolved";
             const positionState = derivePositionState(status, freshness, ageMs);
+            const leverageSeed = n(
+              numLoose(item.leverage, NaN),
+              n(
+                numLoose(item.lev, NaN),
+                n(
+                  numLoose(item.leverageValue, NaN),
+                  n(numLoose(item.leverage_value, NaN), n(numLoose(rawSnapshot.leverage, NaN), numLoose(rawSnapshot.lev, NaN)))
+                )
+              )
+            );
             const leverage =
-              Number.isFinite(margin) && margin > 0 && Number.isFinite(positionUsd) ? positionUsd / margin : NaN;
+              Number.isFinite(leverageSeed) && leverageSeed > 0
+                ? leverageSeed
+                : Number.isFinite(margin) && margin > 0 && Number.isFinite(positionUsd)
+                ? positionUsd / margin
+                : NaN;
             const roe = Number.isFinite(margin) && margin > 0 && Number.isFinite(pnl) ? (pnl / margin) * 100 : NaN;
             const walletConfidence = String(
               item.walletConfidence || (walletIdentity.resolved ? "hard_payload" : "unresolved")
@@ -1114,7 +1484,7 @@ function buildRows(payload, options = {}) {
             const openedAt = tsMs(item.openedAt || item.openTime || 0);
             const ageMs = openedAt ? Math.max(0, Date.now() - openedAt) : NaN;
             const pnl = n(item.unrealizedPnlUsd, NaN);
-            const margin = n(item.margin, n(item.marginUsd, NaN));
+            const margin = n(numLoose(item.margin, NaN), numLoose(item.marginUsd, NaN));
             const positionUsd = n(item.notionalUsd, 0);
             const leverage =
               Number.isFinite(margin) && margin > 0 && Number.isFinite(positionUsd) ? positionUsd / margin : NaN;
@@ -1335,35 +1705,17 @@ function buildRows(payload, options = {}) {
 }
 
 function refreshFilterOptions(rows) {
-  const symbolSelect = el("lt-filter-symbol");
-  const sideSelect = el("lt-filter-side");
   const freshnessSelect = el("lt-filter-freshness");
-  if (!symbolSelect || !sideSelect || !freshnessSelect) return;
+  if (!freshnessSelect) return;
 
-  const currentSymbol = symbolSelect.value;
-  const currentSide = sideSelect.value;
   const currentFreshness = freshnessSelect.value;
-
-  const symbols = getUniqueValues(rows.positions, "symbol");
-  const sides = getUniqueValues(rows.positions, "side");
   const freshnessStates = Array.from(
     new Set([...getUniqueValues(rows.positions, "freshness"), ...getUniqueValues(rows.wallets, "freshness")])
   ).sort((a, b) => a.localeCompare(b));
 
-  symbolSelect.innerHTML = ["<option value=\"\">All</option>"]
-    .concat(symbols.map((value) => `<option value=\"${escapeHtml(value)}\">${escapeHtml(value)}</option>`))
-    .join("");
-
-  sideSelect.innerHTML = ["<option value=\"\">All</option>"]
-    .concat(sides.map((value) => `<option value=\"${escapeHtml(value)}\">${escapeHtml(value)}</option>`))
-    .join("");
-
   freshnessSelect.innerHTML = ["<option value=\"\">All</option>"]
     .concat(freshnessStates.map((value) => `<option value=\"${escapeHtml(value)}\">${escapeHtml(value)}</option>`))
     .join("");
-
-  if (symbols.includes(currentSymbol)) symbolSelect.value = currentSymbol;
-  if (sides.includes(currentSide)) sideSelect.value = currentSide;
   if (freshnessStates.includes(currentFreshness)) freshnessSelect.value = currentFreshness;
 }
 
@@ -1376,11 +1728,16 @@ function matchesSearch(row, query) {
     row.symbol,
     row.side,
     row.status,
+    row.eventType,
+    row.eventLabel,
+    row.source,
+    row.sourceLabel,
     row.totalTrades,
     row.totalVolumeUsd,
     row.realizedPnlUsd,
     row.unrealizedPnlUsd,
     row.positionUsd,
+    row.eventUsd,
     row.tradeRef,
     row.tradeRefType,
     row.txSignature,
@@ -1407,11 +1764,11 @@ function resetPagination() {
 }
 
 function currentWindowParams() {
-  const positions = state.pagination.positions || { page: 1, pageSize: 100 };
+  const positions = state.pagination.positions || { page: 1, pageSize: 20 };
   const wallets = state.pagination.wallets || { page: 1, pageSize: 100 };
   const positionsPage = Math.max(1, Math.floor(n(positions.page, 1)));
   const walletsPage = Math.max(1, Math.floor(n(wallets.page, 1)));
-  const positionsPageSize = Math.max(10, Math.min(5000, Math.floor(n(positions.pageSize, 100))));
+  const positionsPageSize = Math.max(20, Math.min(20, Math.floor(n(positions.pageSize, 20))));
   const walletsPageSize = Math.max(10, Math.min(5000, Math.floor(n(wallets.pageSize, 100))));
 
   return {
@@ -1428,28 +1785,179 @@ function currentWindowParams() {
   };
 }
 
-function buildLiveTradesPath(basePath) {
+function buildLiveTradesPath(basePath, options = {}) {
   const params = new URLSearchParams();
   const window = currentWindowParams();
   for (const [key, value] of Object.entries(window)) {
     params.set(key, String(value));
   }
+  const walletFilter = String(state.filters?.wallet || "").trim();
+  const searchFilter = String(state.search || "").trim();
+  if (walletFilter) params.set("wallet", walletFilter);
+  if (searchFilter) params.set("q", searchFilter);
   // Wallet-first live UI does not require full exchange publicTrades hydration on each poll.
   params.set("skip_public", "1");
   params.set("live_active_offset", "0");
   params.set("live_active_limit", "12");
+  if (options && options.cacheBust !== undefined && options.cacheBust !== null) {
+    params.set("_rt", String(options.cacheBust));
+  }
   return `${basePath}?${params.toString()}`;
 }
 
+function buildLiveTradesPositionsPath(feedMode = "current", options = {}) {
+  const params = new URLSearchParams();
+  const requestedFeedMode = String(feedMode || "current").trim().toLowerCase() || "current";
+  params.set("feed_mode", requestedFeedMode);
+  params.set("all", options.all === false ? "0" : "1");
+  params.set("position_sort", String(state.positionsSortKey || "detectedAt").trim());
+  params.set("position_dir", String(state.positionsSortDir || "desc").trim());
+  params.set("position_limit", String(Math.max(100, n(options.positionLimit, 5000))));
+  if (requestedFeedMode === "events") {
+    params.set("snapshot_fallback", "0");
+  }
+  if (requestedFeedMode !== "current") {
+    const detectedSince =
+      Number.isFinite(n(options.detectedSince, NaN)) && n(options.detectedSince, 0) > 0
+        ? Math.max(0, Math.floor(n(options.detectedSince, 0)))
+        : 0;
+    // Do not force a narrow time window by default; otherwise the table can look empty
+    // when there are no events in the latest few minutes.
+    if (detectedSince > 0) params.set("detected_since", String(detectedSince));
+  }
+  const walletFilter = String(state.filters?.wallet || "").trim();
+  const searchFilter = String(state.search || "").trim();
+  if (walletFilter) params.set("wallet", walletFilter);
+  if (searchFilter) params.set("q", searchFilter);
+  // Prevent stale intermediate caches from re-serving an old position window.
+  params.set("_rt", String(Date.now()));
+  return `/api/live-trades/wallet-first/positions?${params.toString()}`;
+}
+
+function mergeLiveTradePayloads(basePayload, positionsPayload = null, eventSummaryPayload = null) {
+  const nextPayload = {
+    ...(asObject(basePayload) || {}),
+  };
+  const nextSummary = {
+    ...asObject(nextPayload.summary),
+  };
+
+  if (positionsPayload && typeof positionsPayload === "object") {
+    const positionRows = extractRows(positionsPayload.positions);
+    const positionsSummary = asObject(positionsPayload.summary);
+    const feedMode = String(
+      positionsPayload.feedMode ||
+        positionsPayload.status?.feedMode ||
+        positionsSummary.feedMode ||
+        positionsSummary.positionFeedMode ||
+        "current"
+    )
+      .trim()
+      .toLowerCase() || "current";
+    nextPayload.positions = positionRows;
+    nextPayload.positionFeedMode = feedMode;
+    nextSummary.positionEventsTotal = n(
+      positionsSummary.positionEventsTotal,
+      n(positionsPayload.positionEventsTotal, n(nextSummary.positionEventsTotal, positionRows.length))
+    );
+    nextSummary.positionEventOpened1m = n(
+      positionsSummary.positionEventOpened1m,
+      n(positionsPayload.positionEventOpened1m, n(nextSummary.positionEventOpened1m, 0))
+    );
+    nextSummary.positionEventPartialClosed1m = n(
+      positionsSummary.positionEventPartialClosed1m,
+      n(positionsPayload.positionEventPartialClosed1m, n(nextSummary.positionEventPartialClosed1m, 0))
+    );
+    nextSummary.positionEventClosed1m = n(
+      positionsSummary.positionEventClosed1m,
+      n(positionsPayload.positionEventClosed1m, n(nextSummary.positionEventClosed1m, 0))
+    );
+    nextSummary.positionEventDetectionP95Ms1m = n(
+      positionsSummary.positionEventDetectionP95Ms1m,
+      n(positionsPayload.positionEventDetectionP95Ms1m, n(nextSummary.positionEventDetectionP95Ms1m, NaN))
+    );
+    nextSummary.positionEventFeedPath =
+      String(
+        positionsSummary.positionEventFeedPath ||
+          positionsPayload.positionEventFeedPath ||
+          "/api/live-trades/wallet-first/positions?feed_mode=events"
+      ).trim() || "/api/live-trades/wallet-first/positions?feed_mode=events";
+    nextSummary.openPositionsTotal = n(
+      positionsSummary.openPositionsTotal,
+      n(positionsPayload.openPositionsTotal, positionRows.length)
+    );
+    nextSummary.openPositions = n(positionsSummary.openPositions, positionRows.length);
+    nextSummary.openPositionsWindowed = Boolean(positionsSummary.openPositionsWindowed);
+    nextSummary.openPositionsHasMore = Boolean(positionsSummary.openPositionsHasMore);
+    nextSummary.openPositionsOffset = n(positionsSummary.openPositionsOffset, 0);
+    nextSummary.openPositionsLimit = n(positionsSummary.openPositionsLimit, positionRows.length);
+    nextSummary.openPositionsSort =
+      String(positionsSummary.openPositionsSort || state.positionsSortKey || "detectedAt").trim();
+    nextSummary.openPositionsDir =
+      String(positionsSummary.openPositionsDir || state.positionsSortDir || "desc").trim();
+    nextSummary.positionFeedMode = feedMode;
+  }
+
+  if (eventSummaryPayload && typeof eventSummaryPayload === "object") {
+    const eventSummary = asObject(eventSummaryPayload.summary);
+    nextSummary.positionEventsTotal = n(
+      eventSummary.positionEventsTotal,
+      n(nextSummary.positionEventsTotal, 0)
+    );
+    nextSummary.positionEventOpened1m = n(
+      eventSummary.positionEventOpened1m,
+      n(nextSummary.positionEventOpened1m, 0)
+    );
+    nextSummary.positionEventPartialClosed1m = n(
+      eventSummary.positionEventPartialClosed1m,
+      n(nextSummary.positionEventPartialClosed1m, 0)
+    );
+    nextSummary.positionEventClosed1m = n(
+      eventSummary.positionEventClosed1m,
+      n(nextSummary.positionEventClosed1m, 0)
+    );
+    nextSummary.positionEventDetectionP95Ms1m = n(
+      eventSummary.positionEventDetectionP95Ms1m,
+      n(nextSummary.positionEventDetectionP95Ms1m, NaN)
+    );
+    nextSummary.positionEventFeedPath =
+      String(
+        eventSummary.positionEventFeedPath ||
+          "/api/live-trades/wallet-first/positions?feed_mode=events"
+      ).trim() || "/api/live-trades/wallet-first/positions?feed_mode=events";
+    nextPayload.positionEventsMeta = {
+      generatedAt: n(eventSummaryPayload.generatedAt, 0),
+      summary: eventSummary,
+    };
+  }
+
+  nextPayload.summary = nextSummary;
+  nextPayload.generatedAt = Math.max(
+    0,
+    n(basePayload?.generatedAt, 0),
+    n(positionsPayload?.generatedAt, 0),
+    n(eventSummaryPayload?.generatedAt, 0)
+  );
+  return nextPayload;
+}
+
 function pageWindowFromSummary(key, rowsLength) {
-  const config = state.pagination[key] || { page: 1, pageSize: 100 };
-  const pageSize = Math.max(10, Math.min(5000, Math.floor(n(config.pageSize, 100))));
+  const isPositions = key === "positions";
+  const config = state.pagination[key] || { page: 1, pageSize: isPositions ? 20 : 100 };
+  const pageSize = isPositions
+    ? Math.max(20, Math.min(20, Math.floor(n(config.pageSize, 20))))
+    : Math.max(10, Math.min(5000, Math.floor(n(config.pageSize, 100))));
   const payload = state.payload || {};
   const summary = payload.summary || {};
+  const feedMode = String(summary.positionFeedMode || payload.positionFeedMode || "").trim().toLowerCase();
   const totalRows =
     key === "positions"
-      ? Number.isFinite(n(summary.openPositionsTotal, NaN))
+      ? feedMode && feedMode !== "current" && Number.isFinite(n(summary.positionEventsTotal, NaN)) && n(summary.positionEventsTotal, 0) > 0
+        ? n(summary.positionEventsTotal, rowsLength)
+        : Number.isFinite(n(summary.openPositionsTotal, NaN)) && n(summary.openPositionsTotal, 0) > 0
         ? n(summary.openPositionsTotal, rowsLength)
+        : Number.isFinite(n(summary.positionEventsTotal, NaN)) && n(summary.positionEventsTotal, 0) > 0
+        ? n(summary.positionEventsTotal, rowsLength)
         : Number.isFinite(n(summary.publicTradesTotal, NaN))
         ? n(summary.publicTradesTotal, rowsLength)
         : rowsLength
@@ -1474,8 +1982,11 @@ function pageWindowFromSummary(key, rowsLength) {
 
 function paginateRows(rows, key) {
   const list = Array.isArray(rows) ? rows : [];
-  const config = state.pagination[key] || { page: 1, pageSize: 100 };
-  const pageSize = Math.max(10, Math.min(5000, Math.floor(n(config.pageSize, 100))));
+  const isPositions = key === "positions";
+  const config = state.pagination[key] || { page: 1, pageSize: isPositions ? 20 : 100 };
+  const pageSize = isPositions
+    ? Math.max(20, Math.min(20, Math.floor(n(config.pageSize, 20))))
+    : Math.max(10, Math.min(5000, Math.floor(n(config.pageSize, 100))));
   const totalRows = list.length;
   const totalPages = Math.max(1, Math.ceil(totalRows / pageSize));
   const page = Math.min(Math.max(1, Math.floor(n(config.page, 1))), totalPages);
@@ -1501,12 +2012,16 @@ function paginateRows(rows, key) {
 function renderPagination(key, pageData) {
   const info = el(`lt-${key}-page-info`);
   const windowNode = el(`lt-${key}-page-window`);
+  const totalsNode = el(`lt-${key}-page-totals`);
   const prev = el(`lt-${key}-page-prev`);
   const next = el(`lt-${key}-page-next`);
   if (!info || !windowNode || !prev || !next) return;
 
-  info.textContent = `Page ${fmtInt(pageData.page)} / ${fmtInt(pageData.totalPages)}`;
-  windowNode.textContent = `${fmtInt(pageData.start)}-${fmtInt(pageData.end)} of ${fmtInt(pageData.totalRows)}`;
+  info.textContent = `Page ${fmtInt(pageData.page)} of ${fmtInt(pageData.totalPages)}`;
+  windowNode.textContent = `Rows ${fmtInt(pageData.start)}-${fmtInt(pageData.end)}`;
+  if (totalsNode) {
+    totalsNode.textContent = `Total rows: ${fmtInt(pageData.totalRows)} • Total pages: ${fmtInt(pageData.totalPages)}`;
+  }
   prev.disabled = pageData.page <= 1;
   next.disabled = pageData.page >= pageData.totalPages;
 }
@@ -1521,11 +2036,11 @@ function applyPositionFilters(rows) {
       const walletFields = [row.wallet, row.walletLabel, row.walletTitle].join(" ").toLowerCase();
       if (!walletFields.includes(walletNeedle)) return false;
     }
-    if (f.symbol && row.symbol !== f.symbol) return false;
-    if (f.side && row.side !== f.side) return false;
     if (f.freshness && String(row.freshness || row.status || "") !== f.freshness) return false;
-    if (!withinRange(row.positionUsd, f.minUsd, f.maxUsd)) return false;
-    if (!withinRange(row.pnl, f.minPnl, f.maxPnl)) return false;
+    const usdValue = Number.isFinite(n(row.eventUsd, NaN)) ? row.eventUsd : row.positionUsd;
+    const pnlValue = Number.isFinite(n(row.unrealizedPnlUsd, NaN)) ? row.unrealizedPnlUsd : row.pnl;
+    if (!withinRange(usdValue, f.minUsd, f.maxUsd)) return false;
+    if (!withinRange(pnlValue, f.minPnl, f.maxPnl)) return false;
     if (f.trackedOnly && !row.trackedWallet) return false;
     return true;
   });
@@ -1542,8 +2057,6 @@ function applyWalletFilters(rows) {
       if (!walletFields.includes(walletNeedle)) return false;
     }
     if (f.freshness && String(row.freshness || row.status || "") !== f.freshness) return false;
-    if (!withinRange(row.totalVolumeUsd, f.minUsd, f.maxUsd)) return false;
-    if (!withinRange(row.totalPnlUsd, f.minPnl, f.maxPnl)) return false;
     if (f.trackedOnly && !row.trackedWallet) return false;
     return true;
   });
@@ -1684,111 +2197,335 @@ async function fetchJsonWithTimeout(url, timeoutMs = SNAPSHOT_TIMEOUT_MS, extern
   }
 }
 
-function renderPositionsTable(rows) {
-  const head = el("lt-positions-head");
-  const body = el("lt-positions-body");
-  if (!head || !body) return;
+function renderPositionEventSummary(payload) {
+  const summary = asObject(payload?.summary);
+  const metrics = asObject(state.metrics)?.aggregate || {};
+  const feedMode = String(summary.positionFeedMode || payload?.positionFeedMode || "").trim().toLowerCase();
+  const useEventsTotal = feedMode && feedMode !== "current";
+  const total = useEventsTotal && Number.isFinite(n(summary.positionEventsTotal, NaN))
+    ? n(summary.positionEventsTotal, extractPositions(payload).length)
+    : Number.isFinite(n(summary.openPositionsTotal, NaN))
+    ? n(summary.openPositionsTotal, extractPositions(payload).length)
+    : n(summary.positionEventsTotal, extractPositions(payload).length);
+  const feedPath = String(
+    summary.positionEventFeedPath || "/api/live-trades/wallet-first/positions?feed_mode=events"
+  ).trim();
+  const scope = String(summary.streamScope || "wallet_first_tracked_wallet_positions").trim();
+  const openedPerMinute = n(metrics.positionOpenedEventsPerMinute, n(metrics.newOpenEventsPerMinute, NaN));
+  const increasedPerMinute = n(metrics.positionIncreasedEventsPerMinute, NaN);
+  const partialPerMinute = n(metrics.positionPartialCloseEventsPerMinute, NaN);
+  const closedPerMinute = n(metrics.positionClosedEventsPerMinute, NaN);
+  const positionsPerMinute = [openedPerMinute, increasedPerMinute, partialPerMinute, closedPerMinute]
+    .map((value) => (Number.isFinite(value) ? value : 0))
+    .reduce((sum, value) => sum + value, 0);
+  const eventsPerMinute = n(metrics.eventsPerMinute, NaN);
+  const speedText = Number.isFinite(positionsPerMinute)
+    ? `${fmtInt(positionsPerMinute)} position-events/min`
+    : Number.isFinite(eventsPerMinute)
+    ? `${fmtInt(eventsPerMinute)} events/min`
+    : "positions/min -";
+  const throughputPill = el("lt-stage-throughput");
+  if (throughputPill) {
+    throughputPill.textContent = `${fmtInt(total)} positions • ${speedText}`;
+    const detailParts = [];
+    if (Number.isFinite(openedPerMinute)) detailParts.push(`opened ${fmtInt(openedPerMinute)}/min`);
+    if (Number.isFinite(increasedPerMinute)) detailParts.push(`increased ${fmtInt(increasedPerMinute)}/min`);
+    if (Number.isFinite(partialPerMinute)) detailParts.push(`partial ${fmtInt(partialPerMinute)}/min`);
+    if (Number.isFinite(closedPerMinute)) detailParts.push(`closed ${fmtInt(closedPerMinute)}/min`);
+    throughputPill.title = [scope, feedPath, detailParts.join(" • ")].filter(Boolean).join(" • ");
+  }
+}
+
+function renderPositionSortButton(key, label) {
+  const active = state.positionsSortKey === key;
+  const indicator = active ? (state.positionsSortDir === "asc" ? "↑" : "↓") : "↑↓";
+  return `<button class="lt-position-sort-btn${active ? " active" : ""}" type="button" data-position-sort-key="${escapeHtml(
+    key
+  )}">${escapeHtml(label)} <span>${indicator}</span></button>`;
+}
+
+function renderPositionsTable(rows, payload = state.payload) {
+  const board = el("lt-position-events-board");
+  if (!board) return;
+  const confirmedRows = safeArray(extractPositions(payload));
+  const confirmedByKey = new Map();
+  confirmedRows.forEach((row) => {
+    const key = [
+      String(row?.wallet || "").trim(),
+      String(row?.symbol || "").trim().toUpperCase(),
+      String(row?.side || row?.rawSide || "").trim().toLowerCase(),
+      String(row?.positionKey || row?.key || "").trim(),
+    ]
+      .filter(Boolean)
+      .join("|");
+    if (key) confirmedByKey.set(key, row);
+  });
+  const resolveConfirmedRow = (row) => {
+    const key = [
+      String(row?.wallet || "").trim(),
+      String(row?.symbol || "").trim().toUpperCase(),
+      String(row?.side || row?.rawSide || "").trim().toLowerCase(),
+      String(row?.positionKey || row?.key || "").trim(),
+    ]
+      .filter(Boolean)
+      .join("|");
+    return (key && confirmedByKey.get(key)) || null;
+  };
+  const pickPositiveValue = (values) =>
+    values.find((value) => Number.isFinite(value) && Math.abs(value) > 0);
+  const visibleRows = safeArray(rows).filter((row) => {
+    const rowEventType = String(row?.eventType || row?.sideEvent || row?.cause || row?.type || "")
+      .trim()
+      .toLowerCase();
+    const lifecycleRow = Boolean(rowEventType);
+    const confirmed = resolveConfirmedRow(row);
+    const sizeValue =
+      pickPositiveValue([
+        n(row?.size, NaN),
+        n(row?.currentSize, NaN),
+        n(row?.newSize, NaN),
+        n(row?.sizeDeltaAbs, NaN),
+        confirmed ? n(confirmed.size, NaN) : NaN,
+        confirmed ? n(confirmed.currentSize, NaN) : NaN,
+        confirmed ? n(confirmed.newSize, NaN) : NaN,
+      ]) ||
+      (() => {
+        const directEntry = pickPositiveValue([
+          n(row?.entry, NaN),
+          n(row?.entryPrice, NaN),
+          n(row?.entry_price, NaN),
+          n(row?.price, NaN),
+          confirmed ? n(confirmed.entry, NaN) : NaN,
+          confirmed ? n(confirmed.entryPrice, NaN) : NaN,
+          confirmed ? n(confirmed.entry_price, NaN) : NaN,
+          confirmed ? n(confirmed.price, NaN) : NaN,
+        ]);
+        const directPositionUsd = pickPositiveValue([
+          n(row?.positionUsd, NaN),
+          n(row?.eventUsd, NaN),
+          n(row?.notionalUsd, NaN),
+          confirmed ? n(confirmed.positionUsd, NaN) : NaN,
+          confirmed ? n(confirmed.eventUsd, NaN) : NaN,
+          confirmed ? n(confirmed.notionalUsd, NaN) : NaN,
+        ]);
+        if (Number.isFinite(directEntry) && Number.isFinite(directPositionUsd) && directEntry > 0 && directPositionUsd > 0) {
+          return directPositionUsd / directEntry;
+        }
+        return 0;
+      })();
+    return sizeValue > 0 || lifecycleRow;
+  });
 
   const columns = [
-    { key: "wallet", label: "Wallet", align: "left", sortKey: "wallet" },
-    { key: "symbol", label: "Symbol", align: "left", sortKey: "symbol" },
-    { key: "side", label: "Side", align: "left", sortKey: "side" },
-    { key: "size", label: "Size", align: "right", sortKey: "size" },
-    { key: "position", label: "Position USD", align: "right", sortKey: "positionUsd" },
-    { key: "entry", label: "Entry", align: "right", sortKey: "entry" },
-    { key: "mark", label: "Mark", align: "right", sortKey: "mark" },
-    { key: "unrealized", label: "Unrealized", align: "right", sortKey: "unrealized" },
-    { key: "activity", label: "Opened", align: "left", sortKey: "openedAt" },
+    { key: "wallet", label: "Wallet address", align: "left" },
+    { key: "symbol", label: "Token", align: "left" },
+    { key: "side", label: "Side", align: "left" },
+    { key: "entry", label: "Entry price", align: "right" },
+    { key: "size", label: "Size", align: "right" },
+    { key: "position", label: "Position size", align: "right" },
+    { key: "leverage", label: "Leverage", align: "right" },
+    { key: "margin", label: "Margin", align: "right" },
+    { key: "opened", label: "Event time", align: "left", sortKey: "detectedAt" },
   ];
 
-  head.innerHTML = `<tr>${columns
+  const headerRow = `<tr>${columns
     .map(
       (col) =>
-        `<th class="${col.align === "right" ? "right" : "left"}" data-col="${escapeHtml(col.key)}" aria-sort="${
-          state.positionsSortKey === col.sortKey ? (state.positionsSortDir === "asc" ? "ascending" : "descending") : "none"
-        }"><button class="lt-table-sort-btn${
-          state.positionsSortKey === col.sortKey ? " active" : ""
-        }" type="button" data-position-sort-key="${escapeHtml(col.sortKey)}" data-position-sort-label="${escapeHtml(
-          col.label
-        )}">${escapeHtml(col.label)} <span data-position-sort-indicator>${
-          state.positionsSortKey === col.sortKey ? (state.positionsSortDir === "asc" ? "↑" : "↓") : "↑↓"
-        }</span></button></th>`
+        `<th class="${col.align === "right" ? "right" : "left"}" data-col="${escapeHtml(col.key)}">${
+          col.sortKey ? renderPositionSortButton(col.sortKey, col.label) : escapeHtml(col.label)
+        }</th>`
     )
     .join("")}</tr>`;
 
-  head.querySelectorAll("[data-position-sort-key]").forEach((button) => {
+  const bodyRows = visibleRows
+    .map((row) => {
+      const confirmed = resolveConfirmedRow(row);
+      const eventTime = row.detectedAt || row.updatedAt || row.timestamp || row.openedAt || 0;
+      const openedAt = row.openedAt || 0;
+      const eventType = String(row.eventType || "").trim().toLowerCase();
+      const rowSide = String(row.side || row.rawSide || "").trim().toLowerCase();
+      const sideText = rowSide.replaceAll("_", " ").replaceAll("-", " ").trim();
+      const sideIsLong = sideText === "long" || sideText.includes(" long") || sideText.startsWith("long ") || sideText === "buy";
+      const sideIsShort =
+        sideText === "short" || sideText.includes(" short") || sideText.startsWith("short ") || sideText === "sell";
+      const sideLabel = rowSide ? titleCase(rowSide) : "-";
+      const sideClass = sideIsLong ? "side-long" : sideIsShort ? "side-short" : "side-neutral";
+      const eventBadge =
+        eventType && eventType !== "position_snapshot"
+          ? `<span class="lt-position-event-pill ${escapeHtml(positionEventBadgeClass(eventType))}">${escapeHtml(
+              positionEventLabel(eventType)
+            )}</span>`
+          : "";
+      const sizeValue = pickPositiveValue([
+        n(row.size, NaN),
+        n(row.currentSize, NaN),
+        n(row.newSize, NaN),
+        n(row.sizeDeltaAbs, NaN),
+        confirmed ? n(confirmed.size, NaN) : NaN,
+        confirmed ? n(confirmed.currentSize, NaN) : NaN,
+        confirmed ? n(confirmed.newSize, NaN) : NaN,
+      ]);
+      const positionSizeValue = pickPositiveValue([
+        n(row.positionUsd, NaN),
+        n(row.eventUsd, NaN),
+        n(row.notionalUsd, NaN),
+        confirmed ? n(confirmed.positionUsd, NaN) : NaN,
+        confirmed ? n(confirmed.eventUsd, NaN) : NaN,
+        confirmed ? n(confirmed.notionalUsd, NaN) : NaN,
+      ]) ||
+        (Number.isFinite(sizeValue) && Number.isFinite(n(row.entry, NaN)) && Math.abs(n(row.entry, 0)) > 0
+          ? Math.abs(sizeValue) * Math.abs(n(row.entry, 0))
+          : NaN);
+      const entryValue = pickPositiveValue([
+        n(row.entry, NaN),
+        n(row.entryPrice, NaN),
+        n(row.entry_price, NaN),
+        n(row.price, NaN),
+        confirmed ? n(confirmed.entry, NaN) : NaN,
+        confirmed ? n(confirmed.entryPrice, NaN) : NaN,
+        confirmed ? n(confirmed.entry_price, NaN) : NaN,
+        confirmed ? n(confirmed.price, NaN) : NaN,
+      ]) ||
+        (Number.isFinite(sizeValue) && Number.isFinite(positionSizeValue) && Math.abs(sizeValue) > 0
+          ? Math.abs(positionSizeValue) / Math.abs(sizeValue)
+          : NaN);
+      let marginValue =
+        pickPositiveValue([
+          numLoose(row.margin, NaN),
+          numLoose(row.marginUsd, NaN),
+          numLoose(row.margin_usd, NaN),
+          confirmed ? numLoose(confirmed.margin, NaN) : NaN,
+          confirmed ? numLoose(confirmed.marginUsd, NaN) : NaN,
+          confirmed ? numLoose(confirmed.margin_usd, NaN) : NaN,
+        ]) || NaN;
+      let leverageValue =
+        pickPositiveValue([
+          numLoose(row.leverage, NaN),
+          numLoose(row.lev, NaN),
+          numLoose(row.leverageValue, NaN),
+          numLoose(row.leverage_value, NaN),
+          confirmed ? numLoose(confirmed.leverage, NaN) : NaN,
+          confirmed ? numLoose(confirmed.lev, NaN) : NaN,
+          confirmed ? numLoose(confirmed.leverageValue, NaN) : NaN,
+          confirmed ? numLoose(confirmed.leverage_value, NaN) : NaN,
+          Number.isFinite(marginValue) && marginValue > 0 && Number.isFinite(positionSizeValue)
+            ? positionSizeValue / marginValue
+            : NaN,
+        ]) || NaN;
+      const isolatedFlag = (() => {
+        if (Object.prototype.hasOwnProperty.call(row || {}, "isolated")) {
+          return Boolean(row.isolated);
+        }
+        if (row?.raw && typeof row.raw === "object" && Object.prototype.hasOwnProperty.call(row.raw, "isolated")) {
+          return Boolean(row.raw.isolated);
+        }
+        if (Object.prototype.hasOwnProperty.call(confirmed || {}, "isolated")) {
+          return Boolean(confirmed.isolated);
+        }
+        if (
+          confirmed?.raw &&
+          typeof confirmed.raw === "object" &&
+          Object.prototype.hasOwnProperty.call(confirmed.raw, "isolated")
+        ) {
+          return Boolean(confirmed.raw.isolated);
+        }
+        return null;
+      })();
+      if (
+        !Number.isFinite(leverageValue) &&
+        Number.isFinite(marginValue) &&
+        marginValue > 0 &&
+        Number.isFinite(positionSizeValue) &&
+        positionSizeValue > 0
+      ) {
+        leverageValue = positionSizeValue / marginValue;
+      }
+      if (
+        !Number.isFinite(marginValue) &&
+        Number.isFinite(leverageValue) &&
+        leverageValue > 0 &&
+        Number.isFinite(positionSizeValue) &&
+        positionSizeValue > 0
+      ) {
+        marginValue = positionSizeValue / leverageValue;
+      }
+      const isCrossMode = isolatedFlag === false;
+      const leverageText =
+        Number.isFinite(leverageValue) && leverageValue > 0
+          ? `${fmtNum(leverageValue, 2)}x`
+          : isCrossMode
+          ? "Cross"
+          : "-";
+      const marginText =
+        Number.isFinite(marginValue) && marginValue > 0
+          ? fmtUsd(marginValue, 2)
+          : isCrossMode
+          ? "Cross"
+          : "-";
+      const isNewlySeen = Boolean(row.isNewlySeen);
+      const rowClass = [
+        "lt-position-row",
+        sideClass,
+        isNewlySeen ? "is-new" : "",
+        row.positionState?.tone ? `tone-${escapeHtml(String(row.positionState.tone).trim().toLowerCase())}` : "",
+      ]
+        .filter(Boolean)
+        .join(" ");
+      return `<tr class="${rowClass}">
+          <td data-col="wallet">${renderWalletCell(row, {
+            showTrackedBadge: false,
+            showFreshnessBadge: false,
+            showCopyButton: true,
+          })}</td>
+          <td data-col="symbol">${escapeHtml(row.symbol || "-")}</td>
+          <td data-col="side"><span class="lt-position-side-pill ${escapeHtml(sideClass)}">${escapeHtml(
+            sideLabel
+          )}</span>${eventBadge}</td>
+          <td data-col="entry" class="right">${escapeHtml(
+            Number.isFinite(entryValue) ? fmtNum(entryValue, 4) : "-"
+          )}</td>
+          <td data-col="size" class="right">${escapeHtml(
+            Number.isFinite(sizeValue) ? fmtNum(sizeValue, 4) : "-"
+          )}</td>
+          <td data-col="position" class="right">${escapeHtml(
+            Number.isFinite(positionSizeValue) ? fmtUsd(positionSizeValue, 2) : "-"
+          )}</td>
+          <td data-col="leverage" class="right">${escapeHtml(leverageText)}</td>
+          <td data-col="margin" class="right">${escapeHtml(marginText)}</td>
+      <td data-col="opened" title="${escapeHtml(
+        [eventTime ? `Event ${fmtTs(eventTime)}` : "", openedAt && openedAt !== eventTime ? `Opened ${fmtTs(openedAt)}` : ""]
+          .filter(Boolean)
+          .join(" • ") || "-"
+      )}">${escapeHtml(eventTime ? fmtTs(eventTime) : "-")}${
+            isNewlySeen ? '<span class="lt-position-new-pill">NEW</span>' : ""
+          }</td>
+        </tr>`;
+      })
+      .join("");
+
+  board.innerHTML = `<div class="lt-table-wrap lt-table-wrap-positions lt-position-single-surface">
+    <table id="lt-positions-table">
+      <thead>${headerRow}</thead>
+      <tbody>${bodyRows || `<tr><td colspan="9" class="lt-empty-state">No recent position events yet.</td></tr>`}</tbody>
+    </table>
+  </div>`;
+
+  board.querySelectorAll("[data-position-sort-key]").forEach((button) => {
     button.addEventListener("click", () => {
       const nextKey = String(button.getAttribute("data-position-sort-key") || "").trim();
       if (!nextKey) return;
-      if (state.positionsSortKey === nextKey) {
-        state.positionsSortDir = state.positionsSortDir === "asc" ? "desc" : "asc";
-      } else {
-        state.positionsSortKey = nextKey;
-        state.positionsSortDir = "desc";
-      }
+      state.positionsSortKey = nextKey;
+      // Keep event feed strictly newest-first at all times.
+      state.positionsSortDir = "desc";
       state.pagination.positions.page = 1;
       fetchSnapshot()
-        .then((payload) => applyPayload(payload, "sort"))
+        .then((nextPayload) => applyPayload(nextPayload, "sort"))
         .catch(() => {});
       connectSse();
     });
   });
 
-  if (!rows.length) {
-    body.innerHTML =
-      '<tr><td colspan="9" class="lt-empty-state">No open positions match the current filters.</td></tr>';
-    return;
-  }
-
-  body.innerHTML = rows
-    .map((row) => {
-      const isSelected = state.selection.type === "positions" && state.selection.key === row.key;
-      const side = normalizeSide(row.side);
-      const sideClass =
-        side.includes("long") || side === "buy" ? "up" : side.includes("short") || side === "sell" ? "down" : "flat";
-      const sizeText = Number.isFinite(n(row.size, NaN)) ? fmtNum(row.size, 4) : "-";
-      const exposureText = Number.isFinite(n(row.positionUsd, NaN)) ? fmtUsd(row.positionUsd, 2) : "Partial";
-      const entryText = Number.isFinite(n(row.entry, NaN)) ? fmtNum(row.entry, 4) : "Partial";
-      const markText = Number.isFinite(n(row.mark, NaN)) ? fmtNum(row.mark, 4) : "Partial";
-      const pnlText = Number.isFinite(n(row.pnl, NaN)) ? fmtSignedUsd(row.pnl, 2) : "Partial";
-      const ageText = row.openedAt ? fmtAgo(row.openedAt) : "n/a";
-      const updateText = row.updatedAt ? fmtAgo(row.updatedAt) : "-";
-      const activityTone =
-        row.freshness === "fresh" ? "fresh" : row.freshness === "stale" ? "stale" : "cooling";
-      return `<tr class="${isSelected ? "is-selected" : ""}" data-select-type="positions" data-select-key="${escapeHtml(
-        row.key
-      )}" tabindex="0" aria-selected="${isSelected ? "true" : "false"}">
-        <td class="left" data-col="wallet">
-          ${renderWalletCell(row, { showTrackedBadge: false, showFreshnessBadge: false, showCopyButton: true })}
-        </td>
-        <td class="left" data-col="symbol">
-          <strong>${escapeHtml(row.symbol || "-")}</strong>
-        </td>
-        <td class="left" data-col="side">
-          ${badge(sideClass, titleCase(row.side || "-"))}
-        </td>
-        <td class="right mono" data-col="size">${escapeHtml(sizeText)}</td>
-        <td class="right mono" data-col="position">${escapeHtml(exposureText)}</td>
-        <td class="right mono" data-col="entry">${escapeHtml(entryText)}</td>
-        <td class="right mono" data-col="mark">${escapeHtml(markText)}</td>
-        <td class="right mono ${n(row.pnl, 0) >= 0 ? "up" : "down"}" data-col="unrealized">${escapeHtml(pnlText)}</td>
-        <td class="left" data-col="activity">
-          <div class="lt-activity-cell">
-            <div class="lt-activity-meta">
-              ${badge(activityTone, row.freshness || "unknown")}
-              <span>opened ${escapeHtml(ageText)}</span>
-            </div>
-            <div class="lt-activity-meta">
-              ${renderActivityRail(row.activityLevel, activityTone)}
-              <span>updated ${escapeHtml(updateText)}</span>
-            </div>
-          </div>
-        </td>
-      </tr>`;
-    })
-    .join("");
-
-  body.querySelectorAll("button.lt-wallet-link[data-filter-wallet]").forEach((btn) => {
+  board.querySelectorAll("button.lt-wallet-link[data-filter-wallet]").forEach((btn) => {
     btn.addEventListener("click", (event) => {
       event.stopPropagation();
       const walletValue = String(btn.getAttribute("data-filter-wallet") || "").trim();
@@ -1800,32 +2537,7 @@ function renderPositionsTable(rows) {
       render();
     });
   });
-  attachWalletCopyButtons(body);
-
-  body.querySelectorAll("tr[data-select-type='positions'][data-select-key]").forEach((rowNode) => {
-    const selectRow = (event) => {
-      const button = event.target.closest("button.lt-wallet-link");
-      if (button) return;
-      const row = rows.find(
-        (entry) => entry.key === String(rowNode.getAttribute("data-select-key") || "")
-      );
-      state.selection = {
-        type: "positions",
-        key: String(rowNode.getAttribute("data-select-key") || ""),
-      };
-      if (row && row.walletResolved) {
-        openWalletDrawerForRow(row);
-      } else {
-        render();
-      }
-    };
-    rowNode.addEventListener("click", selectRow);
-    rowNode.addEventListener("keydown", (event) => {
-      if (event.key !== "Enter" && event.key !== " ") return;
-      event.preventDefault();
-      selectRow(event);
-    });
-  });
+  attachWalletCopyButtons(board);
 }
 
 function renderWalletsTable(rows) {
@@ -1839,7 +2551,7 @@ function renderWalletsTable(rows) {
     { key: "pnl30", label: "Realized 30D", align: "right", sortKey: "pnl30" },
     { key: "pnlAll", label: "Realized All", align: "right", sortKey: "pnlAll" },
     { key: "open", label: "Open Positions", align: "right" },
-    { key: "activity", label: "Last Activity", align: "left" },
+    { key: "activity", label: "Last Trade", align: "left" },
   ];
 
   head.innerHTML = `<tr>${columns
@@ -1902,7 +2614,9 @@ function renderWalletsTable(rows) {
       const realizedAll = Number.isFinite(n(row.realizedPnlUsd, NaN))
         ? fmtSignedUsd(row.realizedPnlUsd, 2)
         : "n/a";
-      const lastActivity = row.lastActivity ? fmtAgo(row.lastActivity) : "-";
+      const lastActivity = (row.lastActivityAt || row.lastActivity || row.lastTrade)
+        ? fmtAgo(row.lastActivityAt || row.lastActivity || row.lastTrade)
+        : "-";
       return `<tr class="${isSelected ? "is-selected" : ""}" data-select-type="wallets" data-select-key="${escapeHtml(
         row.key
       )}" tabindex="0" aria-selected="${isSelected ? "true" : "false"}">
@@ -2040,16 +2754,16 @@ function renderActiveView() {
   const minPnlLabel = el("lt-filter-min-pnl-label");
   const maxPnlLabel = el("lt-filter-max-pnl-label");
   if (minUsdLabel) {
-    minUsdLabel.textContent = activeView === "positions" ? "Min Position USD" : "Min Total Volume USD";
+    minUsdLabel.textContent = activeView === "positions" ? "Min Event USD" : "Min Total Volume USD";
   }
   if (maxUsdLabel) {
-    maxUsdLabel.textContent = activeView === "positions" ? "Max Position USD" : "Max Total Volume USD";
+    maxUsdLabel.textContent = activeView === "positions" ? "Max Event USD" : "Max Total Volume USD";
   }
   if (minPnlLabel) {
-    minPnlLabel.textContent = activeView === "positions" ? "Min Unrealized PnL" : "Min Total PnL";
+    minPnlLabel.textContent = activeView === "positions" ? "Min PnL" : "Min Total PnL";
   }
   if (maxPnlLabel) {
-    maxPnlLabel.textContent = activeView === "positions" ? "Max Unrealized PnL" : "Max Total PnL";
+    maxPnlLabel.textContent = activeView === "positions" ? "Max PnL" : "Max Total PnL";
   }
 
   document.querySelectorAll("[data-filter-scope='positions']").forEach((node) => {
@@ -2097,7 +2811,7 @@ async function openWalletDrawerForRow(row) {
   scrollDetailPanelIntoView();
   try {
     const payload = await fetchJsonWithTimeout(
-      `${WALLET_DETAIL_ENDPOINT_PREFIX}${encodeURIComponent(wallet)}`,
+      `/api/live-trades/wallet-first?wallet=${encodeURIComponent(wallet)}&wallet_limit=1&position_limit=200&live_active_limit=1`,
       DRAWER_FETCH_TIMEOUT_MS,
       abortController ? abortController.signal : null
     );
@@ -2142,7 +2856,6 @@ function renderWalletPositionsList(positions, sourceRow) {
           <th class="right">Position USD</th>
           <th class="right">Entry</th>
           <th class="right">Mark</th>
-          <th class="right">Unrealized</th>
           <th>Updated</th>
         </tr>
       </thead>
@@ -2167,7 +2880,6 @@ function renderWalletPositionsList(positions, sourceRow) {
               <td class="right mono">${escapeHtml(fmtUsd(row.positionUsd, 2))}</td>
               <td class="right mono">${escapeHtml(Number.isFinite(n(row.entry, NaN)) ? fmtNum(row.entry, 4) : "-")}</td>
               <td class="right mono">${escapeHtml(Number.isFinite(n(row.mark, NaN)) ? fmtNum(row.mark, 4) : "-")}</td>
-              <td class="right mono ${n(row.unrealizedPnlUsd, 0) >= 0 ? "up" : "down"}">${escapeHtml(fmtSignedUsd(row.unrealizedPnlUsd, 2))}</td>
               <td>${escapeHtml(row.updatedAt ? fmtAgo(row.updatedAt) : "-")}</td>
             </tr>`;
           })
@@ -2335,7 +3047,7 @@ function renderDetailPanel() {
           )}</div>
         </div>
         <div class="lt-detail-item">
-          <div class="lt-detail-item-label">Last activity</div>
+          <div class="lt-detail-item-label">Last trade</div>
           <div class="lt-detail-item-value">${escapeHtml(summary.lastActivityAt ? fmtTs(summary.lastActivityAt) : "-")}</div>
         </div>
         <div class="lt-detail-item">
@@ -2375,7 +3087,9 @@ function renderDetailPanel() {
 function connectionState() {
   if (state.stream.paused) return { label: "PAUSED", className: "paused" };
 
-  const age = state.stream.lastPayloadAt ? Date.now() - state.stream.lastPayloadAt : Infinity;
+  const heartbeatAge = state.stream.lastHeartbeatAt ? Date.now() - state.stream.lastHeartbeatAt : Infinity;
+  const snapshotAge = state.stream.lastSnapshotAt ? Date.now() - state.stream.lastSnapshotAt : Infinity;
+  const age = Math.min(heartbeatAge, snapshotAge);
   if (state.stream.connection === "open" && age <= LIVE_DELAYED_MS) return { label: "LIVE", className: "live" };
   if (state.stream.connection === "open" && age <= LIVE_STALE_MS) return { label: "DELAYED", className: "delayed" };
   if (state.stream.connection === "reconnecting") return { label: "RECONNECTING", className: "warn" };
@@ -2391,12 +3105,112 @@ function renderHealth(payload) {
     liveBadge.textContent = status.label;
     liveBadge.className = `lt-pill lt-pill-live ${status.className}`;
   }
+  updateToolbarControls();
+}
 
-  const freshness = state.stream.lastPayloadAt ? Date.now() - state.stream.lastPayloadAt : null;
+function updateToolbarControls() {
+  const refreshBtn = el("lt-refresh-now-btn");
+  if (refreshBtn) {
+    refreshBtn.disabled = Boolean(state.stream.positionsRequestInFlight);
+  }
 
-  const freshNode = el("lt-stage-freshness");
-  if (freshNode) {
-    freshNode.textContent = freshness === null ? "Freshness -" : `Freshness ${fmtInt(freshness)} ms`;
+  const streamToggleBtn = el("lt-stream-toggle-btn");
+  if (streamToggleBtn) {
+    const paused = Boolean(state.stream.paused);
+    streamToggleBtn.textContent = paused ? "Resume Stream" : "Pause Stream";
+    streamToggleBtn.setAttribute("aria-pressed", paused ? "true" : "false");
+  }
+
+  const updatedNode = el("lt-toolbar-updated");
+  if (updatedNode) {
+    const updatedAt = Math.max(
+      tsMs(state.payload?.generatedAt || 0),
+      n(state.stream.lastSnapshotAt, 0),
+      n(state.stream.lastPayloadAt, 0)
+    );
+    updatedNode.textContent = updatedAt > 0 ? `Updated ${fmtAgo(updatedAt)}` : "Updated -";
+  }
+}
+
+async function refreshNow(source = "manual_refresh") {
+  const payload = await fetchSnapshot();
+  applyPayload(payload, source);
+  await refreshPositionsFeed(source);
+  await refreshMetrics(source);
+}
+
+function pauseStream() {
+  if (state.stream.paused) return;
+  state.stream.paused = true;
+  state.stream.connection = "idle";
+  stopEventSource();
+  updateToolbarControls();
+  renderHealth(state.payload || {});
+}
+
+function resumeStream() {
+  if (!state.stream.paused) return;
+  state.stream.paused = false;
+  state.stream.connection = "connecting";
+  connectSse();
+  ensureFallbackPolling();
+  ensurePositionsPolling();
+  ensureMetricsPolling();
+  refreshPositionsFeed("resume").catch(() => {});
+  refreshMetrics("resume").catch(() => {});
+  updateToolbarControls();
+  renderHealth(state.payload || {});
+}
+
+function toggleStreamState() {
+  if (state.stream.paused) {
+    resumeStream();
+    return;
+  }
+  pauseStream();
+}
+
+function renderTopSummary(payload) {
+  const summary = asObject(payload?.summary);
+  const trackedWallets = n(summary.trackedWallets, payloadWalletsTotal(payload));
+  const walletsWithPortfolioMetrics = n(summary.walletsWithPortfolioMetrics, 0);
+  const liveActiveWalletsTotal = n(summary.liveActiveWalletsTotal, n(summary.liveActiveWallets, 0));
+  const openPositionsTotal = n(summary.openPositionsTotal, payloadPositionsTotal(payload));
+  const portfolioCoveragePct =
+    trackedWallets > 0 ? Math.min(100, (walletsWithPortfolioMetrics / trackedWallets) * 100) : NaN;
+
+  const trackedNode = el("lt-summary-tracked");
+  if (trackedNode) trackedNode.textContent = fmtInt(trackedWallets);
+  const trackedMeta = el("lt-summary-tracked-meta");
+  if (trackedMeta) {
+    trackedMeta.textContent = "Leaderboard universe";
+  }
+
+  const portfolioNode = el("lt-summary-portfolio");
+  if (portfolioNode) {
+    portfolioNode.textContent = Number.isFinite(portfolioCoveragePct)
+      ? fmtPct(portfolioCoveragePct, 1)
+      : fmtInt(walletsWithPortfolioMetrics);
+  }
+  const portfolioMeta = el("lt-summary-portfolio-meta");
+  if (portfolioMeta) {
+    portfolioMeta.textContent = `${fmtInt(walletsWithPortfolioMetrics)} wallets enriched`;
+  }
+
+  const activeWalletsNode = el("lt-summary-active-wallets");
+  if (activeWalletsNode) activeWalletsNode.textContent = fmtInt(liveActiveWalletsTotal);
+  const activeWalletsMeta = el("lt-summary-active-wallets-meta");
+  if (activeWalletsMeta) {
+    const liveGeneratedAt = tsMs(summary.liveGeneratedAt || payload?.generatedAt || 0);
+    activeWalletsMeta.textContent = liveGeneratedAt ? `Snapshot ${fmtAgo(liveGeneratedAt)}` : "Wallets with live positions";
+  }
+
+  const openPositionsNode = el("lt-summary-open-positions");
+  if (openPositionsNode) openPositionsNode.textContent = fmtInt(openPositionsTotal);
+  const openPositionsMeta = el("lt-summary-open-positions-meta");
+  if (openPositionsMeta) {
+    const recentOpenRows = extractPositions(payload).length;
+    openPositionsMeta.textContent = `${fmtInt(recentOpenRows)} rows in current page`;
   }
 }
 
@@ -2583,7 +3397,7 @@ function renderWalletRankingGroups(rows) {
 }
 
 function payloadSignature(payload) {
-  const positionsTotal = payloadPositionsTotal(payload);
+  const positionsTotal = payloadPositionEventsTotal(payload);
   const indexedWalletsTotal = payloadWalletsTotal(payload);
   const publicTradesLen = extractPublicTrades(payload).length;
   const positionsLen = extractPositions(payload).length;
@@ -2607,51 +3421,45 @@ function render(options = {}) {
     refreshFilterOptions(rows);
   }
 
-  const positionsFiltered = applyPositionFilters(rows.positions);
-  const walletsFiltered = applyWalletFilters(rows.wallets);
-  const walletGroupState = renderWalletRankingGroups(walletsFiltered);
-  const walletsActive = sortWalletRows(safeArray(walletGroupState?.activeRows));
+  const positionSourceRows = safeArray(rows.positions).length ? rows.positions : extractPositions(payload);
+  const positionsFiltered = applyPositionFilters(positionSourceRows);
   const positionsWindow = pageWindowFromSummary("positions", positionsFiltered.length);
-  const walletsWindow = pageWindowFromSummary("wallets", walletsActive.length);
 
   renderHealth(payload);
-  renderObservability(payload);
-  renderActiveView();
-  renderWalletSupportNote(payload);
-  renderPositionsTable(positionsFiltered);
-  renderWalletsTable(walletsActive);
-  renderDetailPanel();
+  renderPositionEventSummary(payload);
+  renderPositionsTable(positionsFiltered, payload);
   renderPagination("positions", positionsWindow);
-  renderPagination("wallets", walletsWindow);
+  updateToolbarControls();
 }
 
 async function fetchSnapshot() {
-  const controller = typeof AbortController === "function" ? new AbortController() : null;
-  const timeoutId = controller
-    ? setTimeout(() => {
-        try {
-          controller.abort();
-        } catch (_error) {
-          // ignore abort errors
-        }
-      }, SNAPSHOT_TIMEOUT_MS)
-    : null;
-
-  const res = await fetch(buildLiveTradesPath("/api/live-trades"), {
-    cache: "no-store",
-    signal: controller ? controller.signal : undefined,
-  }).finally(() => {
-    if (timeoutId) clearTimeout(timeoutId);
-  });
-  if (!res.ok) throw new Error(`live-trades: ${res.status}`);
-  return res.json();
+  if (state.activeView !== "positions") {
+    return fetchJsonWithTimeout(buildLiveTradesPath("/api/live-trades"), SNAPSHOT_TIMEOUT_MS);
+  }
+  const positionsPageSize = Math.max(
+    50,
+    Math.min(500, Math.floor(n(state.pagination?.positions?.pageSize, 100)))
+  );
+  const eventsPayload = await fetchJsonWithTimeout(
+    buildLiveTradesPositionsPath("events", { all: false, positionLimit: positionsPageSize }),
+    POSITIONS_FEED_TIMEOUT_MS
+  );
+  return mergeLiveTradePayloads(state.payload || {}, eventsPayload, null);
 }
 
 function applyPayload(payload, source = "poll") {
   state.payload = payload;
   state.stream.source = source;
   state.stream.lastPayloadAt = Date.now();
-  state.stream.lastEventAt = tsMs(payload?.generatedAt) || Date.now();
+  state.stream.lastSnapshotAt = Date.now();
+  state.stream.lastLiveEventAt =
+    tsMs(
+      payload?.summary?.walletFirstLive?.lastEventAt ||
+        payload?.summary?.liveWalletFirst?.lastEventAt ||
+        payload?.summary?.liveGeneratedAt ||
+        payload?.generatedAt ||
+        0
+    ) || state.stream.lastLiveEventAt || Date.now();
 
   const nextPositionSignature = positionsSignature(payload);
   const nextWalletSignature = walletsSignature(payload);
@@ -2661,7 +3469,8 @@ function applyPayload(payload, source = "poll") {
   const remapLiveActive = nextLiveActiveSignature !== state.rowSignatures.liveActive;
 
   const nextSignature = payloadSignature(payload);
-  if (remapPositions || remapWallets || remapLiveActive || nextSignature !== state.payloadSignature) {
+  const shouldRender = remapPositions || remapWallets || remapLiveActive || nextSignature !== state.payloadSignature;
+  if (shouldRender) {
     try {
       const nextRows = buildRows(payload, {
         includePositions: remapPositions,
@@ -2692,11 +3501,29 @@ function applyPayload(payload, source = "poll") {
         prevRows.wallets.length > 0 &&
         indexedWalletsTotal > 0;
 
+      const nextPositionRows = safeArray(nextRows.positions);
+      const prevPositionKeySet = new Set(
+        safeArray(prevRows.positions)
+          .map((row) => String(row?.key || "").trim())
+          .filter(Boolean)
+      );
+      const seenPositionKeys =
+        state.positionsSeenKeys instanceof Set ? new Set(state.positionsSeenKeys) : new Set();
+      const annotatedPositions = nextPositionRows.map((row) => {
+        const key = String(row?.key || "").trim();
+        if (!key) return row;
+        const unseen = !seenPositionKeys.has(key) && !prevPositionKeySet.has(key);
+        seenPositionKeys.add(key);
+        if (!unseen || source === "bootstrap") return row;
+        return { ...row, isNewlySeen: true };
+      });
+      state.positionsSeenKeys = seenPositionKeys;
+
       state.rows = {
         positions: remapPositions
           ? preservePositions
             ? prevRows.positions
-            : safeArray(nextRows.positions)
+            : annotatedPositions
           : prevRows.positions,
         wallets: remapWallets
           ? preserveWallets
@@ -2714,7 +3541,23 @@ function applyPayload(payload, source = "poll") {
       state.stream.lastErrorAt = Date.now();
     }
   }
-  render({ refreshOptions: true });
+  if (shouldRender || source !== "poll") {
+    render({ refreshOptions: true });
+  }
+}
+
+async function refreshMetrics(source = "metrics_poll") {
+  try {
+    const metrics = await fetchJsonWithTimeout(buildLiveTradesPath("/api/live-trades/metrics"), SNAPSHOT_TIMEOUT_MS);
+    state.metrics = metrics;
+    if (state.payload) {
+      renderPositionEventSummary(state.payload);
+      renderHealth(state.payload);
+    }
+  } catch (error) {
+    state.stream.lastError = error && error.message ? error.message : "metrics_error";
+    state.stream.lastErrorAt = Date.now();
+  }
 }
 
 function stopEventSource() {
@@ -2736,7 +3579,76 @@ function ensureFallbackPolling() {
       state.stream.lastError = error.message;
       state.stream.lastErrorAt = Date.now();
     }
-  }, 5000);
+  }, 1000);
+}
+
+async function refreshPositionsFeed(source = "positions_poll") {
+  if (state.stream.positionsRequestInFlight) {
+    state.stream.positionsRefreshQueued = true;
+    return;
+  }
+  state.stream.positionsRequestInFlight = true;
+  state.stream.positionsRefreshQueued = false;
+  const requestSeq = Number(state.stream.positionsRequestSeq || 0) + 1;
+  state.stream.positionsRequestSeq = requestSeq;
+  const positionsFetchLimit = 2000;
+  try {
+    const eventsPayload = await fetchJsonWithTimeout(
+      buildLiveTradesPositionsPath("events", { all: false, positionLimit: positionsFetchLimit }),
+      POSITIONS_FEED_TIMEOUT_MS
+    );
+    const payloadGeneratedAt = tsMs(
+      eventsPayload?.generatedAt ||
+        eventsPayload?.summary?.liveGeneratedAt ||
+        eventsPayload?.summary?.walletFirstLive?.lastEventAt ||
+        0
+    );
+    const lastAppliedGeneratedAt = n(state.stream.positionsLastAppliedGeneratedAt, 0);
+    const lastAppliedSeq = n(state.stream.positionsAppliedSeq, 0);
+    if (
+      requestSeq < lastAppliedSeq ||
+      (payloadGeneratedAt > 0 &&
+        lastAppliedGeneratedAt > 0 &&
+        payloadGeneratedAt + 1 < lastAppliedGeneratedAt)
+    ) {
+      return;
+    }
+    const nextPayload = mergeLiveTradePayloads(state.payload || {}, eventsPayload, null);
+    applyPayload(nextPayload, source);
+    state.stream.positionsAppliedSeq = requestSeq;
+    if (payloadGeneratedAt > 0) {
+      state.stream.positionsLastAppliedGeneratedAt = Math.max(lastAppliedGeneratedAt, payloadGeneratedAt);
+    }
+  } finally {
+    state.stream.positionsRequestInFlight = false;
+    if (state.stream.positionsRefreshQueued && !state.stream.paused && state.activeView === "positions") {
+      state.stream.positionsRefreshQueued = false;
+      setTimeout(() => {
+        refreshPositionsFeed(`${source}_queued`).catch((error) => {
+          state.stream.lastError = error && error.message ? error.message : "positions_feed_error";
+          state.stream.lastErrorAt = Date.now();
+        });
+      }, 0);
+    }
+  }
+}
+
+function ensurePositionsPolling() {
+  if (state.stream.positionsTimer) return;
+  state.stream.positionsTimer = setInterval(() => {
+    if (state.stream.paused || state.activeView !== "positions") return;
+    refreshPositionsFeed().catch((error) => {
+      state.stream.lastError = error && error.message ? error.message : "positions_feed_error";
+      state.stream.lastErrorAt = Date.now();
+    });
+  }, POSITIONS_FEED_POLL_MS);
+}
+
+function clearPositionsPolling() {
+  if (state.stream.positionsTimer) {
+    clearInterval(state.stream.positionsTimer);
+    state.stream.positionsTimer = null;
+  }
 }
 
 function clearFallbackPolling() {
@@ -2746,12 +3658,27 @@ function clearFallbackPolling() {
   }
 }
 
+function ensureMetricsPolling() {
+  if (state.stream.metricsTimer) return;
+  state.stream.metricsTimer = setInterval(() => {
+    if (state.stream.paused) return;
+    refreshMetrics().catch(() => {});
+  }, 5000);
+}
+
+function clearMetricsPolling() {
+  if (state.stream.metricsTimer) {
+    clearInterval(state.stream.metricsTimer);
+    state.stream.metricsTimer = null;
+  }
+}
+
 function connectSse() {
   if (state.stream.paused) return;
   stopEventSource();
   state.stream.connection = "connecting";
 
-  const streamPath = buildLiveTradesPath("/api/live-trades/stream");
+  const streamPath = buildLiveTradesPath("/api/live-trades/stream", { cacheBust: Date.now() });
   const es = new EventSource(streamPath);
   state.stream.eventSource = es;
 
@@ -2760,15 +3687,64 @@ function connectSse() {
     try {
       const message = JSON.parse(event.data);
       if (message && message.type === "heartbeat") {
-        state.stream.lastEventAt = Date.now();
+        state.stream.lastHeartbeatAt = Date.now();
         renderHealth(state.payload || {});
         return;
       }
+      if (state.activeView === "positions") {
+        state.stream.lastLiveEventAt =
+          tsMs(message?.payload?.summary?.liveGeneratedAt || message?.payload?.generatedAt || Date.now()) ||
+          state.stream.lastLiveEventAt ||
+          Date.now();
+        if (message && message.payload && message.payload.summary) {
+          state.metrics = {
+            ...(asObject(state.metrics) || {}),
+            generatedAt: tsMs(message.payload.generatedAt || Date.now()) || Date.now(),
+            aggregate: {
+              ...asObject(state.metrics?.aggregate),
+              trackedWallets: n(message.payload.summary.trackedWallets, n(state.metrics?.aggregate?.trackedWallets, 0)),
+              openPositionsTotal: n(
+                message.payload.summary.openPositionsTotal,
+                n(state.metrics?.aggregate?.openPositionsTotal, 0)
+              ),
+              newOpenEventsPerMinute: n(
+                message.payload.summary.positionEventOpened1m,
+                n(state.metrics?.aggregate?.newOpenEventsPerMinute, 0)
+              ),
+              eventsPerMinute: n(
+                message.payload.summary.positionEventsTotal,
+                n(state.metrics?.aggregate?.eventsPerMinute, 0)
+              ),
+            },
+          };
+          renderPositionEventSummary(state.payload || {});
+        }
+        return;
+      }
       if (message && message.type === "snapshot" && message.payload) {
+        if (state.activeView === "positions") {
+          state.stream.lastSnapshotAt = Date.now();
+          state.stream.lastLiveEventAt =
+            tsMs(message?.payload?.summary?.liveGeneratedAt || message?.payload?.generatedAt || Date.now()) ||
+            state.stream.lastLiveEventAt ||
+            Date.now();
+          renderHealth(state.payload || {});
+          refreshPositionsFeed("positions_sse").catch(() => {});
+          return;
+        }
         applyPayload(message.payload, "sse");
         return;
       }
       if (message && message.payload) {
+        if (state.activeView === "positions") {
+          state.stream.lastLiveEventAt =
+            tsMs(message?.payload?.summary?.liveGeneratedAt || message?.payload?.generatedAt || Date.now()) ||
+            state.stream.lastLiveEventAt ||
+            Date.now();
+          renderHealth(state.payload || {});
+          refreshPositionsFeed("positions_sse").catch(() => {});
+          return;
+        }
         applyPayload(message.payload, "sse");
       }
     } catch (_error) {
@@ -2778,7 +3754,7 @@ function connectSse() {
 
   es.onopen = () => {
     state.stream.connection = "open";
-    state.stream.retryMs = 1000;
+    state.stream.retryMs = 500;
     state.stream.lastError = null;
     clearFallbackPolling();
     render();
@@ -2786,6 +3762,7 @@ function connectSse() {
 
   es.onmessage = handleStreamMessage;
   es.addEventListener("snapshot", handleStreamMessage);
+  es.addEventListener("delta", handleStreamMessage);
   es.addEventListener("heartbeat", handleStreamMessage);
 
   es.onerror = () => {
@@ -2821,6 +3798,7 @@ function wireEvents() {
       state.selection = { type: "", key: "" };
     }
     render();
+    refreshPositionsFeed("positions_view").catch(() => {});
   });
 
   el("lt-view-wallets-btn")?.addEventListener("click", () => {
@@ -2851,16 +3829,16 @@ function wireEvents() {
     render();
   });
 
-  el("lt-filter-symbol")?.addEventListener("change", (event) => {
-    state.filters.symbol = String(event.target.value || "");
-    resetPagination();
-    render();
+  el("lt-refresh-now-btn")?.addEventListener("click", () => {
+    refreshNow().catch((error) => {
+      state.stream.lastError = error?.message || "manual_refresh_error";
+      state.stream.lastErrorAt = Date.now();
+      renderHealth(state.payload || {});
+    });
   });
 
-  el("lt-filter-side")?.addEventListener("change", (event) => {
-    state.filters.side = String(event.target.value || "");
-    resetPagination();
-    render();
+  el("lt-stream-toggle-btn")?.addEventListener("click", () => {
+    toggleStreamState();
   });
 
   el("lt-filter-min-usd")?.addEventListener("input", () => {
@@ -2953,8 +3931,6 @@ function wireEvents() {
     state.search = "";
     state.filters = {
       wallet: "",
-      symbol: "",
-      side: "",
       minUsd: 0,
       maxUsd: 0,
       minPnl: 0,
@@ -2973,7 +3949,7 @@ function wireEvents() {
       if (el(id)) el(id).value = "";
     });
 
-    ["lt-filter-symbol", "lt-filter-side", "lt-filter-freshness"].forEach((id) => {
+    ["lt-filter-freshness"].forEach((id) => {
       if (el(id)) el(id).value = "";
     });
 
@@ -2994,10 +3970,13 @@ async function boot() {
   renderHealth(state.payload || {});
   connectSse();
   ensureFallbackPolling();
+  ensurePositionsPolling();
+  ensureMetricsPolling();
 
   try {
     const payload = await fetchSnapshot();
     applyPayload(payload, "bootstrap");
+    refreshMetrics("bootstrap").catch(() => {});
   } catch (_error) {
     // continue with stream fallback
   }

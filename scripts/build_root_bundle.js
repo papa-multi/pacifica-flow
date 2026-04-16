@@ -21,8 +21,9 @@ const source = fs.readFileSync(srcPath, "utf8");
 const result = babel.transformSync(source, {
   babelrc: false,
   configFile: false,
-  comments: true,
-  compact: false,
+  comments: false,
+  compact: true,
+  minified: true,
   presets: [
     [
       presetEnv,

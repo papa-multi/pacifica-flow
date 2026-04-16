@@ -1,9 +1,7 @@
-@import url("https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&family=Space+Grotesk:wght@500;700&family=IBM+Plex+Mono:wght@400;500&display=swap");
-
 :root {
-  --pf-font-display: "Space Grotesk", "Outfit", sans-serif;
-  --pf-font-body: "Outfit", "Segoe UI", sans-serif;
-  --pf-font-mono: "IBM Plex Mono", monospace;
+  --pf-font-display: "Aptos", "Segoe UI Semibold", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  --pf-font-body: "Aptos", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  --pf-font-mono: "Cascadia Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
 
   --pf-bg-0: #040a14;
   --pf-bg-1: #081221;

@@ -347,6 +347,12 @@ function createGeneralDataComponent({
         ? WALLET_LIFECYCLE.LIVE_TRACKING
         : WALLET_LIFECYCLE.FULLY_INDEXED;
     }
+    if (
+      explicit === WALLET_LIFECYCLE.LIVE_TRACKING &&
+      Number(safe.liveTrackingSince || 0) > 0
+    ) {
+      return WALLET_LIFECYCLE.LIVE_TRACKING;
+    }
     if (hasAttempts) return WALLET_LIFECYCLE.BACKFILLING;
     if (explicit === WALLET_LIFECYCLE.DISCOVERED) return WALLET_LIFECYCLE.DISCOVERED;
     return WALLET_LIFECYCLE.PENDING_BACKFILL;

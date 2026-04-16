@@ -1,17 +1,67 @@
-const WebSocket = global.WebSocket || require("ws");
+let NodeWebSocket = null;
+try {
+  const wsModule = require("ws");
+  NodeWebSocket = wsModule && wsModule.WebSocket ? wsModule.WebSocket : wsModule;
+} catch (_error) {
+  NodeWebSocket = null;
+}
+
+let HttpsProxyAgent = null;
+try {
+  const proxyModule = require("https-proxy-agent");
+  HttpsProxyAgent =
+    proxyModule && proxyModule.HttpsProxyAgent
+      ? proxyModule.HttpsProxyAgent
+      : proxyModule;
+} catch (_error) {
+  HttpsProxyAgent = null;
+}
+
+const WebSocketImpl = NodeWebSocket || global.WebSocket || null;
+
+function bindWsEvent(ws, eventName, handler) {
+  if (!ws || typeof handler !== "function") return;
+  if (typeof ws.on === "function") {
+    ws.on(eventName, handler);
+    return;
+  }
+  if (typeof ws.addEventListener === "function") {
+    ws.addEventListener(eventName, (event) => {
+      if (eventName === "message") {
+        handler(event && Object.prototype.hasOwnProperty.call(event, "data") ? event.data : event);
+        return;
+      }
+      handler(event);
+    });
+    return;
+  }
+  throw new Error(`WebSocket transport does not support event binding for ${eventName}`);
+}
 
 function createWsClient({
   url,
   logger = console,
   reconnectMs = 2000,
   pingIntervalMs = 25000,
+  connectTimeoutMs = 10000,
+  proxyUrl = "",
 }) {
+  const proxyText = String(proxyUrl || "").trim();
+  const normalizedProxyUrl = proxyText
+    ? /^[a-z]+:\/\//i.test(proxyText)
+      ? proxyText
+      : `http://${proxyText}`
+    : "";
+  const proxyAgent =
+    normalizedProxyUrl && HttpsProxyAgent ? new HttpsProxyAgent(normalizedProxyUrl) : null;
   const state = {
     ws: null,
     status: "idle",
     shouldRun: false,
+    manualClose: false,
     reconnectTimer: null,
     pingTimer: null,
+    connectTimer: null,
     subscriptions: new Map(),
     onMessage: null,
     onStatus: null,
@@ -33,6 +83,10 @@ function createWsClient({
     if (state.pingTimer) {
       clearInterval(state.pingTimer);
       state.pingTimer = null;
+    }
+    if (state.connectTimer) {
+      clearTimeout(state.connectTimer);
+      state.connectTimer = null;
     }
   }
 
@@ -93,11 +147,40 @@ function createWsClient({
     if (!state.shouldRun) return;
     clearTimers();
 
+    state.manualClose = false;
     emitStatus("connecting");
-    const ws = new WebSocket(url);
+    if (!WebSocketImpl) {
+      throw new Error("No WebSocket implementation available");
+    }
+    const wsOptions = proxyAgent ? { agent: proxyAgent } : undefined;
+    const ws = wsOptions ? new WebSocketImpl(url, wsOptions) : new WebSocketImpl(url);
     state.ws = ws;
+    state.connectTimer = setTimeout(() => {
+      state.connectTimer = null;
+      if (!state.ws || state.ws !== ws) return;
+      if (state.status === "open" || state.manualClose) return;
+      try {
+        if (typeof ws.terminate === "function") {
+          ws.terminate();
+        } else if (typeof ws.close === "function") {
+          ws.close();
+        }
+      } catch (_error) {
+        // ignore
+      }
+      if (typeof state.onError === "function") {
+        state.onError(new Error(`ws_connect_timeout:${connectTimeoutMs}`));
+      }
+    }, Math.max(1000, Number(connectTimeoutMs || 10000)));
+    if (state.connectTimer && typeof state.connectTimer.unref === "function") {
+      state.connectTimer.unref();
+    }
 
-    ws.on("open", () => {
+    bindWsEvent(ws, "open", () => {
+      if (state.connectTimer) {
+        clearTimeout(state.connectTimer);
+        state.connectTimer = null;
+      }
       emitStatus("open");
       resubscribeAll();
       state.pingTimer = setInterval(() => {
@@ -105,19 +188,31 @@ function createWsClient({
       }, pingIntervalMs);
     });
 
-    ws.on("message", handleMessage);
+    bindWsEvent(ws, "message", handleMessage);
 
-    ws.on("error", (error) => {
-      logger.warn(`[ws-client] error: ${error.message}`);
-      if (typeof state.onError === "function") state.onError(error);
+    bindWsEvent(ws, "error", (error) => {
+      if (state.connectTimer) {
+        clearTimeout(state.connectTimer);
+        state.connectTimer = null;
+      }
+      if (!state.manualClose) {
+        logger.warn(`[ws-client] error: ${error.message}`);
+        if (typeof state.onError === "function") state.onError(error);
+      }
       emitStatus("error");
     });
 
-    ws.on("close", () => {
+    bindWsEvent(ws, "close", () => {
+      if (state.connectTimer) {
+        clearTimeout(state.connectTimer);
+        state.connectTimer = null;
+      }
       emitStatus("closed");
       state.ws = null;
       clearTimers();
-      scheduleReconnect();
+      if (!state.manualClose) {
+        scheduleReconnect();
+      }
     });
   }
 
@@ -132,7 +227,16 @@ function createWsClient({
     clearTimers();
     if (state.ws) {
       try {
-        state.ws.close();
+        state.manualClose = true;
+        const readyState = Number(state.ws.readyState);
+        if (
+          readyState === Number(state.ws.OPEN) ||
+          readyState === Number(state.ws.CLOSING)
+        ) {
+          state.ws.close();
+        } else if (typeof state.ws.terminate === "function") {
+          state.ws.terminate();
+        }
       } catch (_error) {
         // ignore
       }
@@ -152,6 +256,7 @@ function createWsClient({
       status: state.status,
       subscriptions: state.subscriptions.size,
       url,
+      proxyUrl: normalizedProxyUrl || null,
     };
   }
 

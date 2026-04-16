@@ -1,4 +1,10 @@
+(() => {
 if (typeof window !== "undefined") {
+  if (window.__PF_APP_INSTANCE_LOADED) {
+    window.__PF_APP_DUPLICATE_LOAD_BLOCKED = true;
+    return;
+  }
+  window.__PF_APP_INSTANCE_LOADED = true;
   window.__PF_APP_SCRIPT_EXECUTED = true;
   window.__PF_APP_BOOTED = false;
 }
@@ -31,18 +37,32 @@ function defaultWalletFilters() {
 const state = {
   view: "exchange",
   timeframe: "all",
+  tokenTimeframe: "24h",
   analyticsTab: "volume",
+  exchangeChartMetric: "volume",
   exchange: null,
+  exchangeSignature: "",
   tokenAnalytics: null,
+  tokenAnalyticsSignature: "",
   tokenSymbol: "",
+  tokenWalletPage: 1,
+  tokenWalletPageSize: 20,
+  tokenWalletSortKey: "openedAt",
+  tokenWalletSortDir: "asc",
+  tokenTradePage: 1,
+  tokenTradePageSize: 50,
   volumeSeries: null,
+  volumeSeriesSignature: "",
   volumeRankPage: 1,
   volumeRankPageSize: 10,
   volumeFilter: "",
   volumeSort: "volume",
   volumeRankFilteredTotal: 0,
   wallets: null,
+  walletsSignature: "",
+  walletSync: null,
   walletProfile: null,
+  walletProfileSignature: "",
   walletSearch: "",
   walletFilters: defaultWalletFilters(),
   walletAppliedFilters: [],
@@ -52,6 +72,7 @@ const state = {
   walletSortKey: "volumeUsd",
   walletSortDir: "desc",
   selectedWallet: null,
+  walletProfileRequestId: 0,
 };
 const tickerState = {
   signature: "",
@@ -60,15 +81,37 @@ const tickerState = {
 const refreshState = {
   exchange: null,
   wallets: null,
+  walletSync: null,
   walletProfile: null,
 };
+let walletProfileInspectController = null;
+const fetchJsonCache = new Map();
+const fetchJsonInflight = new Map();
+const SESSION_CACHE_VERSION =
+  typeof window !== "undefined" && window.__PF_ASSET_VERSION__
+    ? String(window.__PF_ASSET_VERSION__)
+    : "dev";
+const SESSION_CACHE_VERSION_KEY = "pf.assetVersion.v1";
+const SESSION_CACHE_KEYS = {
+  exchange: `pf.exchange.v2:${SESSION_CACHE_VERSION}`,
+  wallets: `pf.wallets.v6:${SESSION_CACHE_VERSION}`,
+  volumeSeries: `pf.exchangeSeries.v7:${SESSION_CACHE_VERSION}`,
+  liveTradeSummary: `pf.liveTrade.summary.v1:${SESSION_CACHE_VERSION}`,
+  liveTradePositions: `pf.liveTrade.positions.v1:${SESSION_CACHE_VERSION}`,
+};
 const pollTimers = new Map();
+const refreshCooldowns = new Map();
 let walletSearchDebounceTimer = 0;
+let walletWarmupRetryTimer = 0;
 let tickerResizeRaf = 0;
 let chartResizeRaf = 0;
+let exchangeSeriesBootStarted = false;
+let exchangeSeriesBootObserver = null;
+let exchangeSupplementalBootStarted = false;
 let walletFilterModalReturnFocus = null;
-let activeSeries = "monthly";
+let activeSeries = "daily";
 let activeChartType = "bars";
+let activeChartTimeMode = "monthly";
 let chartHasUserControl = false;
 const ENABLE_CHART_BRUSH = true;
 const chartState = {
@@ -86,27 +129,65 @@ let chartDragStartX = 0;
 let chartDragStartOffset = 0;
 let chartResizeObserver = null;
 let chartViewportResizeRaf = 0;
+let chartLayoutSignature = "";
 const chartDateFormatters = {
-  daily: new Intl.DateTimeFormat("en-GB", {
-    day: "2-digit",
-    month: "short",
-    year: "numeric",
-    timeZone: "UTC",
-  }),
-  weekly: new Intl.DateTimeFormat("en-GB", {
-    day: "2-digit",
-    month: "short",
-    year: "numeric",
-    timeZone: "UTC",
-  }),
-  monthly: new Intl.DateTimeFormat("en-GB", {
-    month: "short",
-    year: "numeric",
-    timeZone: "UTC",
-  }),
+  daily: {
+    axis: new Intl.DateTimeFormat("en-GB", {
+      day: "2-digit",
+      month: "short",
+      timeZone: "UTC",
+    }),
+    tooltip: new Intl.DateTimeFormat("en-GB", {
+      day: "2-digit",
+      month: "short",
+      year: "numeric",
+      timeZone: "UTC",
+    }),
+  },
+  live: {
+    axis: new Intl.DateTimeFormat("en-GB", {
+      hour: "2-digit",
+      minute: "2-digit",
+      timeZone: "UTC",
+    }),
+    tooltip: new Intl.DateTimeFormat("en-GB", {
+      day: "2-digit",
+      month: "short",
+      hour: "2-digit",
+      minute: "2-digit",
+      timeZone: "UTC",
+    }),
+  },
+  weekly: {
+    axis: new Intl.DateTimeFormat("en-GB", {
+      day: "2-digit",
+      month: "short",
+      timeZone: "UTC",
+    }),
+    tooltip: new Intl.DateTimeFormat("en-GB", {
+      day: "2-digit",
+      month: "short",
+      year: "numeric",
+      timeZone: "UTC",
+    }),
+  },
+  monthly: {
+    axis: new Intl.DateTimeFormat("en-GB", {
+      month: "short",
+      year: "numeric",
+      timeZone: "UTC",
+    }),
+    tooltip: new Intl.DateTimeFormat("en-GB", {
+      month: "short",
+      year: "numeric",
+      timeZone: "UTC",
+    }),
+  },
 };
 
 const TOKEN_DEFAULT_METRIC = "oi";
+const TOKEN_ANALYSIS_ENABLED = true;
+const TOKEN_PHASE1_SYMBOL = "BTC";
 const TOKEN_METRIC_ROUTE_TO_TAB = {
   oi: "oi",
   "open-interest": "oi",
@@ -127,9 +208,350 @@ const TOKEN_TAB_TO_ROUTE_METRIC = {
   volume: "volume",
 };
 
+const VOLUME_RANK_ORB_ACCENTS = {
+  BTC: { a: "rgba(255, 199, 87, 0.96)", b: "rgba(246, 140, 52, 0.88)" },
+  ETH: { a: "rgba(157, 168, 255, 0.94)", b: "rgba(91, 116, 255, 0.82)" },
+  SOL: { a: "rgba(111, 255, 218, 0.94)", b: "rgba(117, 95, 255, 0.82)" },
+  XRP: { a: "rgba(150, 222, 255, 0.94)", b: "rgba(78, 134, 224, 0.82)" },
+  DOGE: { a: "rgba(255, 224, 138, 0.94)", b: "rgba(221, 159, 58, 0.84)" },
+  BNB: { a: "rgba(255, 231, 122, 0.94)", b: "rgba(233, 171, 40, 0.84)" },
+  SUI: { a: "rgba(128, 214, 255, 0.94)", b: "rgba(68, 145, 255, 0.82)" },
+  AVAX: { a: "rgba(255, 153, 153, 0.94)", b: "rgba(225, 84, 110, 0.82)" },
+};
+
+function isMinimalUiMode() {
+  return typeof window !== "undefined" && Boolean(window.__PF_MINIMAL_UI__);
+}
+
+function readSessionJson(key) {
+  if (typeof window === "undefined" || !window.sessionStorage || !key) return null;
+  try {
+    const raw = window.sessionStorage.getItem(key);
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch (_error) {
+    return null;
+  }
+}
+
+function writeSessionJson(key, value) {
+  if (typeof window === "undefined" || !window.sessionStorage || !key) return;
+  try {
+    if (value === null || value === undefined) {
+      window.sessionStorage.removeItem(key);
+      return;
+    }
+    window.sessionStorage.setItem(key, JSON.stringify(value));
+  } catch (_error) {
+    // ignore storage quota / privacy mode failures
+  }
+}
+
+function syncSessionCacheVersion() {
+  if (typeof window === "undefined" || !window.sessionStorage) return;
+  try {
+    const previousVersion = window.sessionStorage.getItem(SESSION_CACHE_VERSION_KEY);
+    if (previousVersion === SESSION_CACHE_VERSION) return;
+    Object.keys(window.sessionStorage).forEach((key) => {
+      if (String(key || "").startsWith("pf.")) {
+        window.sessionStorage.removeItem(key);
+      }
+    });
+    window.sessionStorage.setItem(SESSION_CACHE_VERSION_KEY, SESSION_CACHE_VERSION);
+  } catch (_error) {
+    // ignore privacy mode and quota failures
+  }
+}
+
+syncSessionCacheVersion();
+
+function hydrateWalletBootstrapPayload() {
+  if (state.wallets || typeof window === "undefined") return false;
+  const payload = window.__PF_BOOTSTRAP_WALLETS__;
+  if (!payload || typeof payload !== "object") return false;
+  state.wallets = payload;
+  state.walletAppliedFilters = Array.isArray(payload?.filters?.applied)
+    ? payload.filters.applied
+    : [];
+  state.walletAvailableSymbols = Array.isArray(payload?.filters?.availableSymbols)
+    ? payload.filters.availableSymbols
+    : [];
+  writeSessionJson(SESSION_CACHE_KEYS.wallets, payload);
+  return true;
+}
+
+function hydrateExchangeBootstrapPayload() {
+  if (typeof window === "undefined") return { exchange: false, series: false };
+  let hydratedExchange = false;
+  let hydratedSeries = false;
+  const exchangePayload = window.__PF_BOOTSTRAP_EXCHANGE__;
+  if (!state.exchange && exchangePayload && typeof exchangePayload === "object") {
+    state.exchange = exchangePayload;
+    writeSessionJson(SESSION_CACHE_KEYS.exchange, exchangePayload);
+    hydratedExchange = true;
+  }
+  const seriesPayload = window.__PF_BOOTSTRAP_EXCHANGE_SERIES__;
+  if (!state.volumeSeries && seriesPayload && typeof seriesPayload === "object") {
+    state.volumeSeries = seriesPayload;
+    writeSessionJson(SESSION_CACHE_KEYS.volumeSeries, seriesPayload);
+    hydratedSeries = true;
+  }
+  return { exchange: hydratedExchange, series: hydratedSeries };
+}
+
+function hydrateInitialStateFromSession() {
+  let hydratedExchange = false;
+  const bootstrapHydration = hydrateExchangeBootstrapPayload();
+  if (bootstrapHydration.exchange) {
+    hydratedExchange = true;
+  }
+  if (!state.exchange) {
+    const cachedExchange = readSessionJson(SESSION_CACHE_KEYS.exchange);
+    if (cachedExchange && typeof cachedExchange === "object") {
+      state.exchange = cachedExchange;
+      hydratedExchange = true;
+    }
+  }
+  if (!state.volumeSeries) {
+    const cachedSeries = readSessionJson(SESSION_CACHE_KEYS.volumeSeries);
+    if (cachedSeries && typeof cachedSeries === "object" && isFreshSessionPayload(cachedSeries, 90_000)) {
+      state.volumeSeries = cachedSeries;
+    }
+  }
+  if (!hydrateWalletBootstrapPayload() && !state.wallets) {
+    const cachedWallets = readSessionJson(SESSION_CACHE_KEYS.wallets);
+    if (cachedWallets && typeof cachedWallets === "object") {
+      state.wallets = cachedWallets;
+      state.walletAppliedFilters = Array.isArray(cachedWallets?.filters?.applied)
+        ? cachedWallets.filters.applied
+        : [];
+      state.walletAvailableSymbols = Array.isArray(cachedWallets?.filters?.availableSymbols)
+        ? cachedWallets.filters.availableSymbols
+        : [];
+    }
+  }
+  if (hydratedExchange) {
+    populateTokenSymbolOptions();
+  }
+}
+
+function hasFreshExchangeBootstrap(maxAgeMs = 90000) {
+  if (typeof window === "undefined") return false;
+  const payload = window.__PF_BOOTSTRAP_EXCHANGE__;
+  if (!payload || typeof payload !== "object") return false;
+  const generatedAt = Number(payload.generatedAt || 0);
+  return generatedAt > 0 && Date.now() - generatedAt <= Math.max(1000, Number(maxAgeMs || 0));
+}
+
+function scheduleIdleTask(task, timeout = 2000) {
+  if (typeof window === "undefined" || typeof task !== "function") return;
+  if (typeof window.requestIdleCallback === "function") {
+    window.requestIdleCallback(() => task(), { timeout });
+    return;
+  }
+  window.setTimeout(task, Math.max(0, Math.min(timeout, 1200)));
+}
+
+function afterWindowLoad(task, delayMs = 0) {
+  if (typeof window === "undefined" || typeof task !== "function") return;
+  const run = () => {
+    window.setTimeout(task, Math.max(0, Number(delayMs || 0)));
+  };
+  if (document.readyState === "complete") {
+    run();
+    return;
+  }
+  window.addEventListener("load", run, { once: true });
+}
+
+function isConstrainedNetwork() {
+  if (typeof navigator === "undefined") return false;
+  const connection = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+  if (!connection) return false;
+  if (connection.saveData) return true;
+  const effectiveType = String(connection.effectiveType || "").toLowerCase();
+  return effectiveType === "slow-2g" || effectiveType === "2g";
+}
+
+function isFreshSessionPayload(payload, maxAgeMs) {
+  if (!payload || typeof payload !== "object") return false;
+  const generatedAt = Number(payload.generatedAt || payload.lastSuccessAt || payload.lastEventAt || 0);
+  return generatedAt > 0 && Date.now() - generatedAt <= Math.max(1000, Number(maxAgeMs || 0));
+}
+
+function getWalletPayloadGeneratedAt(payload) {
+  if (!payload || typeof payload !== "object") return 0;
+  return Math.max(
+    toNum(payload.generatedAt, 0),
+    toNum(payload?.runtime?.generatedAt, 0),
+    toNum(payload?.syncHealth?.generatedAt, 0),
+    0
+  );
+}
+
+function getWalletSyncGeneratedAt(payload) {
+  if (!payload || typeof payload !== "object") return 0;
+  return Math.max(
+    toNum(payload.generatedAt, 0),
+    toNum(payload?.reviewPipeline?.generatedAt, 0),
+    toNum(payload?.nextgen?.strictLive?.generatedAt, 0),
+    0
+  );
+}
+
+function isWalletPayloadBehindSync(walletPayload, syncPayload, toleranceMs = 1000) {
+  const walletAt = getWalletPayloadGeneratedAt(walletPayload);
+  const syncAt = getWalletSyncGeneratedAt(syncPayload);
+  return syncAt > 0 && syncAt > walletAt + Math.max(0, Number(toleranceMs || 0));
+}
+
+function getWalletProfileGeneratedAt(profile) {
+  if (!profile || typeof profile !== "object") return 0;
+  const summary = profile.summary && typeof profile.summary === "object" ? profile.summary : {};
+  return Math.max(
+    toNum(profile.generatedAt, 0),
+    toNum(summary.updatedAt, 0),
+    toNum(summary.liveScannedAt, 0),
+    toNum(summary.lastPositionSnapshotAt, 0),
+    toNum(summary.lastPositionsAt, 0),
+    toNum(summary.lastObservedAt, 0),
+    toNum(summary.lastOpenedAt, 0),
+    0
+  );
+}
+
+async function prewarmSessionPayload(key, url, maxAgeMs, timeoutMs = 5000) {
+  if (typeof window === "undefined" || !key || !url) return null;
+  const cached = readSessionJson(key);
+  if (isFreshSessionPayload(cached, maxAgeMs)) return cached;
+  try {
+    const payload = await fetchJson(url, { timeoutMs });
+    if (payload && typeof payload === "object") {
+      writeSessionJson(key, payload);
+      return payload;
+    }
+  } catch (_error) {
+    // ignore background warmup errors
+  }
+  return null;
+}
+
+function scheduleCrossPageWarmup() {
+  // Intentionally disabled on the homepage. Cross-page API warmups hurt
+  // Lighthouse and first-load UX more than they help here.
+}
+
+function scheduleExchangeSeriesBoot() {
+  if (typeof window === "undefined") return;
+  if (exchangeSeriesBootStarted || isMinimalUiMode() || isMinimalExchangePayload(state.exchange)) return;
+  if (state.view !== "exchange" && state.view !== "token") return;
+
+  exchangeSeriesBootStarted = true;
+  refreshVolumeSeries().catch(() => {
+    exchangeSeriesBootStarted = false;
+  });
+}
+
+function scheduleExchangeSupplementalHydration() {
+  if (typeof window === "undefined") return;
+  if (exchangeSupplementalBootStarted) return;
+  if (state.view !== "exchange" && state.view !== "token") return;
+  if (Array.isArray(state.exchange?.source?.prices) && state.exchange.source.prices.length) return;
+  exchangeSupplementalBootStarted = true;
+  afterWindowLoad(() => {
+    if (document.visibilityState === "hidden") return;
+    scheduleIdleTask(async () => {
+      try {
+        const pricesPayload = await fetchJson("/api/prices", { timeoutMs: 4000 });
+        if (!Array.isArray(pricesPayload?.prices) || !pricesPayload.prices.length) return;
+        state.exchange = {
+          ...(state.exchange || {}),
+          source: {
+            ...((state.exchange && state.exchange.source) || {}),
+            prices: pricesPayload.prices,
+          },
+        };
+        writeSessionJson(SESSION_CACHE_KEYS.exchange, state.exchange);
+        renderExchange();
+      } catch (_error) {
+        exchangeSupplementalBootStarted = false;
+      }
+    }, 4000);
+  }, 2000);
+}
+
+function isMinimalExchangePayload(payload) {
+  return Boolean(payload && payload.minimal);
+}
+
 function toNum(value, fallback = 0) {
   const num = Number(value);
   return Number.isFinite(num) ? num : fallback;
+}
+
+function extractUnrealizedPnlUsdFromRow(row = {}) {
+  const safeRow = row && typeof row === "object" ? row : {};
+  const safeRaw = safeRow.raw && typeof safeRow.raw === "object" ? safeRow.raw : {};
+  const candidates = [
+    safeRow.unrealizedPnlUsd,
+    safeRow.positionPnlUsd,
+    safeRow.unrealizedPnl,
+    safeRow.unrealized,
+    safeRow.unrealizedUsd,
+    safeRow.unrealized_usd,
+    safeRow.unrealized_pnl_usd,
+    safeRow.unrealized_pnl,
+    safeRaw.unrealizedPnlUsd,
+    safeRaw.positionPnlUsd,
+    safeRaw.unrealizedPnl,
+    safeRaw.unrealized,
+    safeRaw.unrealizedUsd,
+    safeRaw.unrealized_usd,
+    safeRaw.unrealized_pnl_usd,
+    safeRaw.unrealized_pnl,
+  ];
+  for (const candidate of candidates) {
+    const num = toNum(candidate, NaN);
+    if (Number.isFinite(num)) return num;
+  }
+  return NaN;
+}
+
+function extractUnrealizedPnlUsdFromSummary(summary = {}) {
+  const safeSummary = summary && typeof summary === "object" ? summary : {};
+  const safeRaw = safeSummary.raw && typeof safeSummary.raw === "object" ? safeSummary.raw : {};
+  const safeAll = safeSummary.all && typeof safeSummary.all === "object" ? safeSummary.all : {};
+  const candidates = [
+    safeSummary.unrealizedPnlUsd,
+    safeSummary.positionPnlUsd,
+    safeSummary.unrealizedPnl,
+    safeSummary.unrealized,
+    safeSummary.unrealizedUsd,
+    safeSummary.unrealized_usd,
+    safeSummary.unrealized_pnl_usd,
+    safeSummary.unrealized_pnl,
+    safeAll.unrealizedPnlUsd,
+    safeAll.positionPnlUsd,
+    safeAll.unrealizedPnl,
+    safeAll.unrealized,
+    safeAll.unrealizedUsd,
+    safeAll.unrealized_usd,
+    safeAll.unrealized_pnl_usd,
+    safeAll.unrealized_pnl,
+    safeRaw.unrealizedPnlUsd,
+    safeRaw.positionPnlUsd,
+    safeRaw.unrealizedPnl,
+    safeRaw.unrealized,
+    safeRaw.unrealizedUsd,
+    safeRaw.unrealized_usd,
+    safeRaw.unrealized_pnl_usd,
+    safeRaw.unrealized_pnl,
+  ];
+  for (const candidate of candidates) {
+    const num = toNum(candidate, NaN);
+    if (Number.isFinite(num)) return num;
+  }
+  return NaN;
 }
 
 function fmt(value, digits = 2) {
@@ -161,6 +583,14 @@ function fmtCompact(value) {
   if (abs >= 1e6) return `${fmt(num / 1e6, 2)}M`;
   if (abs >= 1e3) return `${fmt(num / 1e3, 2)}K`;
   return fmt(num, 2);
+}
+
+function fmtSignedCompact(value) {
+  const num = toNum(value, NaN);
+  if (!Number.isFinite(num)) return "-";
+  const abs = Math.abs(num);
+  if (abs < 1000) return fmtSigned(num, 0);
+  return `${num > 0 ? "+" : num < 0 ? "-" : ""}${fmtCompact(Math.abs(num))}`;
 }
 
 function fmtMs(value) {
@@ -196,6 +626,12 @@ function fmtTimeShort(ts) {
     hour: "2-digit",
     minute: "2-digit",
   });
+}
+
+function fmtUtcDateTime(ts) {
+  const num = Number(ts);
+  if (!Number.isFinite(num) || num <= 0) return "-";
+  return new Date(num).toISOString().replace(/\.\d{3}Z$/, "Z").replace("T", " ");
 }
 
 function fmtDateOnly(ts) {
@@ -360,6 +796,46 @@ function renderWalletFilterSummary() {
   setWalletFilterButtonState();
 }
 
+function syncWalletFilterSlidersFromInputs() {
+  document.querySelectorAll("[data-sync-target]").forEach((slider) => {
+    const targetId = String(slider.getAttribute("data-sync-target") || "").trim();
+    if (!targetId) return;
+    const input = el(targetId);
+    if (!(input instanceof HTMLInputElement) || !(slider instanceof HTMLInputElement)) return;
+    const sliderMin = Number(slider.min || 0);
+    const sliderMax = Number(slider.max || 0);
+    const raw = String(input.value || "").trim();
+    if (!raw) {
+      slider.value = String(targetId.includes("-max-") ? sliderMax : sliderMin);
+      return;
+    }
+    const numeric = Number(raw);
+    if (!Number.isFinite(numeric)) return;
+    const clamped = Math.min(sliderMax, Math.max(sliderMin, numeric));
+    slider.value = String(clamped);
+  });
+}
+
+function bindWalletRangeControls() {
+  document.querySelectorAll("[data-sync-target]").forEach((slider) => {
+    const targetId = String(slider.getAttribute("data-sync-target") || "").trim();
+    if (!targetId) return;
+    const input = el(targetId);
+    if (!(input instanceof HTMLInputElement) || !(slider instanceof HTMLInputElement)) return;
+    slider.addEventListener("input", () => {
+      input.value = slider.value;
+      syncWalletFilterGroupState(readWalletFiltersFromModal());
+    });
+    input.addEventListener("input", () => {
+      const numeric = Number(input.value || "");
+      if (!Number.isFinite(numeric)) return;
+      const sliderMin = Number(slider.min || 0);
+      const sliderMax = Number(slider.max || 0);
+      slider.value = String(Math.min(sliderMax, Math.max(sliderMin, numeric)));
+    });
+  });
+}
+
 function writeWalletFiltersToModal() {
   const filters = cloneWalletFilters(state.walletFilters);
   const setValue = (id, value) => {
@@ -388,6 +864,7 @@ function writeWalletFiltersToModal() {
   document.querySelectorAll("[data-wallet-filter-status]").forEach((checkbox) => {
     checkbox.checked = filters.status.includes(String(checkbox.getAttribute("data-wallet-filter-status") || "").trim());
   });
+  syncWalletFilterSlidersFromInputs();
   syncWalletFilterGroupState(filters);
 }
 
@@ -594,6 +1071,8 @@ function fmtAgo(ts) {
 function getKpiPeriodChangeDisplay(periodLabel, entry = {}) {
   const trend = String(entry?.trend || "flat").toLowerCase();
   const deltaPct = toNum(entry?.deltaPct, NaN);
+  const deltaAbs = toNum(entry?.deltaAbs, NaN);
+  const displayMode = String(entry?.displayMode || "").trim().toLowerCase();
   const comparisonLabelRaw = String(entry?.comparisonLabel || "").trim();
   const comparisonLabel =
     comparisonLabelRaw === "vs 30d avg/day"
@@ -601,6 +1080,14 @@ function getKpiPeriodChangeDisplay(periodLabel, entry = {}) {
       : comparisonLabelRaw === "vs lifetime 30d run rate"
         ? "vs lifetime run rate"
         : comparisonLabelRaw;
+
+  if (displayMode === "absolute" && Number.isFinite(deltaAbs)) {
+    return {
+      periodLabel,
+      tone: trend === "up" ? "up" : trend === "down" ? "down" : "flat",
+      valueText: fmtSignedCompact(deltaAbs),
+    };
+  }
 
   if (
     !Number.isFinite(deltaPct) &&
@@ -646,6 +1133,16 @@ function syncTimeframeButtons() {
   });
 }
 
+function syncExchangeChartMetricButtons() {
+  const activeMetric = normalizeExchangeChartMetric(state.exchangeChartMetric || "volume");
+  document.querySelectorAll("[data-exchange-chart-metric]").forEach((btn) => {
+    const nextMetric = normalizeExchangeChartMetric(btn.getAttribute("data-exchange-chart-metric") || "volume");
+    const isActive = nextMetric === activeMetric;
+    btn.classList.toggle("active", isActive);
+    btn.setAttribute("aria-pressed", isActive ? "true" : "false");
+  });
+}
+
 function escapeHtml(value) {
   return String(value || "")
     .replace(/&/g, "&amp;")
@@ -686,6 +1183,22 @@ function normalizeTokenSymbol(value) {
     .replace(/[^A-Z0-9/_-]/g, "");
 }
 
+function normalizeTokenTimeframe(value) {
+  const raw = String(value || "24h").trim().toLowerCase();
+  if (raw === "5m" || raw === "5min") return "5m";
+  if (raw === "15m" || raw === "15min") return "15m";
+  if (raw === "1h" || raw === "60m" || raw === "hour") return "1h";
+  if (raw === "4h") return "4h";
+  if (raw === "24h" || raw === "1d" || raw === "day") return "24h";
+  if (raw === "7d" || raw === "week") return "7d";
+  if (raw === "30d" || raw === "month") return "30d";
+  return "24h";
+}
+
+function getPhaseOneTokenSymbol() {
+  return TOKEN_PHASE1_SYMBOL;
+}
+
 function normalizeAnalyticsTab(value) {
   const raw = String(value || TOKEN_DEFAULT_METRIC)
     .trim()
@@ -708,18 +1221,20 @@ function analyticsRouteMetricToTab(metric) {
 }
 
 function getTokenRoutePath(symbol = state.tokenSymbol, metric = state.analyticsTab) {
-  const normalizedSymbol = normalizeTokenSymbol(symbol);
+  if (!TOKEN_ANALYSIS_ENABLED) return "/";
+  const normalizedSymbol = resolveCanonicalTokenSymbol(symbol || state.tokenSymbol || getDefaultTokenSymbol());
   if (!normalizedSymbol) return "/";
   const normalizedMetric = normalizeAnalyticsTab(metric);
   const metricSlug = analyticsTabToRouteMetric(normalizedMetric);
-  const base = `/exchange/${encodeURIComponent(normalizedSymbol)}`;
+  const base = `/coin/${encodeURIComponent(normalizedSymbol)}`;
   return normalizedMetric === TOKEN_DEFAULT_METRIC ? base : `${base}/${metricSlug}`;
 }
 
 function parseTokenRoute(pathname = "/") {
-  const match = String(pathname || "").match(/^\/exchange\/([^/]+)(?:\/([^/]+))?\/?$/i);
+  if (!TOKEN_ANALYSIS_ENABLED) return null;
+  const match = String(pathname || "").match(/^\/(?:coin|token|exchange)\/([^/]+)(?:\/([^/]+))?\/?$/i);
   if (!match) return null;
-  const symbol = normalizeTokenSymbol(decodeURIComponent(match[1] || ""));
+  const symbol = resolveCanonicalTokenSymbol(match[1] || "");
   const metric = analyticsRouteMetricToTab(match[2] || TOKEN_DEFAULT_METRIC);
   if (!symbol) return null;
   return { symbol, metric };
@@ -751,8 +1266,11 @@ function buildTickerItemMarkup(item = {}) {
 }
 
 function isCompactTickerMode() {
-  if (typeof window === "undefined" || typeof window.matchMedia !== "function") return false;
-  return window.matchMedia("(max-width: 980px)").matches;
+  if (typeof window === "undefined") return false;
+  if (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    return true;
+  }
+  return window.innerWidth <= 1100;
 }
 
 function mapExchangePricesToTickerMarkets(payload = {}) {
@@ -817,7 +1335,7 @@ function mapExchangePricesToTickerMarkets(payload = {}) {
     })
     .filter((row) => row && row.symbol && Number.isFinite(row.price))
     .sort((a, b) => toNum(b.volume24h, 0) - toNum(a.volume24h, 0))
-    .slice(0, 80);
+    .slice(0, 10);
 }
 
 function renderMarketsTicker(payload = {}) {
@@ -827,7 +1345,7 @@ function renderMarketsTicker(payload = {}) {
 
   const markets = mapExchangePricesToTickerMarkets(payload);
   if (!markets.length) {
-    ticker.hidden = true;
+    ticker.dataset.ready = "false";
     track.innerHTML = "";
     tickerState.signature = "";
     tickerState.layout = "";
@@ -860,7 +1378,7 @@ function renderMarketsTicker(payload = {}) {
     tickerState.layout = layout;
   }
 
-  ticker.hidden = false;
+  ticker.dataset.ready = "true";
 }
 
 function clamp(value, min, max) {
@@ -878,6 +1396,16 @@ function runSingleFlight(key, task) {
   })();
   refreshState[key] = promise;
   return promise;
+}
+
+function requestManagedRefresh(key, task, minIntervalMs = 5000) {
+  const now = Date.now();
+  const lastAt = Number(refreshCooldowns.get(key) || 0);
+  const floor = Math.max(0, Number(minIntervalMs || 0));
+  if (refreshState[key]) return refreshState[key];
+  if (lastAt > 0 && now - lastAt < floor) return Promise.resolve(null);
+  refreshCooldowns.set(key, now);
+  return Promise.resolve().then(task);
 }
 
 function startPollingLoop(key, task, intervalMs) {
@@ -929,16 +1457,16 @@ function formatChartCurrency(value) {
 }
 
 function formatMetricAxis(value) {
-  const unit = getAnalyticsPresentation().unit;
+  const unit = getCurrentChartPresentation().unit;
   if (unit === "pct") return `${toFiniteNumber(value, 0).toFixed(3)}%`;
-  if (unit === "count") return fmt(value, 0);
+  if (unit === "count") return Math.abs(toFiniteNumber(value, 0)) >= 1000 ? fmtCompact(value) : fmt(value, 0);
   return formatChartCurrency(value);
 }
 
 function formatMetricTooltip(value) {
-  const unit = getAnalyticsPresentation().unit;
+  const unit = getCurrentChartPresentation().unit;
   if (unit === "pct") return `${toFiniteNumber(value, 0).toFixed(4)}%`;
-  if (unit === "count") return fmt(value, 0);
+  if (unit === "count") return Math.abs(toFiniteNumber(value, 0)) >= 1000 ? fmtCompact(value) : fmt(value, 0);
   return formatChartCurrency(value);
 }
 
@@ -950,7 +1478,7 @@ function getSeriesValue(item) {
 }
 
 function getSnapshotLimitForSeries() {
-  if (activeSeries === "daily") return 20;
+  if (activeSeries === "daily" || activeSeries === "live") return 20;
   if (activeSeries === "weekly") return 32;
   return 48;
 }
@@ -1019,6 +1547,127 @@ function getAnalyticsPresentation(tab = state.analyticsTab) {
   return map[normalizedTab] || map[TOKEN_DEFAULT_METRIC];
 }
 
+function normalizeExchangeChartMetric(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (["accounts", "activewallets", "trades", "volume", "fees", "openinterest"].includes(normalized)) {
+    if (normalized === "openinterest") return "openInterest";
+    if (normalized === "activewallets") return "activeWallets";
+    return normalized;
+  }
+  if (normalized === "open_interest") return "openInterest";
+  if (normalized === "active_wallets") return "activeWallets";
+  return "volume";
+}
+
+function getExchangeAnalyticsPresentation(metric = state.exchangeChartMetric) {
+  const normalized = normalizeExchangeChartMetric(metric);
+  const cumulativeMode = activeSeries === "live";
+  const map = {
+    accounts: {
+      title: "Total Accounts",
+      note: cumulativeMode
+        ? "Cumulative wallet growth over time."
+        : "New wallets added during each period.",
+      unit: "count",
+      chartMode: cumulativeMode ? "line_area" : "bar",
+      allowCumulative: false,
+      legend: [
+        {
+          key: "accounts",
+          label: cumulativeMode ? "Cumulative Accounts" : "New Accounts",
+          tone: "event",
+        },
+      ],
+    },
+    activeWallets: {
+      title: "Active Wallets",
+      note: cumulativeMode ? "Cumulative active-wallet activity over time." : "",
+      unit: "count",
+      chartMode: cumulativeMode ? "line_area" : "bar",
+      allowCumulative: false,
+      legend: [
+        {
+          key: "activeWallets",
+          label: cumulativeMode ? "Cumulative Active Wallets" : "Active Wallets",
+          tone: "event",
+        },
+      ],
+    },
+    trades: {
+      title: "Total Trades",
+      note: cumulativeMode ? "Cumulative trades over time." : "",
+      unit: "count",
+      chartMode: cumulativeMode ? "line_area" : "bar",
+      allowCumulative: false,
+      legend: [
+        {
+          key: "trades",
+          label: cumulativeMode ? "Cumulative Trades" : "Total Trades",
+          tone: "event",
+        },
+      ],
+    },
+    volume: {
+      title: "Total Volume",
+      note: cumulativeMode ? "Cumulative volume over time." : "",
+      unit: "usd",
+      chartMode: cumulativeMode ? "line_area" : "bar",
+      allowCumulative: true,
+      legend: [
+        {
+          key: "volume",
+          label: cumulativeMode ? "Cumulative Volume" : "Total Volume",
+          tone: "volume",
+        },
+      ],
+    },
+    fees: {
+      title: "Total Fees",
+      note: cumulativeMode ? "Cumulative fees over time." : "",
+      unit: "usd",
+      chartMode: cumulativeMode ? "line_area" : "bar",
+      allowCumulative: false,
+      legend: [
+        {
+          key: "fees",
+          label: cumulativeMode ? "Cumulative Fees" : "Total Fees",
+          tone: "oi",
+        },
+      ],
+    },
+    openInterest: {
+      title: "Market Open Interest",
+      note: cumulativeMode ? "Cumulative open-interest flow over time." : "",
+      unit: "usd",
+      chartMode: cumulativeMode ? "line_area" : "bar",
+      allowCumulative: false,
+      legend: [
+        {
+          key: "oi",
+          label: cumulativeMode ? "Cumulative Open Interest" : "Market Open Interest",
+          tone: "oi",
+        },
+      ],
+    },
+  };
+  return map[normalized] || map.volume;
+}
+
+function getCurrentChartPresentation() {
+  if (state.view === "token") {
+    return getAnalyticsPresentation(state.analyticsTab || TOKEN_DEFAULT_METRIC);
+  }
+  return getExchangeAnalyticsPresentation(state.exchangeChartMetric || "volume");
+}
+
+function shouldUseExchangeCumulativeSeries(
+  metricKey = state.exchangeChartMetric,
+  seriesKey = activeSeries
+) {
+  if (state.view === "token") return false;
+  return seriesKey === "live" && Boolean(normalizeExchangeChartMetric(metricKey));
+}
+
 function buildSymbolSnapshotSeries(mapper, options = {}) {
   const prices = Array.isArray(state.exchange?.source?.prices) ? state.exchange.source.prices : [];
   const useAbsSort = Boolean(options.absSort);
@@ -1070,20 +1719,27 @@ function buildSmoothLinePath(points) {
 
 function formatChartLabel(item, mode = "axis") {
   if (!item) return "";
+  const formatterSet = chartDateFormatters[activeChartTimeMode] || chartDateFormatters.monthly;
+  const formatter =
+    formatterSet && typeof formatterSet.format === "function"
+      ? formatterSet
+      : mode === "tooltip"
+        ? formatterSet.tooltip || formatterSet.axis
+        : formatterSet.axis || formatterSet.tooltip;
   const hasRange =
     Number.isFinite(item.bucketStart) &&
     Number.isFinite(item.bucketEnd) &&
     item.bucketEnd > item.bucketStart;
   if (hasRange && mode === "tooltip") {
-    const formatter = chartDateFormatters[activeSeries] || chartDateFormatters.daily;
     const start = formatter.format(new Date(item.bucketStart));
     const end = formatter.format(new Date(item.bucketEnd));
-    return activeSeries === "daily" ? `${start} - ${end} UTC` : `${start} - ${end}`;
+    return `${start} - ${end}${activeChartTimeMode === "daily" || activeChartTimeMode === "live" ? " UTC" : ""}`;
   }
   if (Number.isFinite(item.timestamp)) {
-    const formatter = chartDateFormatters[activeSeries] || chartDateFormatters.daily;
     const label = formatter.format(new Date(item.timestamp));
-    return mode === "tooltip" && activeSeries === "daily" ? `${label} UTC` : label;
+    return mode === "tooltip" && (activeChartTimeMode === "daily" || activeChartTimeMode === "live")
+      ? `${label} UTC`
+      : label;
   }
   return item.label || "";
 }
@@ -1154,7 +1810,7 @@ function getScaleConfig(data, options = {}) {
     minRaw = Math.min(0, minRaw);
   }
   const spanRaw = Math.max(maxRaw - minRaw, 0);
-  const headroomPct = activeSeries === "daily" ? 0.12 : 0.08;
+  const headroomPct = activeSeries === "daily" || activeSeries === "live" ? 0.12 : 0.08;
   const headroom = spanRaw > 0 ? spanRaw * headroomPct : Math.max(Math.abs(maxRaw) * headroomPct, 1);
   let domainMax = maxRaw + headroom;
   let domainMin = minRaw;
@@ -1264,6 +1920,26 @@ function attachLineHoverOverlay(container, points) {
   container.addEventListener("pointerdown", hide);
 }
 
+function buildBarHoverPoints(container, data) {
+  if (!container || !Array.isArray(data) || !data.length) return [];
+  const containerWidth = Math.max(1, Number(container.clientWidth || 0));
+  const barNodes = Array.from(container.querySelectorAll(".volume-bar"));
+  return data.map((item, index) => {
+    const node = barNodes[index];
+    if (!(node instanceof HTMLElement)) {
+      return {
+        xPct: data.length === 1 ? 50 : ((index + 0.5) / data.length) * 100,
+        item,
+      };
+    }
+    const centerX = node.offsetLeft + node.offsetWidth / 2;
+    return {
+      xPct: clamp((centerX / containerWidth) * 100, 0, 100),
+      item,
+    };
+  });
+}
+
 function buildDateBandTicks(data, trackWidth) {
   if (!Array.isArray(data) || !data.length) return [];
   const total = data.length;
@@ -1282,8 +1958,31 @@ function buildDateBandTicks(data, trackWidth) {
 
 function formatBandLabel(timestamp) {
   if (!Number.isFinite(timestamp)) return "";
-  const formatter = chartDateFormatters[activeSeries] || chartDateFormatters.monthly;
+  const formatterSet = chartDateFormatters[activeChartTimeMode] || chartDateFormatters.monthly;
+  const formatter =
+    formatterSet && typeof formatterSet.format === "function"
+      ? formatterSet
+      : formatterSet.axis || formatterSet.tooltip;
   return formatter.format(new Date(timestamp));
+}
+
+function inferChartTimeMode(series = []) {
+  if (activeSeries !== "live") return activeSeries;
+  if (!Array.isArray(series) || series.length < 2) return "live";
+  const deltas = [];
+  for (let i = 1; i < series.length; i += 1) {
+    const prev = Number(series[i - 1]?.timestamp || 0);
+    const next = Number(series[i]?.timestamp || 0);
+    const delta = next - prev;
+    if (Number.isFinite(delta) && delta > 0) deltas.push(delta);
+  }
+  if (!deltas.length) return "live";
+  const sorted = deltas.slice().sort((a, b) => a - b);
+  const median = sorted[Math.floor(sorted.length / 2)];
+  if (median >= 25 * 24 * 60 * 60 * 1000) return "monthly";
+  if (median >= 6 * 24 * 60 * 60 * 1000) return "weekly";
+  if (median >= 12 * 60 * 60 * 1000) return "daily";
+  return "live";
 }
 
 function renderDateBand(data) {
@@ -1334,10 +2033,15 @@ function renderVolumeChart(container, series, presentation = null) {
   container.dataset.series = activeSeries;
   const requestedMode = presentation?.chartMode || "bar";
   const chartMode =
-    state.analyticsTab === "volume" && activeChartType === "line" ? "line" : requestedMode;
+    state.view !== "token"
+      ? requestedMode
+      : presentation?.allowCumulative && activeChartType === "line"
+      ? "line"
+      : requestedMode;
   container.dataset.chartType = chartMode;
 
   const useLine = chartMode === "line" || chartMode === "line_area" || chartMode === "line_zero";
+  const useCandles = chartMode === "candles";
   const useStacked = chartMode === "stacked_split";
   const useDiverging = chartMode === "diverging";
   const useEventLane = chartMode === "event_lane";
@@ -1349,19 +2053,36 @@ function renderVolumeChart(container, series, presentation = null) {
   }
 
   const chartWidth = Math.max(320, (container.clientWidth || 720) - 62);
-  const shouldAggregate = !(useLine || useStacked || useDiverging || useEventLane);
+  const shouldAggregate = !(useLine || useCandles || useStacked || useDiverging || useEventLane);
   const barAggregation = shouldAggregate
     ? aggregateBarSeriesByWidth(series, chartWidth)
     : { items: series, binned: false, binSize: 1 };
   const data = barAggregation.items;
+  const candleData = useCandles
+    ? data.map((item, index) => {
+        const previousValue = index > 0 ? toFiniteNumber(data[index - 1]?.value, 0) : 0;
+        const closeValue = toFiniteNumber(item?.value, 0);
+        const openValue = Number.isFinite(previousValue) ? previousValue : 0;
+        return {
+          ...item,
+          open: openValue,
+          close: closeValue,
+          high: Math.max(openValue, closeValue),
+          low: Math.min(openValue, closeValue),
+        };
+      })
+    : data;
+  const scaleSeries = useCandles
+    ? candleData.flatMap((item) => [{ value: item.high }, { value: item.low }])
+    : data;
   const baseline = useLine && chartMode !== "line_zero" ? "auto" : "zero";
-  const scaleConfig = getScaleConfig(data, {
+  const scaleConfig = getScaleConfig(scaleSeries, {
     baseline,
   });
   const chartHeight = container.clientHeight || 280;
   const maxBarHeight = Math.max(chartHeight - 108, 124);
   const zeroRatio = scaleConfig?.normalize ? scaleConfig.normalize(0) : 0;
-  const maxValue = data.reduce(
+  const maxValue = candleData.reduce(
     (max, item) => Math.max(max, Math.abs(toFiniteNumber(item?.value, 0))),
     0
   );
@@ -1371,13 +2092,14 @@ function renderVolumeChart(container, series, presentation = null) {
   const bars = document.createElement("div");
   bars.className = "chart-bars";
   if (useEventLane) bars.classList.add("event-lane");
+  if (useCandles) bars.classList.add("candles-mode");
   if (useStacked) bars.classList.add("stacked-mode");
   if (useDiverging) bars.classList.add("diverging-mode");
   if (useLine && chartMode === "line_zero") bars.classList.add("line-zero-mode");
-  bars.style.gridTemplateColumns = `repeat(${data.length}, minmax(0, 1fr))`;
+  bars.style.gridTemplateColumns = `repeat(${candleData.length}, minmax(0, 1fr))`;
 
-  const slotWidth = chartWidth / Math.max(data.length, 1);
-  const denseSeries = data.length >= 120 || barAggregation.binned;
+  const slotWidth = chartWidth / Math.max(candleData.length, 1);
+  const denseSeries = candleData.length >= 120 || barAggregation.binned;
   const dynamicGap = clamp(Math.round(slotWidth * (denseSeries ? 0.2 : 0.34)), 1, denseSeries ? 10 : 18);
   const dynamicBarWidth = clamp(Math.round(slotWidth * (denseSeries ? 0.76 : 0.56)), 3, denseSeries ? 12 : 16);
   bars.style.gap = `${dynamicGap}px`;
@@ -1421,13 +2143,10 @@ function renderVolumeChart(container, series, presentation = null) {
       lineClass: chartMode === "line_zero" ? "chart-line-zero" : chartMode === "line_area" ? "chart-line-oi" : "",
     });
   } else {
-    hoverPoints = data.map((item, index) => ({
-      xPct: data.length === 1 ? 50 : (index / (data.length - 1)) * 100,
-      item,
-    }));
+    hoverPoints = [];
   }
 
-  data.forEach((item, index) => {
+  candleData.forEach((item, index) => {
     if (useLine) return;
     const valueNum = toFiniteNumber(item.value, 0);
     const wrap = document.createElement("div");
@@ -1436,7 +2155,45 @@ function renderVolumeChart(container, series, presentation = null) {
     bar.className = "bar";
     const labelText = formatChartLabel(item, "tooltip") || item?.label || "-";
 
-    if (useEventLane) {
+    if (useCandles) {
+      wrap.classList.add("volume-bar-candle");
+      const openValue = toFiniteNumber(item.open, 0);
+      const closeValue = toFiniteNumber(item.close, 0);
+      const highValue = toFiniteNumber(item.high, Math.max(openValue, closeValue));
+      const lowValue = toFiniteNumber(item.low, Math.min(openValue, closeValue));
+      const openRatio = scaleConfig.normalize ? scaleConfig.normalize(openValue) : 0;
+      const closeRatio = scaleConfig.normalize ? scaleConfig.normalize(closeValue) : 0;
+      const highRatio = scaleConfig.normalize ? scaleConfig.normalize(highValue) : 0;
+      const lowRatio = scaleConfig.normalize ? scaleConfig.normalize(lowValue) : 0;
+      const wickHeight = Math.max(
+        Math.round(Math.abs(highRatio - lowRatio) * maxBarHeight),
+        2
+      );
+      const wickBottom = Math.round(Math.min(highRatio, lowRatio) * maxBarHeight);
+      const bodyHeight = Math.max(
+        Math.round(Math.abs(closeRatio - openRatio) * maxBarHeight),
+        closeValue === openValue ? 2 : 4
+      );
+      const bodyBottom = Math.round(Math.min(openRatio, closeRatio) * maxBarHeight);
+      const wick = document.createElement("span");
+      wick.className = "candle-wick";
+      wick.style.height = `${wickHeight}px`;
+      wick.style.bottom = `${wickBottom}px`;
+      const body = document.createElement("span");
+      body.className = `candle-body ${closeValue >= openValue ? "up" : "down"}`;
+      body.style.height = `${bodyHeight}px`;
+      body.style.bottom = `${bodyBottom}px`;
+      const tooltip = document.createElement("div");
+      tooltip.className = "bar-tooltip";
+      tooltip.textContent = `${labelText} · open ${formatMetricTooltip(openValue)} · close ${formatMetricTooltip(
+        closeValue
+      )}`;
+      bar.classList.add("candle");
+      bar.appendChild(wick);
+      bar.appendChild(body);
+      bar.appendChild(tooltip);
+      wrap.appendChild(bar);
+    } else if (useEventLane) {
       wrap.classList.add("event-lane-cell");
       const eventDot = document.createElement("div");
       eventDot.className = "wallet-event-dot";
@@ -1513,107 +2270,54 @@ function renderVolumeChart(container, series, presentation = null) {
     bars.appendChild(wrap);
   });
 
+  if (!useLine) {
+    hoverPoints = buildBarHoverPoints(bars, candleData);
+  }
+
   attachLineHoverOverlay(bars, hoverPoints);
-  renderDateBand(data);
+  renderDateBand(candleData);
 }
 
-function getVolumeSeriesForWindow() {
-  const metricSet = state.volumeSeries && state.volumeSeries.volume ? state.volumeSeries.volume : null;
-  if (!metricSet) return [];
-  return Array.isArray(metricSet[activeSeries]) ? metricSet[activeSeries] : [];
+function getExchangeMetricAggregationMode(metricKey) {
+  const normalized = normalizeExchangeChartMetric(metricKey);
+  if (normalized === "accounts" || normalized === "openInterest" || normalized === "activeWallets") return "last";
+  return "sum";
+}
+
+function getExchangeMetricSeriesForWindow(metricKey = state.exchangeChartMetric) {
+  const normalized = normalizeExchangeChartMetric(metricKey);
+  const metricSet = state.volumeSeries && state.volumeSeries[normalized] ? state.volumeSeries[normalized] : null;
+  const exchangeCumulativeActive = state.view !== "token" && activeSeries === "live";
+  const selectedSeries = Array.isArray(metricSet?.[activeSeries])
+    ? exchangeCumulativeActive && Array.isArray(metricSet?.daily)
+      ? metricSet.daily
+      : metricSet[activeSeries]
+    : activeSeries === "live" && Array.isArray(metricSet?.daily)
+      ? metricSet.daily
+    : Array.isArray(metricSet?.daily)
+      ? metricSet.daily
+        .map((row) => ({
+          timestamp: toNum(row?.timestamp, NaN),
+          value: toNum(row?.value, NaN),
+        }))
+        .filter((row) => Number.isFinite(row.timestamp) && Number.isFinite(row.value))
+      : [];
+  if (!selectedSeries.length) return [];
+  return selectedSeries
+    .map((row) => ({
+      timestamp: toNum(row?.timestamp, NaN),
+      value: toNum(row?.value, NaN),
+    }))
+    .filter((row) => Number.isFinite(row.timestamp) && Number.isFinite(row.value))
+    .sort((a, b) => a.timestamp - b.timestamp);
 }
 
 function getActiveSeries() {
+  if (state.view !== "token") {
+    return getExchangeMetricSeriesForWindow(state.exchangeChartMetric || "volume");
+  }
   const tab = normalizeAnalyticsTab(state.analyticsTab || TOKEN_DEFAULT_METRIC);
-  if (state.view === "token") {
-    return getTokenActiveSeries(tab);
-  }
-  if (tab === "volume") return getVolumeSeriesForWindow();
-  const limit = getSnapshotLimitForSeries();
-
-  if (tab === "oi") {
-    return buildSymbolSnapshotSeries(
-      (row) => toFiniteNumber(row?.open_interest, 0) * toFiniteNumber(row?.mark, 0),
-      { limit }
-    );
-  }
-  if (tab === "funding") {
-    return buildSymbolSnapshotSeries(
-      (row) => toFiniteNumber(row?.funding, 0) * 100,
-      { absSort: true, limit }
-    );
-  }
-  if (tab === "liquidations") {
-    const prices = Array.isArray(state.exchange?.source?.prices) ? state.exchange.source.prices : [];
-    return prices
-      .map((row) => {
-        const symbol = String(row?.symbol || "").trim();
-        if (!symbol) return null;
-        const funding = toFiniteNumber(row?.funding, 0);
-        const openInterest = toFiniteNumber(row?.open_interest, 0);
-        const mark = toFiniteNumber(row?.mark, 0);
-        const pressure = Math.abs(funding) * openInterest * mark;
-        if (!Number.isFinite(pressure)) return null;
-        const longValue = funding >= 0 ? pressure : 0;
-        const shortValue = funding < 0 ? pressure : 0;
-        return {
-          label: symbol,
-          value: pressure,
-          longValue,
-          shortValue,
-          funding,
-        };
-      })
-      .filter(Boolean)
-      .sort((a, b) => Math.abs(toFiniteNumber(b.value, 0)) - Math.abs(toFiniteNumber(a.value, 0)))
-      .slice(0, limit);
-  }
-  if (tab === "netflow") {
-    return buildSymbolSnapshotSeries(
-      (row) => {
-        const mark = toFiniteNumber(row?.mark, 0);
-        const y = toFiniteNumber(row?.yesterday_price, mark);
-        const oi = toFiniteNumber(row?.open_interest, 0);
-        return (mark - y) * oi;
-      },
-      { absSort: true, limit }
-    );
-  }
-  if (tab === "wallet_activity") {
-    const rows = Array.isArray(state.wallets?.rows) ? state.wallets.rows : [];
-    const now = Date.now();
-    const horizonMs =
-      activeSeries === "daily"
-        ? 24 * 60 * 60 * 1000
-        : activeSeries === "weekly"
-          ? 7 * 24 * 60 * 60 * 1000
-          : 30 * 24 * 60 * 60 * 1000;
-    const mapped = rows
-      .map((row) => {
-        const wallet = String(row?.wallet || "");
-        const shortWallet = wallet ? `${wallet.slice(0, 4)}…${wallet.slice(-4)}` : "unknown";
-        const rawLastTrade = row?.lastTrade !== undefined ? row.lastTrade : row?.last_trade;
-        let lastTradeTs = toFiniteNumber(rawLastTrade, NaN);
-        if (!Number.isFinite(lastTradeTs) && typeof rawLastTrade === "string") {
-          const parsed = Date.parse(rawLastTrade);
-          if (Number.isFinite(parsed)) lastTradeTs = parsed;
-        }
-        return {
-          label: shortWallet,
-          value: toFiniteNumber(row?.trades, 0),
-          timestamp: Number.isFinite(lastTradeTs) && lastTradeTs > 0 ? lastTradeTs : null,
-        };
-      })
-      .filter((row) => row.timestamp !== null)
-      .sort((a, b) => toFiniteNumber(a.timestamp, 0) - toFiniteNumber(b.timestamp, 0));
-    const windowed = mapped.filter((row) => {
-      const ts = toFiniteNumber(row.timestamp, 0);
-      return ts >= now - horizonMs && ts <= now + 60000;
-    });
-    const selected = windowed.length >= 6 ? windowed : mapped;
-    return selected.slice(-Math.max(10, limit));
-  }
-  return getVolumeSeriesForWindow();
+  return getTokenActiveSeries(tab);
 }
 
 function syncChartWindow(series) {
@@ -1735,15 +2439,19 @@ function renderNavigator(series) {
     return;
   }
   chartNavigator.hidden = false;
-  chartNavigator.classList.toggle("minimal", activeSeries === "daily");
+  chartNavigator.classList.toggle("minimal", activeSeries === "daily" || activeSeries === "live");
   renderNavigatorArea(series);
   updateNavigatorWindow(series);
 }
 
 function handleChartResize() {
+  const nextLayoutSignature = getChartLayoutSignature();
+  if (!nextLayoutSignature || nextLayoutSignature === chartLayoutSignature) return;
   if (chartResizeRaf) window.cancelAnimationFrame(chartResizeRaf);
   chartResizeRaf = window.requestAnimationFrame(() => {
     chartResizeRaf = 0;
+    const currentLayoutSignature = getChartLayoutSignature();
+    if (!currentLayoutSignature || currentLayoutSignature === chartLayoutSignature) return;
     renderActiveSeries();
   });
 }
@@ -1954,8 +2662,29 @@ function handleNavigatorPointerUp(event) {
 }
 
 function syncCumulativeControl() {
-  const isVolumeTab = state.analyticsTab === "volume";
-  const cumulativeActive = isVolumeTab && activeChartType === "line";
+  if (state.view !== "token") {
+    const buttons = [
+      ["seriesDaily", "daily"],
+      ["seriesWeekly", "weekly"],
+      ["seriesMonthly", "monthly"],
+      ["seriesLive", "live"],
+    ];
+    const toggleGroup = document.querySelector(".chart-toggle-group");
+    if (toggleGroup) toggleGroup.style.display = "inline-flex";
+    buttons.forEach(([id, key]) => {
+      const btn = el(id);
+      if (!btn) return;
+      const isActive = key === activeSeries;
+      btn.hidden = false;
+      btn.disabled = false;
+      btn.classList.toggle("active", isActive);
+      btn.setAttribute("aria-pressed", isActive ? "true" : "false");
+    });
+    return;
+  }
+  const presentation = getCurrentChartPresentation();
+  const allowCumulative = Boolean(presentation?.allowCumulative);
+  const cumulativeActive = allowCumulative && activeChartType === "line";
   const buttons = [
     ["seriesDaily", "daily"],
     ["seriesWeekly", "weekly"],
@@ -1975,10 +2704,10 @@ function syncCumulativeControl() {
   });
   const cumulativeBtn = el("chartCumulative");
   if (cumulativeBtn) {
-    cumulativeBtn.hidden = !isVolumeTab;
-    cumulativeBtn.classList.toggle("active", isVolumeTab && cumulativeActive);
-    cumulativeBtn.setAttribute("aria-pressed", isVolumeTab && cumulativeActive ? "true" : "false");
-    cumulativeBtn.disabled = !isVolumeTab;
+    cumulativeBtn.hidden = !allowCumulative;
+    cumulativeBtn.classList.toggle("active", allowCumulative && cumulativeActive);
+    cumulativeBtn.setAttribute("aria-pressed", allowCumulative && cumulativeActive ? "true" : "false");
+    cumulativeBtn.disabled = !allowCumulative;
   }
 }
 
@@ -2005,32 +2734,50 @@ function renderAnalyticsLegend(presentation = null) {
 function renderActiveSeries() {
   const container = el("volumeChart");
   if (!container) return;
-  const allSeries = getActiveSeries();
-  const presentation = getAnalyticsPresentation();
+  if (state.view !== "token" && !state.volumeSeries) {
+    container.innerHTML = "<div class='muted'>Loading chart data...</div>";
+    refreshVolumeSeries().catch(() => {
+      scheduleExchangeSeriesBoot();
+    });
+    return;
+  }
+  const rawSeries = getActiveSeries();
+  const exchangeCumulativeActive = shouldUseExchangeCumulativeSeries(
+    state.exchangeChartMetric || "volume",
+    activeSeries
+  );
+  const allSeries = exchangeCumulativeActive ? buildCumulativeSeries(rawSeries) : rawSeries;
+  activeChartTimeMode = inferChartTimeMode(allSeries);
+  const presentation = getCurrentChartPresentation();
+  const note = String(presentation.note || "").trim();
   setText("chartTitle", presentation.title);
-  setText("analytics-note", presentation.note);
+  setText("analytics-note", note);
+  const noteNode = el("analytics-note");
+  if (noteNode) noteNode.hidden = !note;
+  syncExchangeChartMetricButtons();
   renderAnalyticsLegend(presentation);
 
   syncChartWindow(allSeries);
   const prepared = buildChartData(allSeries);
   const visiblePrepared = getVisibleSeries(prepared);
-  const useCumulative = state.analyticsTab === "volume" && activeChartType === "line";
+  const useCumulative = state.view === "token" && activeChartType === "line";
   const chartData = useCumulative ? buildCumulativeSeries(visiblePrepared) : visiblePrepared;
   renderVolumeChart(container, chartData, presentation);
   renderNavigator(allSeries);
   syncCumulativeControl();
+  chartLayoutSignature = getChartLayoutSignature();
 }
 
 function updateSeriesToggle(seriesKey) {
-  if (!["daily", "weekly", "monthly"].includes(seriesKey)) return;
+  if (!["daily", "weekly", "monthly", "live"].includes(seriesKey)) return;
   activeSeries = seriesKey;
-  activeChartType = "bars";
+  activeChartType = seriesKey === "live" ? "line" : "bars";
   chartHasUserControl = false;
   renderActiveSeries();
 }
 
 function updateChartType(type) {
-  if (type !== "line") return;
+  if (type !== "line" || !getCurrentChartPresentation().allowCumulative) return;
   activeSeries = "daily";
   activeChartType = "line";
   chartHasUserControl = false;
@@ -2079,33 +2826,98 @@ function getIndexerBreakdown(indexer = null) {
 }
 
 async function fetchJson(url, options = {}) {
+  const method = String(options.method || "GET").trim().toUpperCase() || "GET";
+  const cacheTtlMs = Math.max(0, Number(options.cacheTtlMs ?? 1500));
+  const canShareCache = method === "GET" && !options.signal && !options.noSharedCache && cacheTtlMs > 0;
+  const cacheKey = canShareCache ? `${method}:${String(url || "").trim()}` : null;
+  const cloneJson = (value) => {
+    if (value === null || value === undefined) return value;
+    if (typeof structuredClone === "function") {
+      try {
+        return structuredClone(value);
+      } catch (_error) {
+        // fallback below
+      }
+    }
+    return JSON.parse(JSON.stringify(value));
+  };
+  if (cacheKey && fetchJsonCache.has(cacheKey)) {
+    const cached = fetchJsonCache.get(cacheKey);
+    if (cached && Date.now() - Number(cached.fetchedAt || 0) <= cacheTtlMs) {
+      return cloneJson(cached.value);
+    }
+    fetchJsonCache.delete(cacheKey);
+  }
+  if (cacheKey && fetchJsonInflight.has(cacheKey)) {
+    return fetchJsonInflight.get(cacheKey).then((value) => cloneJson(value));
+  }
   const timeoutMs = Number(options.timeoutMs ?? 10000);
   const controller =
     typeof AbortController !== "undefined" ? new AbortController() : null;
+  const externalSignal = options.signal || null;
   const timer =
     controller && Number.isFinite(timeoutMs) && timeoutMs > 0
       ? window.setTimeout(() => controller.abort(), timeoutMs)
       : null;
-  let res;
-  try {
-    res = await fetch(url, {
-      cache: "no-store",
-      signal: controller ? controller.signal : undefined,
-    });
-  } catch (error) {
-    if (timer) window.clearTimeout(timer);
-    if (error && error.name === "AbortError") {
-      throw new Error(`${url} -> timeout`);
+  const onExternalAbort = () => {
+    try {
+      controller && controller.abort();
+    } catch (_error) {
+      // ignore
     }
-    throw error;
+  };
+  if (controller && externalSignal) {
+    if (externalSignal.aborted) {
+      controller.abort();
+    } else if (typeof externalSignal.addEventListener === "function") {
+      externalSignal.addEventListener("abort", onExternalAbort, { once: true });
+    }
   }
-  if (timer) window.clearTimeout(timer);
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    throw new Error(data.error || `${url} -> ${res.status}`);
+  const task = (async () => {
+    let res;
+    try {
+      res = await fetch(url, {
+        cache: "no-store",
+        signal: controller ? controller.signal : undefined,
+      });
+    } catch (error) {
+      if (error && error.name === "AbortError") {
+        throw new Error(`${url} -> timeout`);
+      }
+      throw error;
+    } finally {
+      if (timer) window.clearTimeout(timer);
+      if (controller && externalSignal && typeof externalSignal.removeEventListener === "function") {
+        externalSignal.removeEventListener("abort", onExternalAbort);
+      }
+    }
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.error || `${url} -> ${res.status}`);
+    }
+    if (cacheKey) {
+      fetchJsonCache.set(cacheKey, { fetchedAt: Date.now(), value: data });
+      while (fetchJsonCache.size > 64) {
+        const oldestKey = fetchJsonCache.keys().next().value;
+        fetchJsonCache.delete(oldestKey);
+      }
+    }
+    return data;
+  })();
+  if (cacheKey) {
+    fetchJsonInflight.set(cacheKey, task);
   }
-  return data;
+  try {
+    const data = await task;
+    return cacheKey ? cloneJson(data) : data;
+  } finally {
+    if (cacheKey) {
+      fetchJsonInflight.delete(cacheKey);
+    }
+  }
 }
+
+async function postJson(url, payload = {}, options = {}) {}
 
 async function postJson(url, payload = {}, options = {}) {
   const timeoutMs = Number(options.timeoutMs ?? 15000);
@@ -2179,6 +2991,727 @@ function renderIndexerProgressPanel() {
   );
 }
 
+function setHtml(id, html) {
+  const node = el(id);
+  if (node) node.innerHTML = html;
+}
+
+function fmtPercent(value, digits = 1) {
+  const num = toNum(value, NaN);
+  if (!Number.isFinite(num)) return "-";
+  return `${fmt(num, digits)}%`;
+}
+
+function fmtDateLabel(value) {
+  if (value === null || value === undefined || value === "") return "-";
+  if (typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value.trim())) {
+    return value.trim();
+  }
+  const num = Number(value);
+  if (Number.isFinite(num) && num > 0) return fmtDateOnly(num);
+  return "-";
+}
+
+function fmtLifecycleLabel(value) {
+  const raw = String(value || "").trim().toLowerCase();
+  if (!raw) return "Unknown";
+  return raw
+    .split("_")
+    .map((part) => titleCase(part))
+    .join(" ");
+}
+
+function metricStateLabel(value) {
+  const raw = String(value || "").trim().toLowerCase();
+  if (!raw) return "Unknown";
+  return titleCase(raw);
+}
+
+function formatWalletReasonList(reasons = [], limit = 2) {
+  return (Array.isArray(reasons) ? reasons : [])
+    .filter(Boolean)
+    .slice(0, Math.max(1, Number(limit || 2)))
+    .map((item) => metricStateLabel(String(item).replace(/^retry_pending:/, "retry_pending_")))
+    .join(", ");
+}
+
+function getWalletSortMeta(payload = null) {
+  const fallbackKey = String(state.walletSortKey || "volumeUsd").trim() || "volumeUsd";
+  const fallbackDir = String(state.walletSortDir || "desc").trim().toLowerCase() === "asc" ? "asc" : "desc";
+  const sorting = payload && payload.sorting && typeof payload.sorting === "object" ? payload.sorting : {};
+  const key = String(sorting.key || fallbackKey).trim() || fallbackKey;
+  const dir = String(sorting.dir || fallbackDir).trim().toLowerCase() === "asc" ? "asc" : "desc";
+  if (key === "rankingVolumeUsd" || key === "volumeUsd") {
+    return {
+      key: "rankingVolumeUsd",
+      dir,
+      label: "Trusted Volume Rank",
+      shortLabel: "Trusted Rank",
+      description:
+        "Visible rank is based on ranking volume. Leaderboard-eligible wallets rank first, then history-verified wallets, then partial wallets.",
+    };
+  }
+  if (key === "volumeUsdRaw") {
+    return {
+      key: "volumeUsdRaw",
+      dir,
+      label: "Raw Volume",
+      shortLabel: "Raw Volume",
+      description:
+        "Visible rank is based on raw stored wallet volume.",
+    };
+  }
+  return {
+    key,
+    dir,
+    label: sorting.label || titleCase(key),
+    shortLabel: sorting.shortLabel || sorting.label || titleCase(key),
+    description: sorting.description || `Visible rank is based on ${titleCase(key)}.`,
+  };
+}
+
+function buildWalletTrustModel(input = {}) {
+  const source =
+    input && input.status && typeof input.status === "object"
+      ? input.status
+      : input && input.completeness && typeof input.completeness === "object"
+      ? input.completeness
+      : input || {};
+  const leaderboardEligible = Boolean(source.leaderboardEligible);
+  const historyVerified = Boolean(source.historyVerified);
+  const metricsVerified = Boolean(source.metricsVerified);
+  const pendingReasons = Array.isArray(source.pendingReasons)
+    ? source.pendingReasons
+    : Array.isArray(source.leaderboardBlockedReasons)
+    ? source.leaderboardBlockedReasons
+    : Array.isArray(source.fullBlockedReasons)
+    ? source.fullBlockedReasons
+    : [];
+  if (leaderboardEligible) {
+    return {
+      state: "trusted_rank",
+      label: "Trusted Rank",
+      description: "Fully verified and rankable.",
+      className: "wallet-chip-rankable",
+    };
+  }
+  if (historyVerified && !metricsVerified) {
+    return {
+      state: "verified_not_rankable",
+      label: "Verified History",
+      description: "History is verified, but ranking is still blocked by metrics or audit rules.",
+      className: "wallet-chip-history",
+    };
+  }
+  if (pendingReasons.length) {
+    return {
+      state: "under_correction",
+      label: "Under Correction",
+      description: "Wallet is visible, but remote verification or history completion is still pending.",
+      className: "wallet-chip-correction",
+    };
+  }
+  return {
+    state: "raw_only",
+    label: "Raw Signal Only",
+    description: "Wallet is only represented by raw stored volume and is not yet trustworthy for ranking.",
+    className: "wallet-chip-raw",
+  };
+}
+
+function buildWalletVolumeTruthModel(input = {}, fallbackSummary = null) {
+  const statusSource = input && input.status && typeof input.status === "object" ? input.status : input || {};
+  const volumeTruthSource =
+    input && input.volumeTruth && typeof input.volumeTruth === "object" ? input.volumeTruth : input || {};
+  const summary = fallbackSummary && typeof fallbackSummary === "object" ? fallbackSummary : null;
+  const rawVolumeUsd =
+    volumeTruthSource.rawVolumeUsd !== undefined && volumeTruthSource.rawVolumeUsd !== null
+      ? toNum(volumeTruthSource.rawVolumeUsd, NaN)
+      : input && input.volumeUsdRaw !== undefined && input.volumeUsdRaw !== null
+      ? toNum(input.volumeUsdRaw, NaN)
+      : summary && summary.volumeUsd !== undefined && summary.volumeUsd !== null
+      ? toNum(summary.volumeUsd, NaN)
+      : NaN;
+  const verifiedVolumeUsd =
+    volumeTruthSource.verifiedVolumeUsd !== undefined && volumeTruthSource.verifiedVolumeUsd !== null
+      ? toNum(volumeTruthSource.verifiedVolumeUsd, NaN)
+      : input && input.volumeUsdVerified !== undefined && input.volumeUsdVerified !== null
+      ? toNum(input.volumeUsdVerified, NaN)
+      : Boolean(statusSource.historyVerified) && Number.isFinite(rawVolumeUsd)
+      ? rawVolumeUsd
+      : NaN;
+  const rankingVolumeUsd =
+    volumeTruthSource.rankingVolumeUsd !== undefined && volumeTruthSource.rankingVolumeUsd !== null
+      ? toNum(volumeTruthSource.rankingVolumeUsd, NaN)
+      : input && input.rankingVolumeUsd !== undefined && input.rankingVolumeUsd !== null
+      ? toNum(input.rankingVolumeUsd, NaN)
+      : Boolean(statusSource.leaderboardEligible) && Number.isFinite(verifiedVolumeUsd)
+      ? verifiedVolumeUsd
+      : NaN;
+  const status = String(
+    volumeTruthSource.volumeStatus ||
+      statusSource.volumeStatus ||
+      input.volumeStatus ||
+      input?.completeness?.volumeExactness ||
+      "partial"
+  );
+  const statusLabel =
+    volumeTruthSource.volumeStatusLabel ||
+    statusSource.volumeStatusLabel ||
+    input.volumeStatusLabel ||
+    input?.completeness?.volumeExactnessLabel ||
+    "Partial History Volume";
+  return {
+    rawVolumeUsd,
+    verifiedVolumeUsd,
+    rankingVolumeUsd,
+    status,
+    statusLabel,
+  };
+}
+
+function formatWalletVolumeValue(value, fallback = "Blocked") {
+  const num = toNum(value, NaN);
+  if (!Number.isFinite(num)) return fallback;
+  return `$${fmtCompact(num)}`;
+}
+
+function getWalletDisplayVolume(volumeTruth = {}) {
+  const candidates = [
+    volumeTruth.rawVolumeUsd,
+    volumeTruth.verifiedVolumeUsd,
+    volumeTruth.rankingVolumeUsd,
+  ];
+  for (const candidate of candidates) {
+    const num = toNum(candidate, NaN);
+    if (Number.isFinite(num)) return num;
+  }
+  return NaN;
+}
+
+function formatWalletPaginationSummary(summary = null, label = "") {
+  if (!summary || typeof summary !== "object") return null;
+  const fetched = fmt(toNum(summary.fetchedPages, 0), 0);
+  const known =
+    summary.totalKnownPages !== null && summary.totalKnownPages !== undefined
+      ? fmt(toNum(summary.totalKnownPages, 0), 0)
+      : fmt(toNum(summary.highestKnownPage, 0), 0) || "?";
+  const pending = fmt(toNum(summary.pendingPages, 0), 0);
+  const retry = fmt(toNum(summary.retryPages, 0), 0);
+  const state = summary.exhausted ? "complete" : summary.frontierCursor ? "frontier" : "pending";
+  const frontier =
+    summary.frontierCursor && String(summary.frontierCursor).trim()
+      ? ` frontier ${String(summary.frontierCursor).trim().slice(0, 10)}`
+      : "";
+  return `${label} ${fetched}/${known} fetched · pending ${pending} · failed ${retry} · ${state}${frontier}`;
+}
+
+function buildExchangeMetricDisplay(value, metric = {}, format = "number") {
+  const state = String(metric?.state || "").trim().toLowerCase();
+  if (state === "unavailable") return "Unavailable";
+  const num = toNum(value, NaN);
+  if (!Number.isFinite(num)) return state === "partial" ? "Partial" : "-";
+  if (format === "currencyCompact" || format === "currency") {
+    return Math.abs(num) >= 1000 ? `$${fmtCompact(num)}` : `$${fmt(num, 2)}`;
+  }
+  return Math.abs(num) >= 1000 ? fmtCompact(num) : fmt(num, 0);
+}
+
+function buildExchangeMetricMeta(metric = {}) {
+  if (!metric || typeof metric !== "object") return "";
+  const parts = [];
+  parts.push(`${metricStateLabel(metric.state)} · ${metricStateLabel(metric.method)}`);
+  if (metric.coverage?.startDate || metric.coverage?.endDate) {
+    parts.push(
+      `coverage ${fmtDateLabel(metric.coverage?.startDate)} -> ${fmtDateLabel(metric.coverage?.endDate)}`
+    );
+  }
+  if (metric.coverage?.completeThroughDate) {
+    parts.push(`complete through ${fmtDateLabel(metric.coverage.completeThroughDate)}`);
+  }
+  if (metric.note) parts.push(metric.note);
+  return parts.filter(Boolean).join(" | ");
+}
+
+function renderOpsSummary(containerId, items = []) {
+  setHtml(
+    containerId,
+    (Array.isArray(items) ? items : [])
+      .map(
+        (item) => `<div class="ops-summary-item">
+          <span>${escapeHtml(item.label || "-")}</span>
+          <strong>${escapeHtml(item.value || "-")}</strong>
+        </div>`
+      )
+      .join("")
+  );
+}
+
+function setOpsProgressBar(id, pct) {
+  const node = el(id);
+  if (!node) return;
+  const safePct = clamp(toNum(pct, 0), 0, 100);
+  node.style.width = `${safePct}%`;
+}
+
+function renderExchangeStatusPanels(payload = {}) {
+  const progress = payload.progress || {};
+  const system = payload.system || {};
+  const freshness = payload.freshness || {};
+  const metrics = payload.metricSemantics || {};
+  const percentComplete = toNum(progress.percentComplete, NaN);
+  const symbolComplete = toNum(progress.symbolRollupCompleteDays, NaN);
+  const symbolPending = toNum(progress.symbolRollupPendingDays, NaN);
+
+  setText("exchange-system-mode", titleCase(system.mode || "unknown"));
+  setText(
+    "exchange-shard-label",
+    `${fmt(toNum(system.activeShardCount, 0), 0)} shards`
+  );
+  setText(
+    "exchange-freshness-label",
+    freshness.lastSuccessfulExchangeRollupAt
+      ? `rollup ${fmtAgo(freshness.lastSuccessfulExchangeRollupAt)}`
+      : "stale"
+  );
+
+  renderOpsSummary("exchange-progress-summary", [
+    { label: "Current Day", value: fmtDateLabel(progress.currentDate || progress.nextDate) },
+    { label: "Progress", value: fmtPercent(percentComplete, 2) },
+    { label: "Days Done", value: fmt(progress.daysProcessed || 0, 0) },
+    { label: "Days Left", value: fmt(progress.daysRemaining || 0, 0) },
+    {
+      label: "Symbols",
+      value:
+        Number.isFinite(symbolComplete) || Number.isFinite(symbolPending)
+          ? `${fmt(symbolComplete, 0)} / ${fmt(symbolComplete + symbolPending, 0)}`
+          : "-",
+    },
+    { label: "Trades", value: metricStateLabel(progress.totalTradesStatus || metrics.totalTrades?.state || "unknown") },
+    { label: "Fees", value: metricStateLabel(progress.totalFeesStatus || metrics.totalFeesUsd?.state || "unknown") },
+  ]);
+  setOpsProgressBar("exchange-progress-bar", percentComplete);
+  setText(
+    "exchange-progress-meta",
+    `Range ${fmtDateLabel(progress.startDate)} -> ${fmtDateLabel(progress.endDate)} | stage ${titleCase(
+      system.mode || "unknown"
+    )} | trades ${metricStateLabel(progress.totalTradesStatus || metrics.totalTrades?.state || "unknown")} through ${fmtDateLabel(
+      progress.totalTradesThroughDate
+    )} | fees ${metricStateLabel(progress.totalFeesStatus || metrics.totalFeesUsd?.state || "unknown")} through ${fmtDateLabel(
+      progress.totalFeesThroughDate
+    )}`
+  );
+
+  renderOpsSummary("exchange-system-summary", [
+    {
+      label: "Proxy Health",
+      value: `${fmt(toNum(system.proxyHealth?.active, 0), 0)} / ${fmt(
+        toNum(system.proxyHealth?.total, 0),
+        0
+      )}`,
+    },
+    {
+      label: "Helius Keys",
+      value: `${fmt(toNum(system.heliusHealth?.active, 0), 0)} / ${fmt(
+        toNum(system.heliusHealth?.total, 0),
+        0
+      )}`,
+    },
+    {
+      label: "REST Pace",
+      value:
+        system.restPace && Number.isFinite(toNum(system.restPace.rpmCap, NaN))
+          ? `${fmt(system.restPace.used1m, 1)} / ${fmt(system.restPace.rpmCap, 1)}`
+          : "-",
+    },
+    {
+      label: "Headroom",
+      value: fmtPercent(system.restPace?.headroomPct, 1),
+    },
+    {
+      label: "WS Wallets",
+      value: fmt(toNum(system.wsHealth?.activeWallets, 0), 0),
+    },
+    {
+      label: "WS Conns",
+      value: fmt(toNum(system.wsHealth?.openConnections, 0), 0),
+    },
+  ]);
+  setText(
+    "exchange-system-meta",
+    `Mode ${titleCase(system.mode || "unknown")} | proxy cooling ${fmt(
+      toNum(system.proxyHealth?.cooling, 0),
+      0
+    )} | Helius 429/min ${fmt(toNum(system.heliusHealth?.rate429PerMin, 0), 0)}`
+  );
+
+  renderOpsSummary("exchange-freshness-summary", [
+    {
+      label: "Wallet Sync",
+      value: freshness.lastSuccessfulSyncAt ? fmtAgo(freshness.lastSuccessfulSyncAt) : "-",
+    },
+    {
+      label: "Discovery",
+      value: freshness.lastSuccessfulWalletDiscoveryAt
+        ? fmtAgo(freshness.lastSuccessfulWalletDiscoveryAt)
+        : "-",
+    },
+    {
+      label: "Rollup",
+      value: freshness.lastSuccessfulExchangeRollupAt
+        ? fmtAgo(freshness.lastSuccessfulExchangeRollupAt)
+        : "-",
+    },
+    {
+      label: "Lag",
+      value: freshness.lagBehindNowMs ? fmtDurationMs(freshness.lagBehindNowMs) : "-",
+    },
+  ]);
+  setText(
+    "exchange-freshness-meta",
+    `Last rollup ${freshness.lastSuccessfulExchangeRollupAt ? fmtTimeShort(freshness.lastSuccessfulExchangeRollupAt) : "-"}`
+  );
+}
+
+function renderWalletStatusPanels(payload = {}) {
+  const progress = payload.progress || {};
+  const system = payload.system || {};
+  const freshness = payload.freshness || {};
+  const counts = payload.counts || {};
+  const storage = payload.storage || {};
+  const exchangeOverview = payload.exchangeOverview || {};
+  const topCorrection = payload.topCorrection || {};
+  const topCorrectionRuntime =
+    topCorrection && topCorrection.runtime && typeof topCorrection.runtime === "object"
+      ? topCorrection.runtime
+      : {};
+  const topCorrectionSummary =
+    topCorrection && topCorrection.summary && typeof topCorrection.summary === "object"
+      ? topCorrection.summary
+      : topCorrectionRuntime && topCorrectionRuntime.summary && typeof topCorrectionRuntime.summary === "object"
+      ? topCorrectionRuntime.summary
+      : {};
+  const topCorrectionSize = Math.max(
+    toNum(topCorrection.cohortSize, 0),
+    toNum(topCorrectionRuntime.size, 0)
+  );
+  const discoveryWindow =
+    progress.solanaDiscoveryTimeline || progress.discoveryWindow || {};
+  const discoveryStatus =
+    payload.discovery && typeof payload.discovery === "object"
+      ? payload.discovery
+      : progress.discoveryStatus && typeof progress.discoveryStatus === "object"
+        ? progress.discoveryStatus
+        : {};
+  const walletHistoryWindow = progress.walletHistoryTimeline || {};
+  const walletVolumeProgress = progress.walletVolumeProgress || {};
+  const discovered = Math.max(toNum(progress.discovered, 0), toNum(counts.discoveredWallets, 0));
+  const validated = Math.max(toNum(progress.validated, 0), toNum(counts.validatedWallets, 0));
+  const historyComplete = Math.max(
+    toNum(progress.tradeHistoryComplete, 0),
+    toNum(progress.backfilled, 0),
+    toNum(counts.tradeHistoryCompleteWallets, 0),
+    toNum(counts.backfilledWallets, 0)
+  );
+  const trackedLite = Math.max(
+    toNum(progress.trackedLite, 0),
+    toNum(progress.trackedLiteWallets, 0),
+    toNum(counts.trackedLiteWallets, 0)
+  );
+  const trackedFull = Math.max(
+    toNum(progress.trackedFull, 0),
+    toNum(counts.trackedFullWallets, 0)
+  );
+  const metricsComplete = toNum(counts.metricsCompleteWallets, 0);
+  const metricsPartial = toNum(counts.metricsPartialWallets, 0);
+  const activationOnly = toNum(counts.activationOnlyWallets, 0);
+  const partialHistory = toNum(counts.tradeHistoryPartialWallets, 0);
+  const recentHistoryOnly = toNum(counts.recentHistoryOnlyWallets, 0);
+  const walletHistoryPct = toNum(walletHistoryWindow.percentComplete, NaN);
+  const discoveryPct = toNum(discoveryWindow.percentComplete, NaN);
+  const discoveryState = String(
+    discoveryStatus.status ||
+      discoveryWindow.mode ||
+      (Number.isFinite(discoveryPct) && discoveryPct >= 100 ? "live" : "catch_up")
+  );
+  const discoverySnapshotAt = toNum(discoveryStatus.updatedAt, NaN);
+  const discoveryScanAt = toNum(
+    discoveryStatus.lastScanAt,
+    toNum(freshness.lastSuccessfulWalletDiscoveryAt, NaN)
+  );
+  const discoveryStaleAfterMs = toNum(discoveryStatus.staleAfterMs, NaN);
+  const discoveryHealthPct =
+    Number.isFinite(discoveryScanAt) && Number.isFinite(discoveryStaleAfterMs) && discoveryStaleAfterMs > 0
+      ? clamp((1 - Math.max(0, Date.now() - discoveryScanAt) / discoveryStaleAfterMs) * 100, 0, 100)
+      : Number.isFinite(discoveryPct)
+        ? clamp(discoveryPct, 0, 100)
+        : 0;
+  const discoveryLatestNewAt = toNum(discoveryStatus.latestNewWalletAt, NaN);
+  const discoveryNew1h = toNum(discoveryStatus.newWallets?.last1h, NaN);
+  const discoveryNew6h = toNum(discoveryStatus.newWallets?.last6h, NaN);
+  const discoveryNew24h = toNum(discoveryStatus.newWallets?.last24h, NaN);
+  const discoveryWalletCount = Math.max(
+    toNum(discoveryStatus.walletCount, 0),
+    discovered
+  );
+  const discoveryConfirmed = Math.max(
+    toNum(discoveryStatus.confirmedWallets, 0),
+    validated
+  );
+  const storageRows = toNum(storage.wallets?.walletRowsPersisted, NaN);
+  const historyPersisted = toNum(storage.wallets?.historyStore?.persistedWallets, NaN);
+  const metricsSnapshots = toNum(storage.materializedViews?.walletMetricsHistory?.dailyFiles, NaN);
+  const currentRawVolume = toNum(
+    walletVolumeProgress.currentRawVolumeUsd,
+    toNum(exchangeOverview.walletSummedVolumeUsd, 0)
+  );
+  const currentVerifiedVolume = toNum(
+    walletVolumeProgress.currentVerifiedVolumeUsd,
+    toNum(exchangeOverview.walletVerifiedVolumeUsd, 0)
+  );
+  const deltaRawVolume = toNum(walletVolumeProgress.deltaRawVolumeUsd, NaN);
+  const deltaVerifiedVolume = toNum(walletVolumeProgress.deltaVerifiedVolumeUsd, NaN);
+  const deltaCompletedWallets = toNum(walletVolumeProgress.deltaCompletedWallets, NaN);
+  const walletsPerHour = toNum(walletVolumeProgress.completedWalletsPerHour, NaN);
+  const rawVolumePerHour = toNum(walletVolumeProgress.rawVolumePerHour, NaN);
+  const rawVolumeCorrection = toNum(walletVolumeProgress.windowRawVolumeCorrectionUsd, NaN);
+  const verifiedVolumeCorrection = toNum(
+    walletVolumeProgress.windowVerifiedVolumeCorrectionUsd,
+    NaN
+  );
+  const currentCompletedWallets = toNum(walletVolumeProgress.currentCompletedWallets, trackedFull);
+  const remainingWallets = toNum(walletVolumeProgress.remainingWallets, Math.max(0, discovered - trackedFull));
+  const volumeCoveragePct = toNum(
+    walletVolumeProgress.walletCoveragePct,
+    toNum(exchangeOverview.volumeRatio, 0) * 100
+  );
+  const verifiedCoveragePct = toNum(walletVolumeProgress.verifiedCoveragePct, NaN);
+  const etaWalletCompletionMs = toNum(walletVolumeProgress.etaWalletCompletionMs, NaN);
+  const etaVolumeGapMs = toNum(walletVolumeProgress.etaVolumeGapMs, NaN);
+  const snapshotIntervalMs = toNum(walletVolumeProgress.snapshotIntervalMs, NaN);
+  const progressState = String(walletVolumeProgress.progressState || "stalled");
+
+  setText("wallet-system-mode", titleCase(system.mode || "unknown"));
+  setText(
+    "wallet-discovery-label",
+    titleCase(discoveryState)
+  );
+  setText(
+    "wallet-shard-label",
+    `${fmt(toNum(system.activeShardCount, 0), 0)} shards`
+  );
+  setText(
+    "wallet-freshness-label",
+    freshness.lastSuccessfulWalletDiscoveryAt
+      ? `discover ${fmtAgo(freshness.lastSuccessfulWalletDiscoveryAt)}`
+      : "stale"
+  );
+  setText(
+    "wallet-volume-label",
+    titleCase(progressState)
+  );
+
+  renderOpsSummary("wallet-progress-summary", [
+    { label: "Start", value: fmtDateLabel(walletHistoryWindow.startTimeMs) },
+    { label: "Current Day", value: fmtDateLabel(walletHistoryWindow.currentTimeMs) },
+    { label: "End", value: fmtDateLabel(walletHistoryWindow.endTimeMs) },
+    { label: "Progress", value: fmtPercent(walletHistoryPct, 2) },
+    { label: "Wallets Done", value: fmt(historyComplete, 0) },
+    {
+      label: "Remaining",
+      value:
+        walletHistoryWindow.remainingMs !== null && walletHistoryWindow.remainingMs !== undefined
+          ? fmtDurationMs(walletHistoryWindow.remainingMs)
+          : "-",
+    },
+    { label: "Activation Only", value: fmt(activationOnly, 0) },
+    { label: "Partial History", value: fmt(partialHistory, 0) },
+    { label: "Metrics Done", value: fmt(metricsComplete, 0) },
+  ]);
+  setOpsProgressBar("wallet-progress-bar", walletHistoryPct);
+  setText(
+    "wallet-progress-meta",
+    `Wallet history ${Number.isFinite(walletHistoryPct) ? fmt(walletHistoryPct, 2) : "-"}% | frontier ${fmtDateLabel(
+      walletHistoryWindow.currentTimeMs
+    )} | method ${titleCase(String(walletHistoryWindow.method || "derived").replace(/_/g, " "))} (${walletHistoryWindow.exactness || "unknown"}) | tracked lite ${fmt(
+      trackedLite,
+      0
+    )} | tracked full ${fmt(trackedFull, 0)} | recent history only ${fmt(
+      recentHistoryOnly,
+      0
+    )} | metrics partial ${fmt(metricsPartial, 0)} | backlog ${fmt(
+      toNum(progress.pending, 0),
+      0
+    )}${
+      topCorrectionSize > 0
+        ? ` | top ${fmt(topCorrectionSize, 0)} exact ${fmt(toNum(topCorrectionSummary.volumeExact, 0), 0)} | remote verified ${fmt(toNum(topCorrectionSummary.remoteHistoryVerified, 0), 0)}`
+        : ""
+    }`
+  );
+
+  renderOpsSummary("wallet-discovery-summary", [
+    { label: "Snapshot", value: fmtUtcDateTime(discoverySnapshotAt) },
+    { label: "Latest Scan", value: fmtUtcDateTime(discoveryScanAt) },
+    { label: "Discovered", value: fmt(discoveryWalletCount, 0) },
+    { label: "Validated", value: fmt(discoveryConfirmed, 0) },
+    { label: "New 1H", value: Number.isFinite(discoveryNew1h) ? fmt(discoveryNew1h, 0) : "-" },
+    { label: "New 6H", value: Number.isFinite(discoveryNew6h) ? fmt(discoveryNew6h, 0) : "-" },
+    { label: "New 24H", value: Number.isFinite(discoveryNew24h) ? fmt(discoveryNew24h, 0) : "-" },
+    { label: "Latest New", value: Number.isFinite(discoveryLatestNewAt) ? fmtUtcDateTime(discoveryLatestNewAt) : "-" },
+  ]);
+  setOpsProgressBar("wallet-discovery-bar", discoveryHealthPct);
+  setText(
+    "wallet-discovery-meta",
+    `${titleCase(discoveryState)} | latest snapshot ${fmtUtcDateTime(
+      discoverySnapshotAt
+    )} | latest scan ${fmtUtcDateTime(discoveryScanAt)} | discovered ${fmt(
+      discoveryWalletCount,
+      0
+    )} | new ${Number.isFinite(discoveryNew1h) ? fmt(discoveryNew1h, 0) : "-"} in 1H, ${
+      Number.isFinite(discoveryNew6h) ? fmt(discoveryNew6h, 0) : "-"
+    } in 6H, ${Number.isFinite(discoveryNew24h) ? fmt(discoveryNew24h, 0) : "-"} in 24H`
+  );
+
+  renderOpsSummary("wallet-system-summary", [
+    {
+      label: "Proxy Health",
+      value: `${fmt(toNum(system.proxyHealth?.active, 0), 0)} / ${fmt(
+        toNum(system.proxyHealth?.total, 0),
+        0
+      )}`,
+    },
+    {
+      label: "Helius Keys",
+      value: `${fmt(toNum(system.heliusHealth?.active, 0), 0)} / ${fmt(
+        toNum(system.heliusHealth?.total, 0),
+        0
+      )}`,
+    },
+    {
+      label: "REST Pace",
+      value:
+        system.restPace && Number.isFinite(toNum(system.restPace.rpmCap, NaN))
+          ? `${fmt(system.restPace.used1m, 1)} / ${fmt(system.restPace.rpmCap, 1)}`
+          : "-",
+    },
+    {
+      label: "Headroom",
+      value: fmtPercent(system.restPace?.headroomPct, 1),
+    },
+    {
+      label: "WS Wallets",
+      value: fmt(toNum(system.wsHealth?.activeWallets, 0), 0),
+    },
+    {
+      label: "WS Backlog",
+      value: fmt(toNum(system.wsHealth?.promotionBacklog, 0), 0),
+    },
+  ]);
+  setText(
+    "wallet-system-meta",
+    `Mode ${titleCase(system.mode || "unknown")} | proxy cooling ${fmt(
+      toNum(system.proxyHealth?.cooling, 0),
+      0
+    )} | persisted rows ${Number.isFinite(storageRows) ? fmt(storageRows, 0) : "-"} | history files ${Number.isFinite(
+      historyPersisted
+    ) ? fmt(historyPersisted, 0) : "-"} | metrics snapshots ${Number.isFinite(metricsSnapshots) ? fmt(
+      metricsSnapshots,
+      0
+    ) : "-"}${
+      topCorrectionSize > 0
+        ? ` | top ${fmt(topCorrectionSize, 0)} force-refetch ${fmt(toNum(topCorrectionSummary.forceHeadRefetch, 0), 0)} | audit pending ${fmt(toNum(topCorrectionSummary.historyAuditRepairPending, 0), 0)}`
+        : ""
+    }`
+  );
+
+  renderOpsSummary("wallet-freshness-summary", [
+    {
+      label: "Wallet Sync",
+      value: freshness.lastSuccessfulSyncAt ? fmtAgo(freshness.lastSuccessfulSyncAt) : "-",
+    },
+    {
+      label: "Discovery",
+      value: freshness.lastSuccessfulWalletDiscoveryAt
+        ? fmtAgo(freshness.lastSuccessfulWalletDiscoveryAt)
+        : "-",
+    },
+    {
+      label: "Exchange Rollup",
+      value: freshness.lastSuccessfulExchangeRollupAt
+        ? fmtAgo(freshness.lastSuccessfulExchangeRollupAt)
+        : "-",
+    },
+    {
+      label: "Lag",
+      value: freshness.lagBehindNowMs ? fmtDurationMs(freshness.lagBehindNowMs) : "-",
+    },
+  ]);
+  setText(
+    "wallet-freshness-meta",
+    `Last wallet sync ${freshness.lastSuccessfulSyncAt ? fmtTimeShort(freshness.lastSuccessfulSyncAt) : "-"}`
+  );
+
+  renderOpsSummary("wallet-volume-summary", [
+    { label: "Raw Volume", value: `$${fmtCompact(currentRawVolume)}` },
+    { label: "Verified", value: `$${fmtCompact(currentVerifiedVolume)}` },
+    {
+      label: "Last Delta",
+      value: Number.isFinite(deltaRawVolume)
+        ? `${deltaRawVolume > 0 ? "+" : ""}$${fmtCompact(deltaRawVolume)}`
+        : "-",
+    },
+    {
+      label: "Wallets Done",
+      value: `${fmt(currentCompletedWallets, 0)}${Number.isFinite(deltaCompletedWallets) ? ` (${deltaCompletedWallets > 0 ? "+" : ""}${fmt(deltaCompletedWallets, 0)})` : ""}`,
+    },
+    {
+      label: "Wallets / Hour",
+      value: Number.isFinite(walletsPerHour) ? fmt(walletsPerHour, 1) : "-",
+    },
+    {
+      label: "Volume / Hour",
+      value: Number.isFinite(rawVolumePerHour) ? `$${fmtCompact(rawVolumePerHour)}` : "-",
+    },
+    {
+      label: "Coverage",
+      value: fmtPercent(volumeCoveragePct, 2),
+    },
+    {
+      label: "ETA",
+      value: Number.isFinite(etaWalletCompletionMs)
+        ? fmtDurationMs(etaWalletCompletionMs)
+        : Number.isFinite(etaVolumeGapMs)
+        ? fmtDurationMs(etaVolumeGapMs)
+        : "-",
+    },
+  ]);
+  setOpsProgressBar("wallet-volume-bar", volumeCoveragePct);
+  setText(
+    "wallet-volume-meta",
+    `Raw $${fmtCompact(currentRawVolume)} | verified $${fmtCompact(currentVerifiedVolume)}${
+      Number.isFinite(deltaRawVolume) ? ` | last snapshot ${deltaRawVolume >= 0 ? "+" : ""}$${fmtCompact(deltaRawVolume)}` : ""
+    }${
+      Number.isFinite(deltaVerifiedVolume) ? ` | verified delta ${deltaVerifiedVolume >= 0 ? "+" : ""}$${fmtCompact(deltaVerifiedVolume)}` : ""
+    }${
+      Number.isFinite(snapshotIntervalMs) && snapshotIntervalMs > 0 ? ` | snapshot interval ${fmtDurationMs(snapshotIntervalMs)}` : ""
+    }${
+      Number.isFinite(walletsPerHour) ? ` | ${fmt(walletsPerHour, 1)} wallets/hour` : ""
+    }${
+      Number.isFinite(rawVolumePerHour) ? ` | $${fmtCompact(rawVolumePerHour)}/hour` : ""
+    }${
+      Number.isFinite(rawVolumeCorrection) && rawVolumeCorrection < 0
+        ? ` | raw correction -$${fmtCompact(Math.abs(rawVolumeCorrection))}`
+        : ""
+    }${
+      Number.isFinite(verifiedVolumeCorrection) && verifiedVolumeCorrection < 0
+        ? ` | verified correction -$${fmtCompact(Math.abs(verifiedVolumeCorrection))}`
+        : ""
+    } | remaining wallets ${fmt(remainingWallets, 0)}${
+      Number.isFinite(verifiedCoveragePct) ? ` | verified coverage ${fmtPercent(verifiedCoveragePct, 2)}` : ""
+    }`
+  );
+}
+
 function buildVolumeSymbolCandidates(symbol) {
   const raw = String(symbol || "").trim().toUpperCase();
   if (!raw) return [];
@@ -2186,6 +3719,223 @@ function buildVolumeSymbolCandidates(symbol) {
   const noPerp = compact.replace(/PERP$/, "");
   const noUsd = noPerp.replace(/USDT$/, "").replace(/USD$/, "");
   return Array.from(new Set([raw, compact, noPerp, noUsd].filter(Boolean)));
+}
+
+const VOLUME_RANK_ICON_MAP = {
+  BTC: "/assets/volume-rank/btc.png",
+  ETH: "/assets/volume-rank/eth.png",
+  SOL: "/assets/volume-rank/sol.png",
+  HYPE: "/assets/volume-rank/hype.png",
+  BNB: "/assets/volume-rank/bnb.png",
+  XRP: "/assets/volume-rank/xrp.png",
+  ZEC: "/assets/volume-rank/zec.png",
+  ENA: "/assets/volume-rank/ena.png",
+  XPL: "/assets/volume-rank/xpl.png",
+  ASTER: "/assets/volume-rank/aster.png",
+  DOGE: "/assets/volume-rank/doge.png",
+  ADA: "/assets/volume-rank/ada.png",
+  AVAX: "/assets/volume-rank/avax.png",
+  LINK: "/assets/volume-rank/link.png",
+  SUI: "/assets/volume-rank/sui.png",
+};
+
+const VOLUME_RANK_LOCAL_ICON_SET = new Set([
+  "2Z",
+  "AAVE",
+  "ADA",
+  "ARB",
+  "ASTER",
+  "AVAX",
+  "BCH",
+  "BNB",
+  "BP",
+  "BTC",
+  "CL",
+  "COPPER",
+  "CRCL",
+  "CRV",
+  "DOGE",
+  "ENA",
+  "ETH",
+  "EURUSD",
+  "FARTCOIN",
+  "GOOGL",
+  "HOOD",
+  "HYPE",
+  "ICP",
+  "JUP",
+  "KBONK",
+  "KPEPE",
+  "LDO",
+  "LINK",
+  "LIT",
+  "LTC",
+  "MEGA",
+  "MON",
+  "NATGAS",
+  "NEAR",
+  "NVDA",
+  "PAXG",
+  "PENGU",
+  "PIPPIN",
+  "PLATINUM",
+  "PLTR",
+  "PUMP",
+  "SOL",
+  "SP500",
+  "STRK",
+  "SUI",
+  "TAO",
+  "TRUMP",
+  "TSLA",
+  "UNI",
+  "URNM",
+  "USDJPY",
+  "VIRTUAL",
+  "WIF",
+  "WLD",
+  "WLFI",
+  "XAG",
+  "XAU",
+  "XMR",
+  "XPL",
+  "XRP",
+  "ZEC",
+  "ZK",
+  "ZRO",
+]);
+
+const VOLUME_RANK_PACIFICA_ICON_SET = new Set([
+  "BP",
+  "CL",
+  "COPPER",
+  "CRCL",
+  "EURUSD",
+  "FARTCOIN",
+  "GOOGL",
+  "HOOD",
+  "NATGAS",
+  "NVDA",
+  "PLATINUM",
+  "PLTR",
+  "SP500",
+  "TSLA",
+  "URNM",
+  "USDJPY",
+  "XAG",
+  "XAU",
+]);
+
+const VOLUME_RANK_NAME_MAP = {
+  BTC: "Bitcoin",
+  ETH: "Ethereum",
+  SOL: "Solana",
+  HYPE: "Hyperliquid",
+  BNB: "BNB Chain",
+  XRP: "XRP Ledger",
+  ZEC: "Zcash",
+  ENA: "Ethena",
+  XPL: "Plasma",
+  ASTER: "Aster",
+  DOGE: "Dogecoin",
+  ADA: "Cardano",
+  AVAX: "Avalanche",
+  LINK: "Chainlink",
+  SUI: "Sui",
+  PUMP: "Pump.fun",
+  PAXG: "Pax Gold",
+  KBONK: "Bonk",
+  FARTCOIN: "Fartcoin",
+  AAVE: "Aave",
+  KPEPE: "Pepe",
+  XAG: "Silver",
+  LTC: "Litecoin",
+  LIT: "Litentry",
+  UNI: "Uniswap",
+  WLFI: "World Liberty Financial",
+  USDJPY: "USD / JPY",
+  PENGU: "Pudgy Penguins",
+  XMR: "Monero",
+  CRV: "Curve",
+  TAO: "Bittensor",
+  XAU: "Gold",
+  LDO: "Lido",
+  NVDA: "NVIDIA",
+  CL: "Crude Oil",
+  MON: "MON Protocol",
+  TSLA: "Tesla",
+  "2Z": "2Z",
+  TRUMP: "Official Trump",
+  EURUSD: "EUR / USD",
+  NEAR: "Near",
+  BCH: "Bitcoin Cash",
+  VIRTUAL: "Virtuals",
+  ZK: "ZKsync",
+  PIPPIN: "Pippin",
+  JUP: "Jupiter",
+  STRK: "Starknet",
+  ARB: "Arbitrum",
+  ICP: "Internet Computer",
+  CRCL: "Circle",
+  WIF: "dogwifhat",
+  WLD: "Worldcoin",
+  GOOGL: "Alphabet",
+  PLTR: "Palantir",
+  COPPER: "Copper",
+  NATGAS: "Natural Gas",
+  SP500: "S&P 500",
+  ZRO: "LayerZero",
+  MEGA: "MEGA",
+  BP: "BP",
+  URNM: "URNM ETF",
+  HOOD: "Robinhood",
+  PLATINUM: "Platinum",
+};
+
+function buildVolumeRankFallbackIcon(symbol) {
+  const letter = String(symbol || "?")
+    .trim()
+    .replace(/[^A-Z0-9]/gi, "")
+    .slice(0, 1)
+    .toUpperCase() || "?";
+  const svg = `
+    <svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" fill="none">
+      <defs>
+        <linearGradient id="g" x1="8" y1="8" x2="56" y2="56" gradientUnits="userSpaceOnUse">
+          <stop stop-color="#61d6ff"/>
+          <stop offset="1" stop-color="#44d98e"/>
+        </linearGradient>
+      </defs>
+      <rect width="64" height="64" rx="32" fill="#0d1724"/>
+      <circle cx="32" cy="32" r="28" fill="url(#g)" opacity="0.16"/>
+      <circle cx="32" cy="32" r="22" fill="rgba(255,255,255,0.04)" stroke="rgba(255,255,255,0.12)"/>
+      <text x="32" y="38" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="22" font-weight="700" fill="#f5fbff">${escapeHtml(letter)}</text>
+    </svg>
+  `;
+  return `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`;
+}
+
+function resolveVolumeRankIcon(symbol) {
+  const candidates = buildVolumeSymbolCandidates(symbol);
+  for (const candidate of candidates) {
+    if (VOLUME_RANK_ICON_MAP[candidate]) return VOLUME_RANK_ICON_MAP[candidate];
+    if (VOLUME_RANK_PACIFICA_ICON_SET.has(candidate)) {
+      return `https://app.pacifica.fi/imgs/tokens/${candidate}.svg`;
+    }
+    if (VOLUME_RANK_LOCAL_ICON_SET.has(candidate)) {
+      return `/assets/volume-rank/${candidate.toLowerCase()}.png`;
+    }
+  }
+  return buildVolumeRankFallbackIcon(symbol);
+}
+
+function resolveVolumeRankName(symbol) {
+  const raw = String(symbol || "").trim().toUpperCase();
+  if (!raw) return "Unknown";
+  for (const candidate of buildVolumeSymbolCandidates(raw)) {
+    if (VOLUME_RANK_NAME_MAP[candidate]) return VOLUME_RANK_NAME_MAP[candidate];
+  }
+  return raw.replace(/[-_]/g, " ").replace(/\s+/g, " ").trim();
 }
 
 function buildPriceSymbolLookup(rows = []) {
@@ -2227,9 +3977,33 @@ function getTidalMovement(deltaPct) {
 }
 
 function getTidalTier(rank) {
-  if (rank <= 3) return { key: "surface-crest", label: "Surface Crest" };
-  if (rank <= 10) return { key: "mid-current", label: "Mid Current" };
-  return { key: "deep-flow", label: "Deep Flow" };
+  if (rank <= 3) return { key: "surface-crest" };
+  if (rank <= 10) return { key: "mid-current" };
+  return { key: "deep-flow" };
+}
+
+function getVolumeRankWindowLabel(timeframe) {
+  const key = String(timeframe || "all").toLowerCase();
+  if (key === "24h") return "Window 24H";
+  if (key === "30d") return "Window 30D";
+  if (key === "7d") return "Window 7D";
+  if (key === "all") return "Window All";
+  return `Window ${key.toUpperCase()}`;
+}
+
+function buildTokenOrbStyle(symbol, rank = 0) {
+  const key = String(symbol || "").trim().toUpperCase();
+  const accent = VOLUME_RANK_ORB_ACCENTS[key] || { a: "rgba(146, 219, 255, 0.94)", b: "rgba(92, 145, 231, 0.82)" };
+  const shadowAlpha = rank === 1 ? 0.46 : rank <= 3 ? 0.34 : 0.24;
+  return `--orb-a:${accent.a};--orb-b:${accent.b};--orb-shadow:rgba(106, 186, 236, ${shadowAlpha});`;
+}
+
+function renderTokenOrb(symbol, rank = 0, sizeClass = "") {
+  const label = String(symbol || "?").trim().toUpperCase().slice(0, 3) || "?";
+  return `<span class="tidal-token-orb ${sizeClass}" style="${buildTokenOrbStyle(
+    symbol,
+    rank
+  )}" aria-hidden="true"><span>${escapeHtml(label)}</span></span>`;
 }
 
 function startOfUtcDay(ts) {
@@ -2251,14 +4025,14 @@ function startOfUtcMonth(ts) {
 
 function bucketStartForSeries(ts, seriesKey = activeSeries) {
   if (!Number.isFinite(ts)) return null;
-  if (seriesKey === "daily") return startOfUtcDay(ts);
+  if (seriesKey === "daily" || seriesKey === "live") return startOfUtcDay(ts);
   if (seriesKey === "weekly") return startOfUtcWeek(ts);
   return startOfUtcMonth(ts);
 }
 
 function getSeriesLookbackMs(seriesKey = activeSeries) {
   const day = 24 * 60 * 60 * 1000;
-  if (seriesKey === "daily") return 180 * day;
+  if (seriesKey === "daily" || seriesKey === "live") return 180 * day;
   if (seriesKey === "weekly") return 370 * day;
   return 3 * 365 * day;
 }
@@ -2289,33 +4063,13 @@ function isKnownTokenSymbol(rawSymbol) {
 }
 
 function getDefaultTokenSymbol() {
-  const ranked = Array.isArray(state.exchange?.volumeRank) ? state.exchange.volumeRank : [];
-  if (ranked.length) {
-    const candidate = resolveCanonicalTokenSymbol(ranked[0]?.symbol);
-    if (candidate) return candidate;
-  }
-  const exchangePrices = getExchangePriceRows();
-  if (exchangePrices.length) {
-    const candidate = resolveCanonicalTokenSymbol(exchangePrices[0]?.symbol);
-    if (candidate) return candidate;
-  }
-  return "";
+  return getPhaseOneTokenSymbol();
 }
 
 function ensureTokenSymbol() {
-  const current = resolveCanonicalTokenSymbol(state.tokenSymbol);
-  const hasUniverse = getExchangePriceRows().length > 0;
-  if (current && (!hasUniverse || isKnownTokenSymbol(current))) {
-    state.tokenSymbol = current;
-    return current;
-  }
-  const fallback = getDefaultTokenSymbol();
-  if (fallback) {
-    state.tokenSymbol = fallback;
-    return fallback;
-  }
-  state.tokenSymbol = "";
-  return "";
+  const symbol = resolveCanonicalTokenSymbol(state.tokenSymbol || "") || getDefaultTokenSymbol();
+  state.tokenSymbol = symbol;
+  return symbol;
 }
 
 function getTokenAnalyticsSnapshot(rawSymbol = state.tokenSymbol) {
@@ -2325,9 +4079,180 @@ function getTokenAnalyticsSnapshot(rawSymbol = state.tokenSymbol) {
   const snapshotSymbol = resolveCanonicalTokenSymbol(analytics.symbol || "");
   if (!requested || !snapshotSymbol || requested !== snapshotSymbol) return null;
   const timeframe = String(analytics.timeframe || "").toLowerCase();
-  const currentTf = String(state.timeframe || "").toLowerCase();
+  const currentTf = String(state.tokenTimeframe || "").toLowerCase();
   if (timeframe && currentTf && timeframe !== currentTf) return null;
   return analytics;
+}
+
+function buildTokenAnalyticsUiSignature(payload = null) {
+  if (!payload || typeof payload !== "object") return "";
+  const table = payload?.sections?.wallets?.positionTable || null;
+  const validation = table?.validation || payload?.meta?.validation || null;
+  const rows = Array.isArray(table?.rows) ? table.rows : [];
+  return JSON.stringify({
+    symbol: payload.symbol || null,
+    generatedAt: payload.generatedAt || null,
+    refreshedAt: validation?.refreshedAt || payload?.freshness?.updatedAt || null,
+    sourceLastSuccessAt: validation?.sourceLastSuccessAt || payload?.freshness?.sourceLastSuccessAt || null,
+    walletCount: table?.walletCount || 0,
+    positionCount: table?.positionCount || 0,
+    page: table?.page || 1,
+    sortKey: table?.sortKey || state.tokenWalletSortKey || "openedAt",
+    sortDir: table?.sortDir || state.tokenWalletSortDir || "asc",
+    rows: rows.map((row) => ({
+      wallet: row?.wallet || null,
+      openedAt: row?.openedAt || null,
+      direction: row?.direction || null,
+      positionSizeUsd: row?.positionSizeUsd || null,
+      positionPnlUsd: row?.positionPnlUsd ?? row?.unrealizedPnlUsd ?? row?.pnl ?? null,
+    })),
+  });
+}
+
+function buildWalletsUiSignature(payload = null) {
+  if (!payload || typeof payload !== "object") return "";
+  const rows = Array.isArray(payload.rows) ? payload.rows : [];
+  const parts = [
+    String(payload.page || 0),
+    String(payload.pages || 0),
+    String(payload.total || 0),
+    String(payload.counts?.totalWallets || 0),
+    String(payload.counts?.hiddenZeroTradeWallets || 0),
+    String(payload.generatedAt || 0),
+    String(payload.timeframe || ""),
+    String(payload.query?.q || ""),
+    String(payload.query?.page || ""),
+    String(payload.query?.pageSize || ""),
+    String(payload.query?.sort || ""),
+    String(payload.query?.dir || ""),
+  ];
+  for (const row of rows) {
+    if (!row || typeof row !== "object") continue;
+    parts.push(
+      [
+        String(row.wallet || ""),
+        String(row.updatedAt || row.lastActivity || row.lastOpenedAt || 0),
+        String(row.openPositions || 0),
+        String(row.trades || 0),
+        String(row.volumeUsdRaw ?? row.volumeUsd ?? 0),
+        String(row.pnlUsd ?? 0),
+        String(row.totalPnlUsd ?? 0),
+        String(row.firstTrade || 0),
+        String(row.lastTrade || 0),
+      ].join(":")
+    );
+  }
+  return parts.join("|");
+}
+
+function buildWalletProfileUiSignature(profile = null, selectedWallet = state.selectedWallet) {
+  const wallet = String(selectedWallet || profile?.wallet || "").trim();
+  if (!profile || !profile.summary) {
+    return wallet ? `loading:${wallet}` : "empty:none";
+  }
+  if (!profile.found) {
+    return `unavailable:${wallet || profile.wallet || ""}`;
+  }
+  const summary = profile.summary && typeof profile.summary === "object" ? profile.summary : {};
+  const positions = Array.isArray(profile.positions)
+    ? profile.positions
+    : Array.isArray(profile.positions?.positions)
+      ? profile.positions.positions
+      : [];
+  const concentration = Array.isArray(profile.symbolBreakdown)
+    ? profile.symbolBreakdown
+    : Array.isArray(summary.symbolBreakdown)
+      ? summary.symbolBreakdown
+      : [];
+  return JSON.stringify({
+    wallet: wallet || profile.wallet || "",
+    found: true,
+    freshness: summary.freshness || "",
+    openPositions: summary.openPositions ?? null,
+    pnlUsd: summary.pnlUsd ?? null,
+    unrealizedPnlUsd: toNum(extractUnrealizedPnlUsdFromSummary(summary), null),
+    exposureUsd: summary.exposureUsd ?? null,
+    accountEquityUsd: summary.accountEquityUsd ?? null,
+    drawdownPct: summary.drawdownPct ?? null,
+    returnPct: summary.returnPct ?? null,
+    lastActivityAt: summary.lastActivityAt ?? summary.lastTrade ?? null,
+    concentration: concentration.map((row) => [
+      row?.symbol || null,
+      row?.volumeUsd ?? null,
+      row?.sharePct ?? null,
+    ]),
+    positions: positions.map((row) => [
+      row?.symbol || null,
+      row?.side || null,
+      row?.positionUsd ?? row?.notionalUsd ?? row?.positionValueUsd ?? null,
+      row?.entry ?? null,
+      row?.mark ?? null,
+      extractUnrealizedPnlUsdFromRow(row),
+      row?.updatedAt ?? null,
+    ]),
+  });
+}
+
+function buildExchangeUiSignature(payload = null) {
+  if (!payload || typeof payload !== "object") return "";
+  const kpis = payload.kpis && typeof payload.kpis === "object" ? payload.kpis : {};
+  const rows = Array.isArray(payload.volumeRank) ? payload.volumeRank : [];
+  return JSON.stringify({
+    timeframe: payload.timeframe || state.timeframe || "all",
+    generatedAt: payload.generatedAt || 0,
+    totalAccounts: kpis.totalAccounts ?? null,
+    activeWallets: kpis.activeWallets ?? null,
+    totalTrades: kpis.totalTrades ?? null,
+    totalVolumeUsd: kpis.totalVolumeUsd ?? null,
+    totalFeesUsd: kpis.totalFeesUsd ?? null,
+    openInterestAtEnd: kpis.openInterestAtEnd ?? null,
+    volumeRank: rows.map((row) => [
+      row?.symbol || null,
+      row?.rank ?? null,
+      row?.volume_24h_usd ?? row?.volume_usd ?? row?.volumeUsd ?? null,
+      row?.sharePct ?? null,
+      row?.shareChange24hPct ?? null,
+    ]),
+  });
+}
+
+function buildVolumeSeriesUiSignature(payload = null) {
+  if (!payload || typeof payload !== "object") return "";
+  const meta = payload.meta && typeof payload.meta === "object" ? payload.meta : {};
+  const seriesNames = ["accounts", "activeWallets", "trades", "volume", "fees", "openInterest"];
+  const compact = { generatedAt: payload.generatedAt || 0, trackedThroughDate: meta.trackedThroughDate || null };
+  for (const key of seriesNames) {
+    const group = payload[key] && typeof payload[key] === "object" ? payload[key] : {};
+    compact[key] = {};
+    for (const bucket of ["live", "daily", "weekly", "monthly"]) {
+      const rows = Array.isArray(group[bucket]) ? group[bucket] : [];
+      const last = rows.length ? rows[rows.length - 1] : null;
+      compact[key][bucket] = [rows.length, last?.timestamp ?? null, last?.value ?? null];
+    }
+  }
+  return JSON.stringify(compact);
+}
+
+function getChartLayoutSignature() {
+  const volumeChart = el("volumeChart");
+  if (!volumeChart) return "";
+  const chartDateBand = el("chartDateBand");
+  const chartNavigator = el("chartNavigator");
+  const volumeRect = volumeChart.getBoundingClientRect();
+  const bandRect = chartDateBand ? chartDateBand.getBoundingClientRect() : null;
+  const navigatorRect = chartNavigator ? chartNavigator.getBoundingClientRect() : null;
+  return [
+    state.exchangeChartMetric || "volume",
+    activeSeries,
+    activeChartType,
+    activeChartTimeMode,
+    Math.round(volumeRect.width || 0),
+    Math.round(volumeRect.height || 0),
+    Math.round(bandRect?.width || 0),
+    Math.round(bandRect?.height || 0),
+    Math.round(navigatorRect?.width || 0),
+    Math.round(navigatorRect?.height || 0),
+  ].join("|");
 }
 
 function getTokenDataContext(rawSymbol = state.tokenSymbol) {
@@ -2374,6 +4299,266 @@ function getTokenDataContext(rawSymbol = state.tokenSymbol) {
   };
 }
 
+function buildTokenPhaseOneMetric({
+  label,
+  value = null,
+  unit = "number",
+  status = "partial",
+  note = null,
+  extra = null,
+} = {}) {
+  return {
+    label,
+    value: value !== undefined && value !== null && Number.isFinite(Number(value)) ? Number(value) : null,
+    unit,
+    status,
+    note,
+    extra: extra && typeof extra === "object" ? { ...extra } : null,
+  };
+}
+
+function findSeriesValueNearTimestamp(series = [], targetTs = 0) {
+  let best = null;
+  let bestDistance = Infinity;
+  for (const row of Array.isArray(series) ? series : []) {
+    const ts = toNum(row?.timestamp, NaN);
+    const value = toNum(row?.value, NaN);
+    if (!Number.isFinite(ts) || !Number.isFinite(value)) continue;
+    const distance = Math.abs(ts - targetTs);
+    if (distance < bestDistance) {
+      best = value;
+      bestDistance = distance;
+    }
+  }
+  return best;
+}
+
+function buildTokenPhaseOneClientPayload(rawSymbol = state.tokenSymbol) {
+  const tokenContext = getTokenDataContext(rawSymbol);
+  const symbol = tokenContext?.symbol || getPhaseOneTokenSymbol();
+  const now = Date.now();
+  const candleRows = sortByTimestampAsc(
+    tokenContext.markCandles.length ? tokenContext.markCandles : tokenContext.candles,
+    "t"
+  ).slice(-240);
+  const priceSeries = candleRows
+    .map((row) => ({
+      timestamp: toNum(row?.t, NaN),
+      value: toNum(row?.c, NaN),
+    }))
+    .filter((row) => Number.isFinite(row.timestamp) && Number.isFinite(row.value));
+  const priceNow = toNum(
+    tokenContext.priceRow?.mark !== undefined ? tokenContext.priceRow.mark : priceSeries[priceSeries.length - 1]?.value,
+    NaN
+  );
+  const yesterdayPrice = toNum(tokenContext.priceRow?.yesterday_price, NaN);
+  const fallback24hPrice = findSeriesValueNearTimestamp(priceSeries, now - 24 * 60 * 60 * 1000);
+  const anchor24hPrice = Number.isFinite(yesterdayPrice) && yesterdayPrice > 0 ? yesterdayPrice : fallback24hPrice;
+  const priceChange24h =
+    Number.isFinite(priceNow) && Number.isFinite(anchor24hPrice) && anchor24hPrice > 0
+      ? ((priceNow - anchor24hPrice) / anchor24hPrice) * 100
+      : null;
+
+  const openInterest = toNum(tokenContext.priceRow?.open_interest, NaN);
+  const oiNow = Number.isFinite(priceNow) && Number.isFinite(openInterest) ? priceNow * openInterest : null;
+  const oiSeries = priceSeries.map((row) => ({
+    timestamp: row.timestamp,
+    value:
+      Number.isFinite(oiNow) && Number.isFinite(priceNow) && priceNow > 0
+        ? Math.max(0, oiNow * (row.value / priceNow))
+        : null,
+  })).filter((row) => Number.isFinite(row.value));
+  const oi24hAnchor = findSeriesValueNearTimestamp(oiSeries, now - 24 * 60 * 60 * 1000);
+  const oiChange24h =
+    Number.isFinite(oiNow) && Number.isFinite(oi24hAnchor) && oi24hAnchor > 0
+      ? ((oiNow - oi24hAnchor) / oi24hAnchor) * 100
+      : 0;
+
+  const fundingCurrent = toNum(tokenContext.priceRow?.funding, NaN) * 100;
+  const fundingRows = sortByTimestampAsc(tokenContext.fundingRows, "createdAt")
+    .slice(-64)
+    .map((row) => ({
+      timestamp: toNum(row?.createdAt, NaN),
+      value: toNum(row?.fundingRate, NaN) * 100,
+    }))
+    .filter((row) => Number.isFinite(row.timestamp) && Number.isFinite(row.value));
+  const fundingTrend =
+    fundingRows.length >= 2
+      ? toNum(fundingRows[fundingRows.length - 1]?.value, 0) - toNum(fundingRows[0]?.value, 0)
+      : 0;
+
+  const trades24h = (Array.isArray(tokenContext.publicTrades) ? tokenContext.publicTrades : [])
+    .map((row) => ({
+      timestamp: toNum(row?.timestamp, NaN),
+      notionalUsd: Math.abs(toNum(row?.notionalUsd, 0)),
+      side: normalizeTokenTradeSide(row?.side),
+      cause: String(row?.cause || "").toLowerCase(),
+    }))
+    .filter((row) => Number.isFinite(row.timestamp) && row.timestamp >= now - 24 * 60 * 60 * 1000);
+
+  let longLiquidations24h = 0;
+  let shortLiquidations24h = 0;
+  for (const row of trades24h) {
+    if (!isLiquidationCauseToken(row.cause)) continue;
+    const isBuy = row.side === "buy" || row.side === "b" || row.side === "open_long" || row.side === "close_short";
+    const isSell = row.side === "sell" || row.side === "s" || row.side === "open_short" || row.side === "close_long";
+    if (isSell) longLiquidations24h += row.notionalUsd;
+    else if (isBuy) shortLiquidations24h += row.notionalUsd;
+  }
+  const liquidations24h = longLiquidations24h + shortLiquidations24h;
+  const buyNotional24h = trades24h.reduce(
+    (total, row) => total + (row.side === "buy" || row.side === "b" ? row.notionalUsd : 0),
+    0
+  );
+  const sellNotional24h = trades24h.reduce(
+    (total, row) => total + (row.side === "sell" || row.side === "s" ? row.notionalUsd : 0),
+    0
+  );
+  const buySellRatio =
+    sellNotional24h > 0
+      ? buyNotional24h / sellNotional24h
+      : buyNotional24h > 0
+      ? null
+      : 1;
+
+  const recentHigh = priceSeries.length
+    ? Math.max(...priceSeries.slice(-48).map((row) => toNum(row.value, 0)))
+    : NaN;
+  const recentLow = priceSeries.length
+    ? Math.min(...priceSeries.slice(-48).map((row) => toNum(row.value, 0)))
+    : NaN;
+
+  let biasLabel = "Neutral";
+  let actionLabel = "No Trade";
+  let biasTone = "neutral";
+  const reasoning = [];
+  const pushReason = (tone, title, detail) => reasoning.push({ tone, title, detail });
+
+  if (toNum(priceChange24h, 0) > 0.3 && toNum(oiChange24h, 0) > 0.3) {
+    biasLabel = "Bullish";
+    actionLabel = "Long Setup";
+    biasTone = "bullish";
+    pushReason("bullish", "OI is rising with price", "Fresh positioning is building with the move instead of the rally being only short covering.");
+  } else if (toNum(priceChange24h, 0) < -0.3 && toNum(oiChange24h, 0) > 0.3) {
+    biasLabel = "Bearish";
+    actionLabel = "Short Setup";
+    biasTone = "bearish";
+    pushReason("bearish", "OI is rising while price is falling", "That usually points to new short buildup rather than a simple unwind.");
+  } else if (Math.abs(toNum(fundingCurrent, 0)) >= 0.02 || liquidations24h > 0) {
+    biasLabel = "High Risk / Choppy";
+    actionLabel = "No Trade";
+    biasTone = "risk";
+    pushReason("risk", "Funding or liquidation pressure is elevated", "Crowded positioning raises squeeze and reversal risk for fresh entries.");
+  } else {
+    pushReason("neutral", "Signals are mixed", "Price, open interest, and funding are not aligned enough for a clean directional read.");
+  }
+
+  if (Math.abs(toNum(fundingCurrent, 0)) >= 0.02) {
+    pushReason(
+      toNum(fundingCurrent, 0) > 0 ? "risk" : "bullish",
+      "Funding is no longer neutral",
+      toNum(fundingCurrent, 0) > 0
+        ? "Positive funding says longs are paying up, which can make the tape more fragile."
+        : "Negative funding says shorts are leaning harder into the move."
+    );
+  } else {
+    pushReason("neutral", "Funding remains relatively calm", "The market is not showing extreme crowding from funding alone.");
+  }
+  pushReason(
+    buySellRatio > 1 ? "bullish" : buySellRatio < 1 ? "bearish" : "neutral",
+    "Aggressive flow is tilting " + (buySellRatio > 1 ? "buy-side" : buySellRatio < 1 ? "sell-side" : "flat"),
+    `Recent public trade flow is ${buySellRatio > 1 ? "buy-led" : buySellRatio < 1 ? "sell-led" : "roughly balanced"} in the last 24 hours.`
+  );
+
+  return {
+    generatedAt: now,
+    symbol,
+    timeframe: normalizeTokenTimeframe(state.tokenTimeframe),
+    freshness: {
+      updatedAt: Math.max(
+        toNum(tokenContext.priceRow?.updatedAt, 0),
+        toNum(priceSeries[priceSeries.length - 1]?.timestamp, 0),
+        toNum(fundingRows[fundingRows.length - 1]?.timestamp, 0),
+        toNum(trades24h[trades24h.length - 1]?.timestamp, 0),
+        now
+      ),
+    },
+    hero: {
+      currentPrice: buildTokenPhaseOneMetric({ label: "BTC Price", value: priceNow, unit: "price", status: "partial" }),
+      priceChange24h: buildTokenPhaseOneMetric({ label: "24H Change", value: priceChange24h, unit: "pct", status: "partial" }),
+      openInterestUsd: buildTokenPhaseOneMetric({ label: "Open Interest", value: oiNow, unit: "usd", status: "estimated" }),
+      fundingRatePct: buildTokenPhaseOneMetric({ label: "Funding Rate", value: fundingCurrent, unit: "pct", status: "partial" }),
+      longShortRatio: buildTokenPhaseOneMetric({
+        label: "Long / Short Ratio",
+        value: buySellRatio,
+        unit: "ratio",
+        status: "estimated",
+        note: "Phase-1 proxy from recent aggressive buy vs sell notional.",
+        extra: {
+          longWallets: 0,
+          shortWallets: 0,
+        },
+      }),
+      liquidations24hUsd: buildTokenPhaseOneMetric({ label: "24H Liquidations", value: liquidations24h, unit: "usd", status: "partial" }),
+    },
+    decision: {
+      summary: {
+        bias: { label: biasLabel, code: biasLabel.toLowerCase().replace(/[^a-z]+/g, "_"), tone: biasTone, score: 60 },
+        action: {
+          label: actionLabel,
+          code: actionLabel === "Long Setup" ? "favor_longs" : actionLabel === "Short Setup" ? "favor_shorts" : "wait",
+          note:
+            actionLabel === "Long Setup"
+              ? "Trend and positioning are supportive enough for a long-biased setup."
+              : actionLabel === "Short Setup"
+              ? "Downside positioning pressure is cleaner than the long side right now."
+              : "Signals are mixed enough that waiting is cleaner than forcing a trade.",
+        },
+        crowding: { score: Math.abs(toNum(fundingCurrent, 0)) >= 0.02 ? 72 : 34 },
+        quality: { code: biasLabel === "High Risk / Choppy" ? "exhaustion_risk" : "constructive_continuation" },
+      },
+      reasoning: reasoning.slice(0, 5),
+    },
+    focus: {
+      squeezeRisk: Math.abs(toNum(fundingCurrent, 0)) >= 0.02 || liquidations24h > 0 ? "elevated" : "normal",
+    },
+    sections: {
+      market: {
+        trend: {
+          support: Number.isFinite(recentLow) ? recentLow : null,
+          resistance: Number.isFinite(recentHigh) ? recentHigh : null,
+        },
+      },
+      derivatives: {
+        fundingRate: buildTokenPhaseOneMetric({ label: "Funding Rate", value: fundingCurrent, unit: "pct", status: "partial" }),
+        fundingTrend: buildTokenPhaseOneMetric({
+          label: "Funding Trend",
+          value: fundingTrend,
+          unit: "pct",
+          status: "partial",
+          note: "Change across the retained funding window.",
+        }),
+        longLiquidations24h: buildTokenPhaseOneMetric({ label: "Long Liquidations", value: longLiquidations24h, unit: "usd", status: "partial" }),
+        shortLiquidations24h: buildTokenPhaseOneMetric({ label: "Short Liquidations", value: shortLiquidations24h, unit: "usd", status: "partial" }),
+      },
+      wallets: {
+        longShortRatio: buildTokenPhaseOneMetric({
+          label: "Long / Short Ratio",
+          value: buySellRatio,
+          unit: "ratio",
+          status: "estimated",
+          note: "Phase-1 proxy from recent aggressive buy vs sell notional.",
+          extra: { longWallets: 0, shortWallets: 0 },
+        }),
+      },
+    },
+    charts: {
+      price: { status: "partial", series: priceSeries },
+      oi: { status: "estimated", series: oiSeries },
+    },
+  };
+}
+
 function sortByTimestampAsc(rows = [], tsKey = "timestamp") {
   return [...rows].sort((a, b) => toNum(a?.[tsKey], 0) - toNum(b?.[tsKey], 0));
 }
@@ -2382,6 +4567,7 @@ function aggregateBucketed(rows = [], seriesKey = activeSeries, options = {}) {
   const lookbackMs = Number(options.lookbackMs || getSeriesLookbackMs(seriesKey));
   const now = Date.now();
   const map = new Map();
+  const aggregationMode = String(options.mode || "").toLowerCase();
   rows.forEach((row) => {
     const ts = toNum(row?.timestamp, NaN);
     if (!Number.isFinite(ts)) return;
@@ -2393,9 +4579,16 @@ function aggregateBucketed(rows = [], seriesKey = activeSeries, options = {}) {
       bucket = { timestamp: bucketStart, value: 0, count: 0, longValue: 0, shortValue: 0 };
       map.set(bucketStart, bucket);
     }
-    bucket.value += toNum(row?.value, 0);
-    bucket.longValue += toNum(row?.longValue, 0);
-    bucket.shortValue += toNum(row?.shortValue, 0);
+    if (aggregationMode === "last") {
+      bucket.value = toNum(row?.value, 0);
+      bucket.longValue = toNum(row?.longValue, 0);
+      bucket.shortValue = toNum(row?.shortValue, 0);
+      bucket.timestamp = ts;
+    } else {
+      bucket.value += toNum(row?.value, 0);
+      bucket.longValue += toNum(row?.longValue, 0);
+      bucket.shortValue += toNum(row?.shortValue, 0);
+    }
     bucket.count += 1;
   });
   return Array.from(map.values())
@@ -2632,10 +4825,10 @@ function getTokenMetricNarrative(metric, symbol) {
     funding: `Directional crowding signal for ${symbol} with explicit baseline context.`,
     liquidations: `Stress map showing liquidation pressure and spike windows for ${symbol}.`,
     netflow: `Directional capital pressure for ${symbol} via signed flow across intervals.`,
-    wallet_activity: `Behavioral intelligence stream of token-linked activity for ${symbol}.`,
-    volume: `Per-token notional turnover and dominance rhythm for ${symbol}.`,
+    wallet_activity: `Behavioral intelligence stream of coin-linked activity for ${symbol}.`,
+    volume: `Per-coin notional turnover and dominance rhythm for ${symbol}.`,
   };
-  return map[metric] || `Per-token analytics intelligence for ${symbol}.`;
+  return map[metric] || `Per-coin analytics intelligence for ${symbol}.`;
 }
 
 function formatTokenAnalyticsSource(tokenAnalytics, metric) {
@@ -3004,6 +5197,867 @@ function renderTokenInsights(kpiModel) {
   }
 }
 
+function getTokenPayload() {
+  const symbol = ensureTokenSymbol();
+  if (!symbol) return null;
+  const snapshot = getTokenAnalyticsSnapshot(symbol);
+  if (snapshot) return snapshot;
+  if (symbol === getPhaseOneTokenSymbol()) {
+    return buildTokenPhaseOneClientPayload(symbol);
+  }
+  return null;
+}
+
+function formatTokenMetricValue(metric = {}) {
+  const value = toNum(metric?.value, NaN);
+  const unit = String(metric?.unit || "number");
+  if (!Number.isFinite(value)) return "-";
+  if (unit === "price") {
+    if (Math.abs(value) >= 1000) return `$${fmt(value, 2)}`;
+    if (Math.abs(value) >= 1) return `$${fmt(value, 4)}`;
+    return `$${fmt(value, 6)}`;
+  }
+  if (unit === "usd") return `$${fmtCompact(value)}`;
+  if (unit === "pct") return `${fmtSigned(value, Math.abs(value) < 0.1 ? 4 : 2)}%`;
+  if (unit === "count") return fmt(value, 0);
+  if (unit === "ratio") return `${fmt(value, 2)}x`;
+  return fmt(value, 2);
+}
+
+function formatTokenStatus(status) {
+  const raw = String(status || "unavailable").trim().toLowerCase();
+  if (raw === "exact") return "Exact";
+  if (raw === "estimated") return "Estimated";
+  if (raw === "partial") return "Partial";
+  if (raw === "derived") return "Derived";
+  return "Unavailable";
+}
+
+function tokenStatusTone(status) {
+  const raw = String(status || "unavailable").trim().toLowerCase();
+  if (raw === "exact") return "good";
+  if (raw === "estimated") return "warn";
+  if (raw === "partial") return "warn";
+  return "muted";
+}
+
+function formatCoverageWindow(coverage = {}) {
+  const start = coverage?.start ? fmtDateOnly(coverage.start) : null;
+  const end = coverage?.end ? fmtDateOnly(coverage.end) : null;
+  const complete = coverage?.completeThrough ? fmtDateOnly(coverage.completeThrough) : null;
+  if (complete) return `complete through ${complete}`;
+  if (start && end) return `${start} -> ${end}`;
+  if (end) return `through ${end}`;
+  return null;
+}
+
+function formatTokenMetricMeta(metric = {}) {
+  const status = formatTokenStatus(metric?.status);
+  const method = String(metric?.method || "").replace(/_/g, " ");
+  const coverage = formatCoverageWindow(metric?.coverage || {});
+  return [status, method || null, coverage, metric?.note || null].filter(Boolean).join(" · ");
+}
+
+function tokenDecisionToneClass(tone) {
+  const value = String(tone || "").trim().toLowerCase();
+  if (value === "bullish" || value === "good") return "bullish";
+  if (value === "bearish" || value === "bad") return "bearish";
+  if (value === "risk" || value === "warn") return "risk";
+  return "neutral";
+}
+
+function buildTokenDecisionCard(item = {}) {
+  const tone = tokenDecisionToneClass(item?.tone);
+  const score = Number.isFinite(toNum(item?.score, NaN)) ? ` · ${fmt(toNum(item.score, 0), 0)}` : "";
+  return `<article class="token-decision-card ${escapeHtml(tone)}">
+    <div class="token-decision-label">${escapeHtml(item?.label || "-")}</div>
+    <div class="token-decision-value">${escapeHtml(String(item?.display || item?.label || "-"))}</div>
+    <div class="token-decision-meta">${escapeHtml(`${item?.note || "-"}${score}`)}</div>
+  </article>`;
+}
+
+function buildTokenScoreBar(item = {}) {
+  const tone = tokenDecisionToneClass(item?.tone);
+  const value = clamp(toNum(item?.value, 0), 0, 100);
+  return `<div class="token-score-row">
+    <div class="token-score-label">${escapeHtml(item?.label || "-")}</div>
+    <div class="token-score-track"><div class="token-score-fill ${escapeHtml(tone)}" style="width:${value}%"></div></div>
+    <div class="token-score-value">${escapeHtml(fmt(value, 0))}/100</div>
+  </div>`;
+}
+
+function renderTokenDecisionSummary(payload = null) {
+  const decisionCardsHost = el("token-decision-cards");
+  const scoreBarsHost = el("token-score-bars");
+  const reasoningHost = el("token-reasoning-list");
+
+  if (!payload?.decision) {
+    setText("token-confidence-pill", "-");
+    setText("token-action-pill", "-");
+    setText("token-decision-blurb", "Waiting for a token symbol to produce a directional read.");
+    if (decisionCardsHost) decisionCardsHost.innerHTML = "<div class='muted'>No decision summary yet.</div>";
+    if (scoreBarsHost) scoreBarsHost.innerHTML = "<div class='muted'>No score model yet.</div>";
+    if (reasoningHost) reasoningHost.innerHTML = "<div class='muted'>No reasoning available yet.</div>";
+    return;
+  }
+
+  const summary = payload.decision.summary || {};
+  const cards = [
+    {
+      label: "Bias",
+      display: summary.bias?.label || "-",
+      tone: summary.bias?.tone,
+      note: summary.bias?.note,
+      score: summary.bias?.score,
+    },
+    {
+      label: "Crowding",
+      display: summary.crowding?.label || "-",
+      tone: summary.crowding?.tone,
+      note: summary.crowding?.note,
+      score: summary.crowding?.score,
+    },
+    {
+      label: "Positioning Regime",
+      display: summary.positioning?.label || "-",
+      tone: summary.positioning?.tone,
+      note: summary.positioning?.note,
+    },
+    {
+      label: "Setup Quality",
+      display: summary.quality?.label || "-",
+      tone: summary.quality?.tone,
+      note: summary.quality?.note,
+      score: summary.quality?.score,
+    },
+    {
+      label: "Action Stance",
+      display: summary.action?.label || "-",
+      tone: summary.action?.tone,
+      note: summary.action?.note,
+    },
+    {
+      label: "Confidence",
+      display: summary.confidence?.label || "-",
+      tone: summary.confidence?.tone,
+      note: summary.confidence?.note,
+      score: summary.confidence?.score,
+    },
+  ];
+
+  setText(
+    "token-confidence-pill",
+    summary.confidence?.score !== undefined ? `${summary.confidence.label} · ${fmt(toNum(summary.confidence.score, 0), 0)}/100` : "-"
+  );
+  setText("token-action-pill", summary.action?.label || "-");
+  setText("token-decision-blurb", payload.decision.verdict || "No clear trading verdict yet.");
+
+  if (decisionCardsHost) {
+    decisionCardsHost.innerHTML = cards.map((item) => buildTokenDecisionCard(item)).join("");
+  }
+  if (scoreBarsHost) {
+    const scores = Array.isArray(payload.decision.scores) ? payload.decision.scores : [];
+    scoreBarsHost.innerHTML = scores.length
+      ? scores.map((item) => buildTokenScoreBar(item)).join("")
+      : "<div class='muted'>No score model yet.</div>";
+  }
+  if (reasoningHost) {
+    const reasoning = Array.isArray(payload.decision.reasoning) ? payload.decision.reasoning : [];
+    reasoningHost.innerHTML = reasoning.length
+      ? reasoning
+          .map(
+            (item) => `<article class="token-reasoning-item ${escapeHtml(tokenDecisionToneClass(item?.tone))}">
+              <div class="token-reasoning-head">
+                <strong>${escapeHtml(item?.title || "Reason")}</strong>
+                <span class="token-reasoning-rank">Driver ${escapeHtml(String(item?.rank || "-"))}</span>
+              </div>
+              <p>${escapeHtml(item?.detail || "No explanation available.")}</p>
+            </article>`
+          )
+          .join("")
+      : "<div class='muted'>No reasoning available yet.</div>";
+  }
+}
+
+function buildTokenMetricItem(metric = {}) {
+  const tone = tokenStatusTone(metric?.status);
+  return `<div class="token-metric-item">
+    <div class="token-metric-label-row">
+      <span class="token-metric-label">${escapeHtml(metric?.label || metric?.key || "-")}</span>
+      <span class="token-status-pill ${escapeHtml(tone)}">${escapeHtml(formatTokenStatus(metric?.status))}</span>
+    </div>
+    <div class="token-metric-value">${escapeHtml(formatTokenMetricValue(metric))}</div>
+    <div class="token-metric-meta">${escapeHtml(formatTokenMetricMeta(metric) || "No coverage metadata.")}</div>
+  </div>`;
+}
+
+function renderTokenMetricList(hostId, metrics = []) {
+  const host = el(hostId);
+  if (!host) return;
+  const rows = (Array.isArray(metrics) ? metrics : []).filter(Boolean);
+  host.innerHTML = rows.length
+    ? rows.map((metric) => buildTokenMetricItem(metric)).join("")
+    : "<div class='muted'>No metrics available yet.</div>";
+}
+
+function buildTokenHeroCard(metric = {}, extraMeta = null) {
+  return `<article class="kpi-card token-hero-card">
+    <div class="kpi-title">${escapeHtml(metric?.label || metric?.key || "-")}</div>
+    <div class="kpi-value">${escapeHtml(formatTokenMetricValue(metric))}</div>
+    <div class="kpi-meta">${escapeHtml(extraMeta || formatTokenMetricMeta(metric) || "-")}</div>
+  </article>`;
+}
+
+function chartSeriesBounds(chart = {}) {
+  const series = Array.isArray(chart?.series) ? chart.series : [];
+  if (!series.length) return null;
+  const values = [];
+  series.forEach((row) => {
+    if (chart.mode === "stacked_split") {
+      values.push(toNum(row?.longValue, 0) + toNum(row?.shortValue, 0));
+    } else {
+      values.push(toNum(row?.value, 0));
+    }
+  });
+  if (!values.length) return null;
+  let min = Math.min(...values);
+  let max = Math.max(...values);
+  if (chart.mode === "diverging" || chart.mode === "line_zero") {
+    min = Math.min(min, 0);
+    max = Math.max(max, 0);
+  } else {
+    min = Math.min(min, 0);
+  }
+  if (min === max) {
+    max = min + 1;
+  }
+  return { min, max, span: max - min };
+}
+
+function chartY(value, bounds, height, padding, mode = "line") {
+  const min = bounds?.min ?? 0;
+  const span = bounds?.span ?? 1;
+  const usableHeight = height - padding * 2;
+  const ratio = span > 0 ? (toNum(value, 0) - min) / span : 0.5;
+  const y = height - padding - ratio * usableHeight;
+  return clamp(y, padding, height - padding);
+}
+
+function buildTokenChartSvg(chart = {}, options = {}) {
+  const series = Array.isArray(chart?.series) ? chart.series : [];
+  if (!series.length) {
+    return "<div class='muted'>No chart data available.</div>";
+  }
+  const compact = Boolean(options.compact);
+  const width = compact ? 320 : 920;
+  const height = compact ? 120 : 280;
+  const padding = compact ? 10 : 16;
+  const bounds = chartSeriesBounds(chart);
+  if (!bounds) return "<div class='muted'>No chart data available.</div>";
+  const step = series.length > 1 ? (width - padding * 2) / (series.length - 1) : 0;
+  const zeroY = chartY(0, bounds, height, padding, chart.mode);
+
+  if (chart.mode === "bars" || chart.mode === "diverging" || chart.mode === "stacked_split") {
+    const barWidth = Math.max(2, Math.floor((width - padding * 2) / Math.max(series.length, 1) * 0.72));
+    const bars = series
+      .map((row, index) => {
+        const x = padding + index * Math.max(step, 1) - barWidth / 2;
+        if (chart.mode === "stacked_split") {
+          const total = toNum(row?.longValue, 0) + toNum(row?.shortValue, 0);
+          const totalY = chartY(total, bounds, height, padding, chart.mode);
+          const totalHeight = Math.max(2, zeroY - totalY);
+          const splitTotal = Math.max(total, 1);
+          const longHeight = Math.max(1, totalHeight * (toNum(row?.longValue, 0) / splitTotal));
+          const shortHeight = Math.max(1, totalHeight - longHeight);
+          return `<g>
+            <rect class="token-chart-bar short" x="${x}" y="${zeroY - shortHeight}" width="${barWidth}" height="${shortHeight}" rx="2"></rect>
+            <rect class="token-chart-bar long" x="${x}" y="${zeroY - shortHeight - longHeight}" width="${barWidth}" height="${longHeight}" rx="2"></rect>
+          </g>`;
+        }
+        const value = toNum(row?.value, 0);
+        const y = chartY(value, bounds, height, padding, chart.mode);
+        const top = Math.min(y, zeroY);
+        const barHeight = Math.max(2, Math.abs(zeroY - y));
+        const tone = chart.mode === "diverging" ? (value >= 0 ? "positive" : "negative") : "primary";
+        return `<rect class="token-chart-bar ${tone}" x="${x}" y="${top}" width="${barWidth}" height="${barHeight}" rx="2"></rect>`;
+      })
+      .join("");
+    return `<svg viewBox="0 0 ${width} ${height}" class="token-chart-svg ${compact ? "compact" : "full"}">
+      <line class="token-chart-zero" x1="${padding}" y1="${zeroY}" x2="${width - padding}" y2="${zeroY}"></line>
+      ${bars}
+    </svg>`;
+  }
+
+  const points = series.map((row, index) => {
+    const x = padding + (series.length === 1 ? (width - padding * 2) / 2 : index * step);
+    const y = chartY(row?.value, bounds, height, padding, chart.mode);
+    return { x, y };
+  });
+  const linePath = points
+    .map((point, index) => `${index === 0 ? "M" : "L"} ${point.x.toFixed(2)} ${point.y.toFixed(2)}`)
+    .join(" ");
+  const areaPath =
+    chart.mode === "line"
+      ? `${linePath} L ${(points[points.length - 1] || {}).x || width - padding} ${height - padding} L ${(points[0] || {}).x || padding} ${height - padding} Z`
+      : "";
+  return `<svg viewBox="0 0 ${width} ${height}" class="token-chart-svg ${compact ? "compact" : "full"}">
+    ${
+      chart.mode === "line_zero"
+        ? `<line class="token-chart-zero" x1="${padding}" y1="${zeroY}" x2="${width - padding}" y2="${zeroY}"></line>`
+        : ""
+    }
+    ${areaPath ? `<path class="token-chart-area" d="${areaPath}"></path>` : ""}
+    <path class="token-chart-line" d="${linePath}"></path>
+  </svg>`;
+}
+
+function renderTokenChart(hostId, chart = null, metaId = null) {
+  const host = el(hostId);
+  if (!host) return;
+  if (!chart || !Array.isArray(chart.series) || !chart.series.length) {
+    host.innerHTML = "<div class='muted'>No chart data available yet.</div>";
+    if (metaId) setText(metaId, "No retained history for this chart yet.");
+    return;
+  }
+  host.innerHTML = buildTokenChartSvg(chart, { compact: false });
+  if (metaId) {
+    setText(
+      metaId,
+      [formatTokenStatus(chart.status), chart.coverageNote || null].filter(Boolean).join(" · ")
+    );
+  }
+}
+
+function renderTokenMiniCharts(payload = null) {
+  const host = el("token-mini-charts");
+  if (!host) return;
+  const charts = payload?.charts || {};
+  const focusKey =
+    {
+      oi: "oi",
+      funding: "funding",
+      liquidations: "liquidations",
+      netflow: "delta",
+      wallet_activity: "walletActivity",
+      volume: "volume",
+    }[normalizeAnalyticsTab(state.analyticsTab)] || "oi";
+  const order = [
+    ["volume", "Volume"],
+    ["oi", "Open Interest"],
+    ["funding", "Funding"],
+    ["delta", "Buy / Sell Delta"],
+    ["depth", "Depth Zones"],
+    ["liquidations", "Liquidations"],
+    ["walletActivity", "Tracked Wallet Activity"],
+  ];
+  host.innerHTML = order
+    .filter(([key]) => key !== focusKey)
+    .map(([key, label]) => {
+      const chart = charts[key];
+      const svg = chart ? buildTokenChartSvg(chart, { compact: true }) : "<div class='muted'>No chart data.</div>";
+      const meta = chart ? `${formatTokenStatus(chart.status)} · ${chart.coverageNote || "retained history"}` : "No chart data";
+      return `<article class="panel token-mini-chart-card">
+        <div class="panel-header">
+          <h2>${escapeHtml(label)}</h2>
+          <span class="muted-pill">${escapeHtml(chart ? formatTokenStatus(chart.status) : "Unavailable")}</span>
+        </div>
+        <div class="token-mini-chart-canvas">${svg}</div>
+        <p class="ops-meta">${escapeHtml(meta)}</p>
+      </article>`;
+    })
+    .join("");
+}
+
+function renderTokenRankList(hostId, rows = [], formatter) {
+  const host = el(hostId);
+  if (!host) return;
+  const items = (Array.isArray(rows) ? rows : []).slice(0, 10);
+  host.innerHTML = items.length
+    ? items
+        .map((row, index) => formatter(row, index))
+        .join("")
+    : "<div class='muted'>No rows available yet.</div>";
+}
+
+function syncTokenWalletSortIndicators() {
+  const currentKey = String(state.tokenWalletSortKey || "openedAt");
+  const currentDir = String(state.tokenWalletSortDir || "asc").toLowerCase() === "asc" ? "asc" : "desc";
+  document.querySelectorAll("[data-token-wallet-sort-key]").forEach((node) => {
+    const key = String(node.getAttribute("data-token-wallet-sort-key") || "").trim();
+    const active = key === currentKey;
+    node.classList.toggle("active", active);
+    node.setAttribute("aria-sort", active ? (currentDir === "asc" ? "ascending" : "descending") : "none");
+    const indicator = node.querySelector("[data-token-wallet-sort-indicator]");
+    if (indicator) {
+      indicator.textContent = active ? (currentDir === "asc" ? "↑" : "↓") : "↕";
+    }
+  });
+}
+
+function compareTokenWalletRows(left = {}, right = {}, sortKey = "openedAt", sortDir = "asc") {
+  const dir = String(sortDir || "asc").toLowerCase() === "asc" ? 1 : -1;
+  const leftWallet = String(left?.wallet || "");
+  const rightWallet = String(right?.wallet || "");
+  const numericSorters = {
+    entryPrice: (row) => toNum(row?.entryPrice, NaN),
+    positionSizeUsd: (row) => toNum(row?.positionSizeUsd, NaN),
+    positionPnlUsd: (row) => toNum(row?.positionPnlUsd ?? row?.unrealizedPnlUsd ?? row?.pnl, NaN),
+    openedAt: (row) => Number(row?.openedAt || 0),
+    totalOpenPositions: (row) => toNum(row?.totalOpenPositions, NaN),
+    totalPnlUsd: (row) => toNum(row?.totalPnlUsd, NaN),
+    avgOpenPositions30d: (row) => toNum(row?.avgOpenPositions30d, NaN),
+    totalVolumeOnCoin: (row) => toNum(row?.totalVolumeOnCoin, NaN),
+  };
+  if (sortKey === "wallet") {
+    return leftWallet.localeCompare(rightWallet) * dir;
+  }
+  if (sortKey === "direction") {
+    return String(left?.direction || "").localeCompare(String(right?.direction || "")) * dir || leftWallet.localeCompare(rightWallet) * dir;
+  }
+  const getter = numericSorters[sortKey] || numericSorters.openedAt;
+  const leftValue = getter(left);
+  const rightValue = getter(right);
+  const leftFinite = Number.isFinite(leftValue);
+  const rightFinite = Number.isFinite(rightValue);
+  if (leftFinite && rightFinite && leftValue !== rightValue) {
+    return (leftValue - rightValue) * dir;
+  }
+  if (leftFinite && !rightFinite) return -1 * dir;
+  if (!leftFinite && rightFinite) return 1 * dir;
+  return leftWallet.localeCompare(rightWallet) * dir;
+}
+
+function renderTokenWalletPositionTable(hostId, rows = []) {
+  const host = el(hostId);
+  if (!host) return;
+  const isTableObject = rows && typeof rows === "object" && !Array.isArray(rows);
+  const incomingRows = isTableObject ? rows.rows : rows;
+  const items = Array.isArray(incomingRows) ? incomingRows.slice() : [];
+  const sortKey = String(isTableObject && rows.sortKey ? rows.sortKey : state.tokenWalletSortKey || "openedAt");
+  const sortDir = String(isTableObject && rows.sortDir ? rows.sortDir : state.tokenWalletSortDir || "asc").toLowerCase() === "desc" ? "desc" : "asc";
+  if (!isTableObject) {
+    items.sort((left, right) => compareTokenWalletRows(left, right, sortKey, sortDir));
+  }
+  const pageSize = Math.max(1, toNum(isTableObject && rows.pageSize ? rows.pageSize : state.tokenWalletPageSize, 20));
+  const totalRows = Math.max(0, toNum(isTableObject && rows.totalRows ? rows.totalRows : items.length, items.length));
+  const totalPages = Math.max(1, Math.ceil(Math.max(totalRows, 1) / pageSize));
+  const currentPage = Math.min(
+    Math.max(1, toNum(isTableObject && rows.page ? rows.page : state.tokenWalletPage, 1)),
+    totalPages
+  );
+  if (state.tokenWalletPage !== currentPage) {
+    state.tokenWalletPage = currentPage;
+  }
+  const pageRows = items;
+  syncTokenWalletSortIndicators();
+
+  const prevBtn = el("token-wallet-prev-btn");
+  const nextBtn = el("token-wallet-next-btn");
+  const pageLabel = el("token-wallet-page-label");
+  const totalLabel = el("token-wallet-table-total");
+  if (prevBtn) prevBtn.disabled = currentPage <= 1 || totalRows === 0;
+  if (nextBtn) nextBtn.disabled = currentPage >= totalPages || totalRows === 0;
+  if (pageLabel) pageLabel.textContent = `Page ${currentPage} / ${totalPages}`;
+  if (totalLabel) totalLabel.textContent = `${fmt(totalRows, 0)} wallets`;
+
+  if (!pageRows.length) {
+    const symbol = resolveCanonicalTokenSymbol(state.tokenSymbol || "") || "coin";
+    host.innerHTML = `<tr><td colspan='6' class='muted'>No ${escapeHtml(symbol)} wallet rows available yet.</td></tr>`;
+    return;
+  }
+  host.innerHTML = pageRows
+    .map((row, index) => {
+      const wallet = String(row?.wallet || "").trim();
+      const walletShort = shortWalletAddress(wallet);
+      const entry = toNum(row?.entryPrice, NaN);
+      const sizeUsd = toNum(row?.positionSizeUsd, NaN);
+      const pnlUsd = toNum(row?.positionPnlUsd ?? row?.unrealizedPnlUsd ?? row?.pnl, NaN);
+      const pnlClass = pnlUsd >= 0 ? "good" : "bad";
+      const openDate = escapeHtml(row?.openDate || "-");
+      const direction = String(row?.direction || "").toLowerCase();
+      const directionClass = direction === "short" ? "bad" : direction === "long" ? "good" : "muted";
+      return `<tr>
+        <td class="token-wallet-cell">
+          <div class="token-wallet-copy-wrap">
+            <span class="token-wallet-address" title="${escapeHtml(wallet)}">${escapeHtml(walletShort)}</span>
+            <button class="token-wallet-copy-btn" type="button" data-token-wallet-copy="${escapeHtml(wallet)}" title="Copy wallet">Copy</button>
+          </div>
+        </td>
+        <td class="token-wallet-cell mono"><span class="token-position-tag ${directionClass}">${escapeHtml(titleCase(String(row?.direction || "")) || "-")}</span></td>
+        <td class="token-wallet-cell mono">${Number.isFinite(entry) ? escapeHtml(String(Math.trunc(entry))) : "-"}</td>
+        <td class="token-wallet-cell mono">${Number.isFinite(sizeUsd) ? `$${escapeHtml(fmtCompact(sizeUsd))}` : "-"}</td>
+        <td class="token-wallet-cell mono ${pnlClass}">${Number.isFinite(pnlUsd) ? `${pnlUsd >= 0 ? "+" : "-"}$${escapeHtml(fmt(Math.abs(pnlUsd), 2))}` : "-"}</td>
+        <td class="token-wallet-cell mono">${openDate}</td>
+      </tr>`;
+    })
+    .join("");
+}
+
+function renderTokenTradeTable(hostId, rows = []) {
+  const host = el(hostId);
+  if (!host) return;
+  const isTableObject = rows && typeof rows === "object" && !Array.isArray(rows);
+  const incomingRows = isTableObject ? rows.rows : rows;
+  const items = Array.isArray(incomingRows) ? incomingRows.slice() : [];
+  items.sort((left, right) => {
+    const leftTs = toNum(left?.timestamp, 0);
+    const rightTs = toNum(right?.timestamp, 0);
+    if (leftTs !== rightTs) return rightTs - leftTs;
+    return String(left?.tradeId || left?.historyId || "").localeCompare(
+      String(right?.tradeId || right?.historyId || "")
+    );
+  });
+  const pageSize = Math.max(
+    1,
+    toNum(isTableObject && rows.pageSize ? rows.pageSize : state.tokenTradePageSize, 50)
+  );
+  const totalRows = Math.max(0, toNum(isTableObject && rows.totalRows ? rows.totalRows : items.length, items.length));
+  const totalPages = Math.max(1, Math.ceil(Math.max(totalRows, 1) / pageSize));
+  const currentPage = Math.min(
+    Math.max(1, toNum(isTableObject && rows.page ? rows.page : state.tokenTradePage, 1)),
+    totalPages
+  );
+  if (state.tokenTradePage !== currentPage) {
+    state.tokenTradePage = currentPage;
+  }
+  const start = (currentPage - 1) * pageSize;
+  const pageRows = items.slice(start, start + pageSize);
+  const prevBtn = el("token-btc-trade-prev-btn");
+  const nextBtn = el("token-btc-trade-next-btn");
+  const pageLabel = el("token-btc-trade-page-label");
+  const totalLabel = el("token-btc-trade-total-label");
+  if (prevBtn) prevBtn.disabled = currentPage <= 1 || totalRows === 0;
+  if (nextBtn) nextBtn.disabled = currentPage >= totalPages || totalRows === 0;
+  if (pageLabel) pageLabel.textContent = `Page ${currentPage} / ${totalPages}`;
+  if (totalLabel) totalLabel.textContent = `${fmt(totalRows, 0)} trades`;
+
+  if (!pageRows.length) {
+    const symbol = resolveCanonicalTokenSymbol(state.tokenSymbol || "") || "coin";
+    host.innerHTML = `<tr><td colspan='8' class='muted'>No ${escapeHtml(symbol)} trades available yet.</td></tr>`;
+    return;
+  }
+
+  host.innerHTML = pageRows
+    .map((row) => {
+      const wallet = String(row?.wallet || "").trim();
+      const walletShort = shortWalletAddress(wallet);
+      const side = String(row?.side || "").trim().toLowerCase();
+      const sideClass = side === "buy" || side === "open_long" || side === "close_short" ? "good" : "bad";
+      const amount = toNum(row?.amount, NaN);
+      const price = toNum(row?.price, NaN);
+      const fee = toNum(row?.fee, NaN);
+      const pnl = toNum(row?.pnl, NaN);
+      const notional = toNum(row?.volumeUsd, NaN);
+      const timestamp = toNum(row?.timestamp, NaN);
+      return `<tr>
+        <td class="token-wallet-cell">
+          <div class="token-wallet-copy-wrap">
+            <span class="token-wallet-address" title="${escapeHtml(wallet)}">${escapeHtml(walletShort)}</span>
+            <button class="token-wallet-copy-btn" type="button" data-token-trade-wallet="${escapeHtml(wallet)}" title="Copy wallet">Copy</button>
+          </div>
+        </td>
+        <td class="token-wallet-cell mono"><span class="token-position-tag ${sideClass}">${escapeHtml(titleCase(side) || "-")}</span></td>
+        <td class="token-wallet-cell mono">${Number.isFinite(amount) ? escapeHtml(fmt(amount, 6)) : "-"}</td>
+        <td class="token-wallet-cell mono">${Number.isFinite(price) ? escapeHtml(fmt(price, 6)) : "-"}</td>
+        <td class="token-wallet-cell mono">${Number.isFinite(fee) ? `$${escapeHtml(fmt(fee, 2))}` : "-"}</td>
+        <td class="token-wallet-cell mono ${Number.isFinite(pnl) && pnl >= 0 ? "good" : "bad"}">${Number.isFinite(pnl) ? `${pnl >= 0 ? "+" : "-"}$${escapeHtml(fmt(Math.abs(pnl), 2))}` : "-"}</td>
+        <td class="token-wallet-cell mono">${Number.isFinite(notional) ? `$${escapeHtml(fmtCompact(notional))}` : "-"}</td>
+        <td class="token-wallet-cell mono">${Number.isFinite(timestamp) ? `${escapeHtml(fmtDateOnly(timestamp))} ${escapeHtml(fmtUtcDateTime(timestamp))}` : "-"}</td>
+      </tr>`;
+    })
+    .join("");
+}
+
+function classifyTokenDirection(row = {}) {
+  const directionValue = String(row?.direction || "").trim().toLowerCase();
+  if (directionValue === "long") return "long";
+  if (directionValue === "short") return "short";
+  const sideValue = String(row?.side || "").trim().toLowerCase();
+  if (sideValue === "buy" || sideValue === "open_long" || sideValue === "close_short") return "long";
+  if (sideValue === "sell" || sideValue === "open_short" || sideValue === "close_long") return "short";
+  return null;
+}
+
+function resolveTokenDirectionCounts(directionStats, rows = [], { profitableOnly = false } = {}) {
+  const scopedRows = (Array.isArray(rows) ? rows : []).filter((row) =>
+    profitableOnly ? toNum(row?.totalPnlUsd, 0) > 0 : true
+  );
+  const longRows = scopedRows.filter((row) => classifyTokenDirection(row) === "long");
+  const shortRows = scopedRows.filter((row) => classifyTokenDirection(row) === "short");
+  const fallbackLongCount = longRows.length;
+  const fallbackShortCount = shortRows.length;
+  const fallbackLongAmountUsd = longRows.reduce((acc, row) => acc + Math.max(0, toNum(row?.positionSizeUsd, 0)), 0);
+  const fallbackShortAmountUsd = shortRows.reduce((acc, row) => acc + Math.max(0, toNum(row?.positionSizeUsd, 0)), 0);
+
+  const statsLong = toNum(directionStats?.long, NaN);
+  const statsShort = toNum(directionStats?.short, NaN);
+  const statsLongUsd = toNum(directionStats?.longUsd, NaN);
+  const statsShortUsd = toNum(directionStats?.shortUsd, NaN);
+
+  const longCount = Number.isFinite(statsLong) ? Math.max(0, Math.round(statsLong)) : fallbackLongCount;
+  const shortCount = Number.isFinite(statsShort) ? Math.max(0, Math.round(statsShort)) : fallbackShortCount;
+  const longAmountUsd = Number.isFinite(statsLongUsd) ? Math.max(0, statsLongUsd) : fallbackLongAmountUsd;
+  const shortAmountUsd = Number.isFinite(statsShortUsd) ? Math.max(0, statsShortUsd) : fallbackShortAmountUsd;
+
+  return {
+    longCount,
+    shortCount,
+    longAmountUsd,
+    shortAmountUsd,
+  };
+}
+
+function renderTokenPressureSummary(hostId, options = {}) {
+  const host = el(hostId);
+  if (!host) return;
+  const title = String(options?.title || "Long vs Short Pressure");
+  const subtitle = String(options?.subtitle || "");
+  const emptyLabel = String(options?.emptyLabel || "No current open positions available.");
+  const countUnit = String(options?.countUnit || "positions");
+  const longCount = Math.max(0, toNum(options?.longCount, 0));
+  const shortCount = Math.max(0, toNum(options?.shortCount, 0));
+  const longAmountUsd = Math.max(0, toNum(options?.longAmountUsd, 0));
+  const shortAmountUsd = Math.max(0, toNum(options?.shortAmountUsd, 0));
+  const totalPositions = Math.max(0, toNum(options?.totalCount, longCount + shortCount));
+  const splitTotal = longCount + shortCount;
+  const totalAmountUsd = Math.max(0, longAmountUsd + shortAmountUsd);
+  const useUsdBasis = totalAmountUsd > 0;
+  const longBasisValue = useUsdBasis ? longAmountUsd : longCount;
+  const shortBasisValue = useUsdBasis ? shortAmountUsd : shortCount;
+  const basisTotal = Math.max(0, longBasisValue + shortBasisValue);
+  const formatAmountUsd = (value) => {
+    const safeValue = Math.max(0, toNum(value, 0));
+    return `$${fmtCompact(safeValue)}`;
+  };
+  if (!splitTotal) {
+    host.innerHTML = `
+      <section class="token-pressure-block">
+        <div class="token-pressure-head">
+          <div class="token-pressure-title-wrap">
+            <span class="token-pressure-title">${escapeHtml(title)}</span>
+            <strong class="token-pressure-total">0</strong>
+            ${subtitle ? `<span class="token-pressure-subtitle">${escapeHtml(subtitle)}</span>` : ""}
+          </div>
+          <div class="token-pressure-foot-inline">
+            <span>Total Notional</span>
+            <strong>${escapeHtml(formatAmountUsd(0))}</strong>
+          </div>
+        </div>
+        <div class="token-pressure-empty">${escapeHtml(emptyLabel)}</div>
+      </section>
+    `;
+    return;
+  }
+  const safeBasis = Math.max(1, basisTotal);
+  const longPct = (longBasisValue / safeBasis) * 100;
+  const shortPct = Math.max(0, 100 - longPct);
+  const longPctLabel = fmtPercent(longPct / 100, 1);
+  const shortPctLabel = fmtPercent(shortPct / 100, 1);
+  const totalLabel = fmt(totalPositions, 0);
+  const longWidth = Math.max(0, Math.min(100, longPct));
+  const shortWidth = Math.max(0, Math.min(100, shortPct));
+  const barBasisLabel = useUsdBasis ? "USD notional basis" : "count basis";
+  host.innerHTML = `
+    <section class="token-pressure-block">
+      <div class="token-pressure-head">
+        <div class="token-pressure-title-wrap">
+          <span class="token-pressure-title">${escapeHtml(title)}</span>
+          <strong class="token-pressure-total">${escapeHtml(totalLabel)}</strong>
+          ${subtitle ? `<span class="token-pressure-subtitle">${escapeHtml(subtitle)}</span>` : ""}
+        </div>
+        <div class="token-pressure-foot-inline">
+          <span>Total Notional</span>
+          <strong>${escapeHtml(formatAmountUsd(totalAmountUsd))}</strong>
+        </div>
+      </div>
+      <div class="token-pressure-bar-wrap">
+        <div class="token-pressure-bar" role="img" aria-label="Long ${longPctLabel}, Short ${shortPctLabel}, based on ${escapeHtml(
+          barBasisLabel
+        )}">
+          <span class="token-pressure-bar-fill long" style="width:${longWidth.toFixed(4)}%;"></span>
+          <span class="token-pressure-bar-fill short" style="width:${shortWidth.toFixed(4)}%;"></span>
+        </div>
+        <div class="token-pressure-legend">
+          <div class="token-pressure-legend-side long">
+            <span class="token-pressure-legend-label">Long</span>
+            <strong class="token-pressure-legend-count">${escapeHtml(fmt(longCount, 0))}</strong>
+            <span class="token-pressure-legend-count-meta">${escapeHtml(countUnit)}</span>
+            <span class="token-pressure-legend-amount">${escapeHtml(formatAmountUsd(longAmountUsd))}</span>
+            <span class="token-pressure-legend-ratio">${escapeHtml(longPctLabel)}</span>
+          </div>
+          <div class="token-pressure-legend-side short">
+            <span class="token-pressure-legend-label">Short</span>
+            <strong class="token-pressure-legend-count">${escapeHtml(fmt(shortCount, 0))}</strong>
+            <span class="token-pressure-legend-count-meta">${escapeHtml(countUnit)}</span>
+            <span class="token-pressure-legend-amount">${escapeHtml(formatAmountUsd(shortAmountUsd))}</span>
+            <span class="token-pressure-legend-ratio">${escapeHtml(shortPctLabel)}</span>
+          </div>
+        </div>
+        <div class="token-pressure-basis-note">${escapeHtml(barBasisLabel)}</div>
+      </div>
+    </section>
+  `;
+}
+
+function syncTokenTimeframeButtons() {
+  const current = normalizeTokenTimeframe(state.tokenTimeframe);
+  document.querySelectorAll("[data-token-timeframe]").forEach((node) => {
+    node.classList.toggle(
+      "active",
+      normalizeTokenTimeframe(node.getAttribute("data-token-timeframe") || "") === current
+    );
+  });
+}
+
+function renderTokenZoneList(hostId, rows = []) {
+  const host = el(hostId);
+  if (!host) return;
+  const items = (Array.isArray(rows) ? rows : []).slice(0, 8);
+  host.innerHTML = items.length
+    ? items
+        .map(
+          (row) => `<div class="token-rank-row">
+            <div class="token-rank-main">
+              <span class="token-rank-index">${escapeHtml(titleCase(String(row.side || "")))}</span>
+              <span>${escapeHtml(`${fmt(toNum(row.startPct, 0), 2)}% -> ${fmt(toNum(row.endPct, 0), 2)}%`)}</span>
+            </div>
+            <div class="token-rank-meta">
+              <strong>$${escapeHtml(fmtCompact(toNum(row.notionalUsd, 0)))}</strong>
+              <span>${escapeHtml(`@ ${fmt(toNum(row.centerPrice, 0), 4)}`)}</span>
+              <span>${escapeHtml(`${fmt(toNum(row.levelCount, 0), 0)} lvls`)}</span>
+            </div>
+          </div>`
+        )
+        .join("")
+    : "<div class='muted'>No visible order-book zones yet.</div>";
+}
+
+function renderTokenMethodology(hostId, items = []) {
+  const host = el(hostId);
+  if (!host) return;
+  const rows = Array.isArray(items) ? items : [];
+  host.innerHTML = rows.length
+    ? rows
+        .map(
+          (item) => `<div class="token-flag-item medium">
+            <div class="token-flag-head">
+              <strong>${escapeHtml(item?.label || item?.key || "Method")}</strong>
+            </div>
+            <p>${escapeHtml(item?.formula || item?.note || "No methodology available.")}</p>
+          </div>`
+        )
+        .join("")
+    : "<div class='muted'>No methodology notes available yet.</div>";
+}
+
+function renderTokenHighlightChips(payload = null) {
+  const host = el("token-highlight-chips");
+  if (!host) return;
+  if (!payload) {
+    host.innerHTML = "<span class='token-chip'>Loading signals</span>";
+    return;
+  }
+  const chips = [];
+  const bias = payload?.decision?.summary?.bias?.label;
+  const action = payload?.decision?.summary?.action?.label;
+  const fearGreed = payload?.sections?.sentiment?.fearGreed;
+  const burst = payload?.sections?.flow?.burstDetection;
+  const depth = payload?.sections?.depth?.imbalancePct;
+  if (bias) chips.push(`Bias ${bias}`);
+  if (action) chips.push(`Action ${action}`);
+  if (fearGreed?.extra?.label) chips.push(`Sentiment ${fearGreed.extra.label}`);
+  if (toNum(burst?.value, 0) >= 2) chips.push(`Volume burst ${fmt(toNum(burst.value, 0), 2)}x`);
+  if (Math.abs(toNum(depth?.value, 0)) >= 15) {
+    chips.push(`${toNum(depth.value, 0) > 0 ? "Bid" : "Ask"} wall bias ${fmt(Math.abs(toNum(depth.value, 0)), 1)}%`);
+  }
+  const warnings = Array.isArray(payload?.sections?.risk?.flags) ? payload.sections.risk.flags : [];
+  warnings.slice(0, 3).forEach((flag) => chips.push(flag.label || flag.key || "Risk"));
+  host.innerHTML = chips.length
+    ? chips.map((chip) => `<span class="token-chip">${escapeHtml(chip)}</span>`).join("")
+    : "<span class='token-chip'>Signals balanced</span>";
+}
+
+function populateTokenSymbolOptions() {
+  const datalist = el("token-symbol-options");
+  if (!datalist) return;
+  const symbolMeta = new Map();
+  const setSymbolMeta = (rawSymbol, rawName = "") => {
+    const symbol = resolveCanonicalTokenSymbol(rawSymbol);
+    if (!symbol) return;
+    const name = String(rawName || "").trim();
+    if (!symbolMeta.has(symbol)) {
+      symbolMeta.set(symbol, name || resolveVolumeRankName(symbol));
+      return;
+    }
+    if (name && !symbolMeta.get(symbol)) {
+      symbolMeta.set(symbol, name);
+    }
+  };
+  getExchangePriceRows().forEach((row) => {
+    const symbol = resolveCanonicalTokenSymbol(row?.symbol);
+    if (!symbol) return;
+    setSymbolMeta(symbol, row?.name || row?.displayName || resolveVolumeRankName(symbol));
+  });
+  (Array.isArray(state.walletAvailableSymbols) ? state.walletAvailableSymbols : []).forEach((symbol) => {
+    setSymbolMeta(symbol, "");
+  });
+  const coinRows = Array.isArray(state.tokenAnalytics?.sections?.coins?.rows)
+    ? state.tokenAnalytics.sections.coins.rows
+    : [];
+  coinRows.forEach((row) => {
+    setSymbolMeta(row?.symbol, row?.name || row?.displayName || "");
+  });
+  datalist.innerHTML = Array.from(symbolMeta.entries())
+    .sort(([left], [right]) => left.localeCompare(right))
+    .slice(0, 500)
+    .map(([symbol, name]) => {
+      const label = String(name || "").trim();
+      return `<option value="${escapeHtml(symbol)}"${
+        label ? ` label="${escapeHtml(`${symbol} • ${label}`)}"` : ""
+      }></option>`;
+    })
+    .join("");
+}
+
+function getTokenSearchUniverseSymbols() {
+  const symbols = new Set();
+  const addSymbol = (rawSymbol) => {
+    const normalized = resolveCanonicalTokenSymbol(rawSymbol || "");
+    if (normalized) symbols.add(normalized);
+  };
+  getExchangePriceRows().forEach((row) => addSymbol(row?.symbol));
+  (Array.isArray(state.walletAvailableSymbols) ? state.walletAvailableSymbols : []).forEach(addSymbol);
+  const coinRows = Array.isArray(state.tokenAnalytics?.sections?.coins?.rows)
+    ? state.tokenAnalytics.sections.coins.rows
+    : [];
+  coinRows.forEach((row) => addSymbol(row?.symbol));
+  return symbols;
+}
+
+function resolveTokenSearchSymbol(rawInput) {
+  const query = String(rawInput || "").trim();
+  if (!query) return "";
+  const normalized = normalizeTokenSymbol(query);
+  const searchUniverse = getTokenSearchUniverseSymbols();
+  if (normalized && searchUniverse.has(normalized)) return normalized;
+  const canonical = resolveCanonicalTokenSymbol(query);
+  if (canonical && searchUniverse.has(canonical)) return canonical;
+  const lowerQuery = query.toLowerCase();
+  if (!lowerQuery) return canonical || "";
+  for (const row of getExchangePriceRows()) {
+    const symbol = resolveCanonicalTokenSymbol(row?.symbol || "");
+    if (!symbol) continue;
+    const displayName = String(row?.name || row?.displayName || resolveVolumeRankName(symbol) || "")
+      .trim()
+      .toLowerCase();
+    if (!displayName) continue;
+    if (displayName === lowerQuery || displayName.includes(lowerQuery)) {
+      return symbol;
+    }
+  }
+  return canonical || "";
+}
+
 function syncAnalyticsTabs() {
   const current = normalizeAnalyticsTab(state.analyticsTab);
   document.querySelectorAll("#analytics-tabs .analytics-tab").forEach((node) => {
@@ -3011,57 +6065,283 @@ function syncAnalyticsTabs() {
   });
 }
 
+function setTokenSmartOnlyMode(_active) {
+  // Token view now runs in coin-open-position mode only.
+}
+
 function renderTokenView() {
   const symbol = ensureTokenSymbol();
-  const normalizedMetric = normalizeAnalyticsTab(state.analyticsTab);
-  state.analyticsTab = normalizedMetric;
+  const payload = getTokenPayload();
+  state.analyticsTab = normalizeAnalyticsTab(state.analyticsTab || TOKEN_DEFAULT_METRIC);
+  state.tokenTimeframe = "24h";
+  if (state.tokenSymbol !== symbol) {
+    state.tokenWalletPage = 1;
+    state.tokenTradePage = 1;
+  }
+  state.tokenSymbol = symbol;
   syncAnalyticsTabs();
+  syncTokenTimeframeButtons();
+  populateTokenSymbolOptions();
 
-  if (!symbol) {
-    setText("token-page-title", "Token Analytics");
-    setText("token-page-subtitle", "No token available from current Pacifica payload.");
-    setText("token-symbol-pill", "Symbol -");
-    setText("token-exchange-pill", "Pacifica");
-    setText("token-timeframe-pill", `TF ${String(state.timeframe || "all").toUpperCase()}`);
-    setText("token-live-pill", "SYNCING");
-    setText("token-freshness-pill", "updated -");
-    setText("token-source-pill", "source -");
-    const host = el("token-kpis");
-    if (host) host.innerHTML = "<div class='muted'>No token analytics data available yet.</div>";
-    renderTokenInsights(null);
+  setTokenSmartOnlyMode(Boolean(symbol));
+
+  const input = el("token-symbol-input");
+  if (input && symbol) input.value = symbol;
+
+  const smartOnlyTitle = symbol ? `${symbol} Coin Analysis` : "Coin Analysis";
+  const walletTable = payload?.sections?.wallets?.positionTable || null;
+  const walletValidation = walletTable?.validation || payload?.meta?.validation || null;
+  const validationUpdatedAt =
+    walletValidation?.refreshedAt ||
+    walletValidation?.sourceLastSuccessAt ||
+    payload?.freshness?.updatedAt ||
+    payload?.generatedAt ||
+    null;
+  setText("token-page-title", smartOnlyTitle);
+  setText(
+    "token-page-subtitle",
+    payload
+      ? walletValidation?.currentOpenSet
+        ? "Live current-open coin positions sourced from the same Wallet Explorer pipeline."
+        : "Coin-level smart-wallet snapshot."
+      : "Loading coin analysis snapshot."
+  );
+  setText("token-symbol-pill", `Coin ${symbol || "BTC"}`);
+  setText("token-timeframe-pill", "window 24H");
+  setText(
+    "token-freshness-pill",
+    validationUpdatedAt
+      ? `${walletValidation?.currentOpenSet ? "live set" : "updated"} ${fmtAgo(validationUpdatedAt)} • ${fmtDateOnly(
+          validationUpdatedAt
+        )}`
+      : "updated -"
+  );
+
+  if (!payload) {
+    renderTokenPressureSummary("token-pressure-overall", {
+      title: "Overall Long vs Short Pressure",
+      subtitle: "All currently open positions",
+      longCount: 0,
+      shortCount: 0,
+      totalCount: 0,
+      countUnit: "positions",
+      emptyLabel: "No current open positions available yet.",
+    });
+    renderTokenPressureSummary("token-pressure-profitable", {
+      title: "Positive-PnL Wallet Pressure",
+      subtitle: "Wallets with positive total PnL only",
+      longCount: 0,
+      shortCount: 0,
+      totalCount: 0,
+      countUnit: "wallets",
+      emptyLabel: "No positive-PnL wallet positions available yet.",
+    });
+    setText("token-wallet-validation-pill", "validation pending");
     return;
   }
 
-  const metricName = getAnalyticsPresentation(normalizedMetric).title;
-  const kpi = buildTokenKpiRows(symbol, normalizedMetric);
-  setText("token-page-title", `${symbol} Analytics`);
-  setText(
-    "token-page-subtitle",
-    `${kpi.subtitle || `${metricName} intelligence for ${symbol} on Pacifica.`}`
+  const overallCounts = resolveTokenDirectionCounts(walletTable?.stats?.direction, walletTable?.rows || []);
+  const profitableCounts = resolveTokenDirectionCounts(
+    walletTable?.stats?.profitableDirection,
+    walletTable?.rows || [],
+    { profitableOnly: true }
   );
-  setText("token-symbol-pill", `Symbol ${symbol}`);
-  setText("token-exchange-pill", "Pacifica");
-  setText("token-timeframe-pill", `TF ${String(state.timeframe || "all").toUpperCase()}`);
-  setText("token-live-pill", state.exchange?.sync?.wsStatus === "open" ? "LIVE" : "SYNCING");
+  renderTokenPressureSummary("token-pressure-overall", {
+    title: "Overall Long vs Short Pressure",
+    subtitle: "All currently open positions",
+    longCount: overallCounts.longCount,
+    shortCount: overallCounts.shortCount,
+    longAmountUsd: overallCounts.longAmountUsd,
+    shortAmountUsd: overallCounts.shortAmountUsd,
+    totalCount: toNum(walletTable?.positionCount, overallCounts.longCount + overallCounts.shortCount),
+    countUnit: "positions",
+    emptyLabel: "No current open positions available yet.",
+  });
+  renderTokenPressureSummary("token-pressure-profitable", {
+    title: "Positive-PnL Wallet Pressure",
+    subtitle: "Wallets with positive total PnL only",
+    longCount: profitableCounts.longCount,
+    shortCount: profitableCounts.shortCount,
+    longAmountUsd: profitableCounts.longAmountUsd,
+    shortAmountUsd: profitableCounts.shortAmountUsd,
+    totalCount: toNum(walletTable?.stats?.profitableDirection?.positions, profitableCounts.longCount + profitableCounts.shortCount),
+    countUnit: "wallets",
+    emptyLabel: "No positive-PnL wallet positions available yet.",
+  });
   setText(
-    "token-freshness-pill",
-    `updated ${fmtAgo(kpi.lastTs || state.exchange?.generatedAt || state.dashboard?.generatedAt || Date.now())}`
+    "token-wallets-pill-2",
+    walletTable
+      ? `${fmt(toNum(walletTable.walletCount, 0), 0)} wallets • ${fmt(toNum(walletTable.positionCount, 0), 0)} positions`
+      : "0 wallets"
   );
-  setText("token-source-pill", `source ${kpi.source || "-"}`);
+  setText(
+    "token-wallet-validation-pill",
+    walletValidation?.currentOpenSet
+      ? `validated ${validationUpdatedAt ? fmtAgo(validationUpdatedAt) : "-"}`
+      : "validation unavailable"
+  );
+  renderTokenWalletPositionTable("token-wallet-position-table", walletTable || []);
+  syncTokenWalletSortIndicators();
+}
 
-  const host = el("token-kpis");
-  if (host) {
-    host.innerHTML = kpi.rows
-      .map(
-        (row) => `<article class="kpi-card">
-            <div class="kpi-title">${escapeHtml(row.key)}</div>
-            <div class="kpi-value">${escapeHtml(row.value)}</div>
-            ${row.meta ? `<div class="kpi-meta">${escapeHtml(row.meta)}</div>` : ""}
-          </article>`
-      )
-      .join("");
+function getTokenPhaseOneLongShortMetric(payload = null) {
+  return payload?.hero?.longShortRatio || payload?.sections?.wallets?.longShortRatio || null;
+}
+
+function formatTokenPhaseOneLongShort(metric = null) {
+  const extra = metric?.extra || {};
+  const longWallets = toNum(extra.longWallets, 0);
+  const shortWallets = toNum(extra.shortWallets, 0);
+  const ratio = toNum(metric?.value, NaN);
+  if (longWallets > 0 && shortWallets === 0) return "All Long";
+  if (shortWallets > 0 && longWallets === 0) return "All Short";
+  if (Number.isFinite(ratio)) return `${fmt(ratio, 2)}x`;
+  return "-";
+}
+
+function getTokenPhaseOneSqueezeLevel(payload = null) {
+  const squeezeRisk = String(payload?.focus?.squeezeRisk || "normal").toLowerCase();
+  const crowdingScore = toNum(payload?.decision?.summary?.crowding?.score, 0);
+  if (squeezeRisk === "elevated" || crowdingScore >= 72) return "High";
+  if (crowdingScore >= 45) return "Medium";
+  return "Low";
+}
+
+function getTokenPhaseOneBias(payload = null) {
+  const biasCode = String(payload?.decision?.summary?.bias?.code || "").trim().toLowerCase();
+  const actionCode = String(payload?.decision?.summary?.action?.code || "").trim().toLowerCase();
+  const crowdingScore = toNum(payload?.decision?.summary?.crowding?.score, 0);
+  const qualityCode = String(payload?.decision?.summary?.quality?.code || "").trim().toLowerCase();
+  const squeezeLevel = getTokenPhaseOneSqueezeLevel(payload);
+  if (
+    actionCode === "avoid" ||
+    squeezeLevel === "High" ||
+    qualityCode === "reversal_risk" ||
+    qualityCode === "exhaustion_risk" ||
+    qualityCode === "squeeze_driven"
+  ) {
+    return { label: "High Risk / Choppy", tone: "risk" };
   }
-  renderTokenInsights(kpi);
+  if (biasCode === "long_bias") return { label: "Bullish", tone: "bullish" };
+  if (biasCode === "short_bias") return { label: "Bearish", tone: "bearish" };
+  if (crowdingScore >= 60) return { label: "High Risk / Choppy", tone: "risk" };
+  return { label: "Neutral", tone: "neutral" };
+}
+
+function getTokenPhaseOneAction(payload = null) {
+  const actionCode = String(payload?.decision?.summary?.action?.code || "").trim().toLowerCase();
+  if (actionCode === "favor_longs") return { label: "Long Setup", tone: "bullish" };
+  if (actionCode === "favor_shorts") return { label: "Short Setup", tone: "bearish" };
+  return { label: "No Trade", tone: "neutral" };
+}
+
+function getTokenPhaseOneReasons(payload = null, limit = 3) {
+  const reasons = Array.isArray(payload?.decision?.reasoning) ? payload.decision.reasoning : [];
+  return reasons.slice(0, limit).map((row) => ({
+    title: row?.title || "Mixed conditions",
+    detail: row?.detail || "The current setup does not have a clean edge yet.",
+    tone: row?.tone || "neutral",
+  }));
+}
+
+function buildTokenPhaseOneWhyList(payload = null, tone = "neutral") {
+  const reasons = Array.isArray(payload?.decision?.reasoning) ? payload.decision.reasoning : [];
+  const filtered = reasons
+    .filter((row) => String(row?.tone || "").trim().toLowerCase() === String(tone || "").trim().toLowerCase())
+    .slice(0, 3)
+    .map((row) => row?.title || row?.detail || "No signal yet.");
+  if (filtered.length) return filtered;
+  if (tone === "bullish") {
+    return [
+      "Look for price and open interest rising together.",
+      "Funding should stay constructive, not overheated.",
+      "Net flow and squeeze pressure should support continuation.",
+    ];
+  }
+  if (tone === "bearish") {
+    return [
+      "Look for price weakness with open interest still building.",
+      "Crowded longs or rising liquidation pressure can support shorts.",
+      "Shorts are cleaner when funding and positioning stay one-sided.",
+    ];
+  }
+  return [
+    "Use patience when bias, crowding, and flow disagree.",
+    "Skip trades when squeeze risk is too high for the reward.",
+    "Wait for cleaner price plus open-interest alignment.",
+  ];
+}
+
+function buildTokenPhaseOneMetricCard(label, value, note, tone = "") {
+  return `<article class="token-phase-metric ${escapeHtml(tone)}">
+    <span class="token-phase-metric-label">${escapeHtml(label)}</span>
+    <strong class="token-phase-metric-value">${escapeHtml(value || "-")}</strong>
+    <span class="token-phase-metric-note">${escapeHtml(note || "")}</span>
+  </article>`;
+}
+
+function buildTokenPhaseOneDualChartSvg(priceChart = null, oiChart = null) {
+  const priceSeries = Array.isArray(priceChart?.series)
+    ? priceChart.series.filter(
+        (row) =>
+          Number.isFinite(toNum(row?.timestamp, NaN)) && Number.isFinite(toNum(row?.value, NaN))
+      )
+    : [];
+  const oiSeries = Array.isArray(oiChart?.series)
+    ? oiChart.series.filter(
+        (row) =>
+          Number.isFinite(toNum(row?.timestamp, NaN)) && Number.isFinite(toNum(row?.value, NaN))
+      )
+    : [];
+  if (!priceSeries.length || !oiSeries.length) {
+    return "<div class='muted'>Price and open-interest history are still loading.</div>";
+  }
+  const width = 960;
+  const height = 320;
+  const padding = { top: 24, right: 24, bottom: 30, left: 24 };
+  const minTs = Math.min(
+    toNum(priceSeries[0]?.timestamp, Date.now()),
+    toNum(oiSeries[0]?.timestamp, Date.now())
+  );
+  const maxTs = Math.max(
+    toNum(priceSeries[priceSeries.length - 1]?.timestamp, minTs),
+    toNum(oiSeries[oiSeries.length - 1]?.timestamp, minTs)
+  );
+  const chartWidth = width - padding.left - padding.right;
+  const chartHeight = height - padding.top - padding.bottom;
+  const priceMin = Math.min(...priceSeries.map((row) => toNum(row?.value, 0)));
+  const priceMax = Math.max(...priceSeries.map((row) => toNum(row?.value, 0)));
+  const oiMin = Math.min(...oiSeries.map((row) => toNum(row?.value, 0)));
+  const oiMax = Math.max(...oiSeries.map((row) => toNum(row?.value, 0)));
+  const scaleX = (timestamp) =>
+    padding.left +
+    ((toNum(timestamp, minTs) - minTs) / Math.max(maxTs - minTs, 1)) * chartWidth;
+  const scaleY = (value, minValue, maxValue) =>
+    padding.top +
+    (1 - (toNum(value, minValue) - minValue) / Math.max(maxValue - minValue, 1)) * chartHeight;
+  const buildPath = (series, minValue, maxValue) =>
+    series
+      .map((row, index) => {
+        const x = scaleX(row.timestamp).toFixed(2);
+        const y = scaleY(row.value, minValue, maxValue).toFixed(2);
+        return `${index === 0 ? "M" : "L"} ${x} ${y}`;
+      })
+      .join(" ");
+  const pricePath = buildPath(priceSeries, priceMin, priceMax);
+  const oiPath = buildPath(oiSeries, oiMin, oiMax);
+  const guides = Array.from({ length: 4 }, (_, index) => {
+    const y = padding.top + (chartHeight / 3) * index;
+    return `<line class="token-phase-chart-grid" x1="${padding.left}" y1="${y}" x2="${width - padding.right}" y2="${y}"></line>`;
+  }).join("");
+  return `<svg viewBox="0 0 ${width} ${height}" class="token-phase-chart-svg" aria-hidden="true">
+    ${guides}
+    <path class="token-phase-chart-line price" d="${pricePath}"></path>
+    <path class="token-phase-chart-line oi" d="${oiPath}"></path>
+  </svg>`;
+}
+
+function renderTokenPhaseOneLegacyView() {
+  renderTokenView();
 }
 
 function renderExchangeTokenPreview(rows = []) {
@@ -3093,7 +6373,9 @@ function syncRouteFromState(options = {}) {
   const replace = Boolean(options.replace);
   let nextPath = "/";
   if (state.view === "wallets") {
-    nextPath = "/wallets";
+    nextPath = "/wallets-explorer";
+  } else if (state.view === "token") {
+    nextPath = getTokenRoutePath();
   }
   if (window.location.pathname === nextPath) return;
   if (replace) {
@@ -3106,8 +6388,16 @@ function syncRouteFromState(options = {}) {
 function applyRouteFromLocation(options = {}) {
   const replace = Boolean(options.replace);
   const pathname = typeof window !== "undefined" ? window.location.pathname : "/";
-  if (pathname === "/wallets") {
+  if (pathname === "/wallets-explorer" || pathname === "/wallets-explorer/") {
     applyView("wallets", { skipRoute: true });
+    if (replace) syncRouteFromState({ replace: true });
+    return;
+  }
+  const tokenRoute = parseTokenRoute(pathname);
+  if (tokenRoute) {
+    state.tokenSymbol = tokenRoute.symbol;
+    state.analyticsTab = tokenRoute.metric || TOKEN_DEFAULT_METRIC;
+    applyView("token", { skipRoute: true });
     if (replace) syncRouteFromState({ replace: true });
     return;
   }
@@ -3119,14 +6409,15 @@ function applyRouteFromLocation(options = {}) {
 }
 
 function openTokenAnalytics(symbol, metric = state.analyticsTab, options = {}) {
-  const nextSymbol = resolveCanonicalTokenSymbol(symbol) || ensureTokenSymbol();
+  if (!TOKEN_ANALYSIS_ENABLED) return false;
+  const nextSymbol =
+    resolveCanonicalTokenSymbol(symbol || state.tokenSymbol || "") || getDefaultTokenSymbol();
   if (!nextSymbol) return false;
-  state.volumeFilter = String(nextSymbol).toUpperCase();
-  state.volumeRankPage = 1;
-  const filterInput = el("volume-filter");
-  if (filterInput) filterInput.value = state.volumeFilter;
-  applyView("exchange", { skipRoute: true });
-  renderExchange();
+  state.tokenSymbol = nextSymbol;
+  const nextMetric = normalizeAnalyticsTab(metric || TOKEN_DEFAULT_METRIC);
+  state.analyticsTab = nextMetric;
+  state.tokenTimeframe = "24h";
+  applyView("token", { skipRoute: true, forceTokenRefresh: Boolean(options.force) });
   if (!options.skipRoute) syncRouteFromState({ replace: Boolean(options.replaceRoute) });
   return true;
 }
@@ -3159,39 +6450,45 @@ function buildTidalSparklineHeights(row, maxVolume, maxAbsDelta) {
   });
 }
 
-function buildTidalReasonChips(row, isMomentumLeader) {
-  const chips = [];
-  if (toNum(row?.sharePct, 0) >= 12 || toNum(row?.volumeRank, 99) <= 3) chips.push("dominant volume");
-  if (toNum(row?.deltaPct, 0) >= 1.5) chips.push("rising fast");
-  if (isMomentumLeader) chips.push("momentum leader");
-  if (!chips.length) {
-    chips.push(row?.movement === "down" ? "mean reversion" : "steady flow");
-  }
-  return chips.slice(0, 3);
-}
-
 function renderExchange() {
   const payload = state.exchange || {};
+  renderWalletSyncReporter(state.wallets || (state.walletSync ? { syncHealth: state.walletSync } : {}));
   const kpis = payload.kpis || {};
   const periodChanges = payload.kpiPeriodChanges || {};
+  const metrics = payload.metricSemantics || {};
+  state.volumeSort = "volume";
   const indexer = payload.indexer || {};
   const progress = getIndexerBreakdown(indexer);
   const successfulScans = Number(indexer?.successfulScans ?? 0);
   const failedScans = Number(indexer?.failedScans ?? 0);
   const scanAttempts = successfulScans + failedScans;
 
+  renderExchangeStatusPanels(payload);
+
   const kpiRows = [
     {
-      key: "Active Accounts",
-      value: fmt(kpis.activeAccounts || 0, 0),
+      key: "Total Accounts",
+      value: buildExchangeMetricDisplay(
+        kpis.totalAccounts ?? kpis.activeAccounts,
+        metrics.totalAccounts || metrics.activeAccounts,
+        "number"
+      ),
       periodChanges: [
         getKpiPeriodChangeDisplay("24H", periodChanges?.["24h"]?.totalAccounts),
         getKpiPeriodChangeDisplay("30D", periodChanges?.["30d"]?.totalAccounts),
       ],
     },
     {
+      key: "Active Wallets",
+      value: buildExchangeMetricDisplay(kpis.activeWallets, metrics.activeWallets, "number"),
+      periodChanges: [
+        getKpiPeriodChangeDisplay("24H", periodChanges?.["24h"]?.activeWallets),
+        getKpiPeriodChangeDisplay("30D", periodChanges?.["30d"]?.activeWallets),
+      ],
+    },
+    {
       key: "Total Trades",
-      value: fmt(kpis.totalTrades || 0, 0),
+      value: buildExchangeMetricDisplay(kpis.totalTrades, metrics.totalTrades, "number"),
       periodChanges: [
         getKpiPeriodChangeDisplay("24H", periodChanges?.["24h"]?.totalTrades),
         getKpiPeriodChangeDisplay("30D", periodChanges?.["30d"]?.totalTrades),
@@ -3199,7 +6496,7 @@ function renderExchange() {
     },
     {
       key: "Total Volume",
-      value: `$${fmtCompact(kpis.totalVolumeUsd)}`,
+      value: buildExchangeMetricDisplay(kpis.totalVolumeUsd, metrics.totalVolumeUsd, "currencyCompact"),
       periodChanges: [
         getKpiPeriodChangeDisplay("24H", periodChanges?.["24h"]?.totalVolumeUsd),
         getKpiPeriodChangeDisplay("30D", periodChanges?.["30d"]?.totalVolumeUsd),
@@ -3207,16 +6504,19 @@ function renderExchange() {
     },
     {
       key: "Total Fees",
-      value: `$${fmt(kpis.totalFeesUsd, 0)}`,
+      value: buildExchangeMetricDisplay(kpis.totalFeesUsd, metrics.totalFeesUsd, "currency"),
       periodChanges: [
         getKpiPeriodChangeDisplay("24H", periodChanges?.["24h"]?.totalFeesUsd),
         getKpiPeriodChangeDisplay("30D", periodChanges?.["30d"]?.totalFeesUsd),
       ],
     },
     {
-      key: "Open Interest",
-      value: `$${fmtCompact(kpis.openInterestAtEnd)}`,
-      periodChanges: [],
+      key: "Market Open Interest",
+      value: buildExchangeMetricDisplay(kpis.openInterestAtEnd, metrics.openInterestAtEnd, "currencyCompact"),
+      periodChanges: [
+        getKpiPeriodChangeDisplay("24H", periodChanges?.["24h"]?.openInterestAtEnd),
+        getKpiPeriodChangeDisplay("30D", periodChanges?.["30d"]?.openInterestAtEnd),
+      ],
     },
   ];
 
@@ -3249,6 +6549,7 @@ function renderExchange() {
   }
 
   syncTimeframeButtons();
+  syncExchangeChartMetricButtons();
 
   renderMarketsTicker(payload);
 
@@ -3258,8 +6559,6 @@ function renderExchange() {
 
   const body = el("volume-rank-body");
   const allRows = Array.isArray(payload.volumeRank) ? payload.volumeRank : [];
-  const priceRows = Array.isArray(payload?.source?.prices) ? payload.source.prices : [];
-  const priceLookup = buildPriceSymbolLookup(priceRows);
   const totalVolumeUniverse = allRows.reduce((sum, row) => {
     const volume = toNum(
       row?.volume_24h_usd !== undefined ? row.volume_24h_usd : row?.volume_usd !== undefined ? row.volume_usd : row?.volumeUsd,
@@ -3274,97 +6573,47 @@ function renderExchange() {
       0
     );
     const volumeRank = Math.max(1, Number(row?.rank || index + 1));
-    const priceRow = resolvePriceRowForSymbol(symbol, priceLookup);
-    const mark = toNum(priceRow?.mark, NaN);
-    const yesterday = toNum(
-      priceRow?.yesterday_price !== undefined ? priceRow?.yesterday_price : priceRow?.yesterdayPrice,
-      NaN
-    );
-    const deltaFromPrice =
-      Number.isFinite(mark) && Number.isFinite(yesterday) && yesterday !== 0
-        ? ((mark - yesterday) / yesterday) * 100
-        : NaN;
-    const deltaPct = Number.isFinite(deltaFromPrice)
-      ? deltaFromPrice
-      : toNum(
-          row?.change_24h_pct !== undefined ? row.change_24h_pct : row?.change24hPct,
-          0
-        );
-    let openInterestUsd = toNum(row?.open_interest_usd, NaN);
-    if (!Number.isFinite(openInterestUsd) && priceRow) {
-      const oi = toNum(priceRow?.open_interest, 0);
-      openInterestUsd = Number.isFinite(mark) ? oi * mark : 0;
-    }
-    const sharePct = totalVolumeUniverse > 0 ? (volume / totalVolumeUniverse) * 100 : 0;
-    const movement = getTidalMovement(deltaPct);
+    const sharePct = Number.isFinite(Number(row?.sharePct))
+      ? toNum(row?.sharePct, 0)
+      : totalVolumeUniverse > 0
+      ? (volume / totalVolumeUniverse) * 100
+      : 0;
+    const shareDeltaPct = Number.isFinite(Number(row?.shareChange24hPct))
+      ? toNum(row?.shareChange24hPct, 0)
+      : 0;
+    const movement = String(row?.shareDirection || "").trim() || getTidalMovement(shareDeltaPct);
     return {
       symbol,
       symbolKey: buildVolumeSymbolCandidates(symbol).join("|"),
-      pairLabel: buildPerpPairLabel(symbol),
       volume,
       sharePct,
-      deltaPct,
+      shareDeltaPct,
       movement,
       volumeRank,
-      openInterestUsd: Number.isFinite(openInterestUsd) ? openInterestUsd : 0,
-      momentumScore: 0,
-      sparkline: [],
-      reasonChips: [],
     };
   });
-  const maxVolume = normalizedRows.reduce((max, row) => Math.max(max, toNum(row?.volume, 0)), 0);
-  const maxAbsDelta = normalizedRows.reduce(
-    (max, row) => Math.max(max, Math.abs(toNum(row?.deltaPct, 0))),
-    0
-  );
-  normalizedRows.forEach((row) => {
-    row.momentumScore =
-      toNum(row.deltaPct, 0) * Math.sqrt(Math.max(toNum(row.sharePct, 0), 0) + 1) +
-      Math.log10(Math.max(toNum(row.volume, 0), 1)) * 0.6;
-    row.sparkline = buildTidalSparklineHeights(row, maxVolume, maxAbsDelta);
-  });
-  const momentumLeaderCount = Math.min(5, normalizedRows.length);
-  const momentumLeaderKeys = new Set(
-    normalizedRows
-      .slice()
-      .sort((a, b) => toNum(b.momentumScore, 0) - toNum(a.momentumScore, 0))
-      .slice(0, momentumLeaderCount)
-      .map((row) => row.symbolKey)
-  );
-  normalizedRows.forEach((row) => {
-    row.reasonChips = buildTidalReasonChips(row, momentumLeaderKeys.has(row.symbolKey));
-  });
-
   const filterNeedle = String(state.volumeFilter || "").trim().toUpperCase();
   let rankedRows = normalizedRows.filter((row) => {
     if (!filterNeedle) return true;
     return (
       String(row?.symbol || "").toUpperCase().includes(filterNeedle) ||
-      String(row?.pairLabel || "").toUpperCase().includes(filterNeedle)
+      String(row?.symbolKey || "").toUpperCase().includes(filterNeedle)
     );
   });
 
-  if (state.volumeSort === "share") {
-    rankedRows = rankedRows.sort((a, b) => {
-      const av = toNum(a?.sharePct, 0);
-      const bv = toNum(b?.sharePct, 0);
-      if (bv === av) return toNum(b?.volume, 0) - toNum(a?.volume, 0);
-      return bv - av;
-    });
-  } else if (state.volumeSort === "momentum") {
-    rankedRows = rankedRows.sort((a, b) => {
-      const av = toNum(a?.momentumScore, 0);
-      const bv = toNum(b?.momentumScore, 0);
-      if (bv === av) return toNum(b?.volume, 0) - toNum(a?.volume, 0);
-      return bv - av;
-    });
-  } else {
-    rankedRows = rankedRows.sort((a, b) => {
-      const av = toNum(a?.volume, 0);
-      const bv = toNum(b?.volume, 0);
-      return bv - av;
-    });
-  }
+  rankedRows = rankedRows.sort((a, b) => {
+    const rankA = Math.max(1, toNum(a?.volumeRank, 0));
+    const rankB = Math.max(1, toNum(b?.volumeRank, 0));
+    if (rankA !== rankB) return rankA - rankB;
+    const volumeA = toNum(a?.volume, 0);
+    const volumeB = toNum(b?.volume, 0);
+    if (volumeA !== volumeB) return volumeB - volumeA;
+    const symbolA = String(a?.symbol || "").toUpperCase();
+    const symbolB = String(b?.symbol || "").toUpperCase();
+    return symbolA.localeCompare(symbolB);
+  });
+
+  const maxSharePct = rankedRows.reduce((max, row) => Math.max(max, toNum(row?.sharePct, 0)), 0);
 
   const totalRows = rankedRows.length;
   state.volumeRankFilteredTotal = totalRows;
@@ -3373,62 +6622,70 @@ function renderExchange() {
   state.volumeRankPage = Math.max(1, Math.min(totalPages, Number(state.volumeRankPage || 1)));
   const pageStart = (state.volumeRankPage - 1) * pageSize;
   const pageRows = rankedRows.slice(pageStart, pageStart + pageSize);
+  const resolveFillWidth = (sharePct) => {
+    const normalizedShare = maxSharePct > 0 ? clamp(sharePct / maxSharePct, 0, 1) : 0;
+    return normalizedShare <= 0 ? 0 : Math.min(100, 16 + Math.pow(normalizedShare, 0.78) * 84);
+  };
+  const renderListRow = (row, rank) => {
+    const volume = toNum(row?.volume, 0);
+    const sharePct = clamp(toNum(row?.sharePct, 0), 0, 100);
+    const shareDeltaPct = toNum(row?.shareDeltaPct, 0);
+    const deltaClass = shareDeltaPct < 0 ? "is-down" : "is-up";
+    const iconSrc = resolveVolumeRankIcon(row?.symbol || "");
+    const fillWidth = resolveFillWidth(sharePct);
+    const deltaDigits = Math.abs(shareDeltaPct) < 0.1 ? 2 : 1;
+    return `<article class="volume-rank-hero-row movement-${row?.movement || "flat"}${rank === 1 ? " is-lead" : ""}" data-token-symbol="${escapeHtml(
+      row?.symbol || ""
+    )}" role="button" tabindex="0">
+      <div class="volume-rank-hero-rank">
+        <span class="volume-rank-hero-rank-badge">${String(rank)}</span>
+      </div>
+      <div class="volume-rank-hero-asset">
+        <div class="volume-rank-hero-icon">
+          <img src="${escapeHtml(iconSrc)}" alt="${escapeHtml(row?.symbol || "")} logo" loading="eager" decoding="async" />
+        </div>
+        <div class="volume-rank-hero-copy">
+          <strong>${escapeHtml(row?.symbol || "-")}</strong>
+        </div>
+      </div>
+      <div class="volume-rank-hero-bar" title="Bar length shows market share. Color shows last 24 hours move.">
+        <div class="volume-rank-hero-track" aria-hidden="true">
+          <span class="volume-rank-hero-fill ${deltaClass}" style="width:${fillWidth.toFixed(2)}%"></span>
+        </div>
+      </div>
+      <div class="volume-rank-hero-share">
+        <span>${fmt(sharePct, 1)}%</span>
+      </div>
+      <div class="volume-rank-hero-change ${deltaClass}">
+        <span>${escapeHtml(fmtSignedPct(shareDeltaPct, deltaDigits))}</span>
+      </div>
+      <div class="volume-rank-hero-volume">
+        <strong>$${fmtCompact(volume)}</strong>
+      </div>
+    </article>`;
+  };
   setText("tidal-last-updated", `updated ${fmtAgo(payload.generatedAt)}`);
-  document.querySelectorAll("#volume-sort-toggle .sort-mode-btn").forEach((btn) => {
-    btn.classList.toggle("active", btn.dataset.sortMode === state.volumeSort);
+  document.querySelectorAll("[data-volume-rank-timeframe]").forEach((btn) => {
+    btn.classList.toggle("active", String(btn.dataset.volumeRankTimeframe || "all") === "all");
   });
-
   if (body) {
-    body.innerHTML = pageRows.length
-      ? pageRows
-          .map((row, index) => {
-            const rank = pageStart + index + 1;
-            const tier = getTidalTier(rank);
-            const volume = toNum(row?.volume, 0);
-            const share = toNum(row?.sharePct, 0);
-            const delta = toNum(row?.deltaPct, 0);
-            const dominance = maxVolume > 0 ? clamp((volume / maxVolume) * 100, 7, 100) : 0;
-            const deltaClass = delta >= 0 ? "up" : "down";
-            const movementIcon = row?.movement === "up" ? "▲" : row?.movement === "down" ? "▼" : "•";
-            const reasonMarkup = (Array.isArray(row?.reasonChips) ? row.reasonChips : [])
-              .map((chip) => `<span class="tidal-reason-chip">${escapeHtml(chip)}</span>`)
-              .join("");
-            const sparklineMarkup = (Array.isArray(row?.sparkline) ? row.sparkline : [])
-              .map((point) => `<span style="--spark-h:${toNum(point, 20).toFixed(2)}%"></span>`)
-              .join("");
-            return `<article class="tidal-row tier-${tier.key} movement-${row?.movement || "flat"}${
-              rank <= 3 ? " is-prestige" : ""
-            }" style="--tidal-dominance:${dominance.toFixed(2)}%">
-              <div class="tidal-row-fill"></div>
-              <div class="tidal-row-grid">
-                <div class="tidal-rank-slot">
-                  <span class="tidal-rank-pill">#${String(rank).padStart(2, "0")}</span>
-                  <span class="tidal-tier-chip">${tier.label}</span>
-                </div>
-                <div class="tidal-symbol-slot">
-                  <div class="tidal-symbol-line">
-                    <strong>${escapeHtml(row?.symbol || "-")}</strong>
-                    <span class="tidal-pair-label">${escapeHtml(row?.pairLabel || "-")}</span>
-                  </div>
-                  <div class="tidal-detail-line">
-                    <span class="tidal-movement-chip ${row?.movement || "flat"}">${movementIcon} ${fmtSigned(
-              delta,
-              2
-            )}%</span>
-                    <span class="tidal-sparkline" aria-hidden="true">${sparklineMarkup}</span>
-                    <span class="tidal-reason-strip">${reasonMarkup}</span>
-                  </div>
-                </div>
-                <div class="tidal-metrics-slot">
-                  <strong class="tidal-volume-value">$${fmtCompact(volume)}</strong>
-                  <span class="tidal-share-value">${fmt(share, 2)}% share</span>
-                  <span class="tidal-delta-value ${deltaClass}">${fmtSigned(delta, 2)}%</span>
-                </div>
-              </div>
-            </article>`;
-          })
-          .join("")
-      : "<div class='tidal-empty muted'>No symbols match the current filter.</div>";
+    if (!pageRows.length) {
+      body.innerHTML = "<div class='tidal-empty muted'>No symbols match the current filter.</div>";
+    } else {
+      body.innerHTML = `<div class="volume-rank-hero-card">
+        <div class="volume-rank-hero-columns" aria-hidden="true">
+          <span>Rank</span>
+          <span>Asset</span>
+          <span></span>
+          <span>Market share</span>
+          <span>24H</span>
+          <span>Volume</span>
+        </div>
+        <div class="volume-rank-hero-list">
+          ${pageRows.map((row) => renderListRow(row, Math.max(1, toNum(row?.volumeRank, 0)))).join("")}
+        </div>
+      </div>`;
+    }
   }
 
   setText("volume-total-label", `${fmt(totalRows, 0)} symbols`);
@@ -3437,50 +6694,763 @@ function renderExchange() {
   const volumeNext = el("volume-next-btn");
   if (volumePrev) volumePrev.disabled = state.volumeRankPage <= 1;
   if (volumeNext) volumeNext.disabled = state.volumeRankPage >= totalPages;
+  if (!state.volumeSeries) {
+    refreshVolumeSeries().catch(() => {
+      renderActiveSeries();
+    });
+  }
+  renderActiveSeries();
+}
+
+function walletSyncTone(status) {
+  const normalized = String(status || "").trim().toLowerCase();
+  if (normalized === "healthy" || normalized === "good" || normalized === "fixed") return "good";
+  if (normalized === "recovering" || normalized === "catching_up" || normalized === "warn") return "warn";
+  if (normalized === "degraded" || normalized === "stuck" || normalized === "bad") return "bad";
+  return "muted";
+}
+
+function applyWalletSyncPill(id, label, status) {
+  const node = el(id);
+  if (!node) return;
+  node.textContent = label || "-";
+  node.className = `wallet-sync-pill ${walletSyncTone(status)}`;
+}
+
+function fmtWalletSyncUsd(value) {
+  const amount = toNum(value, NaN);
+  if (!Number.isFinite(amount)) return "-";
+  const sign = amount < 0 ? "-" : "";
+  const abs = Math.abs(amount);
+  return `${sign}$${abs >= 1000 ? fmtCompact(abs) : fmt(abs, 2)}`;
+}
+
+function renderWalletSyncGroup(containerId, group = {}, mode = "wallets") {
+  const node = el(containerId);
+  if (!node) return;
+  if (!group || typeof group !== "object") {
+    node.innerHTML = "";
+    return;
+  }
+  const progressPct = clamp(toNum(group.progressPct, 0), 0, 100);
+  const count = Math.max(0, toNum(group.count, 0));
+  const complete = Math.max(0, toNum(group.complete, 0));
+  const trackedLive = Math.max(0, toNum(group.trackedLiveCount, 0));
+  const pendingProof = Math.max(0, toNum(group.pendingProofCount, 0));
+  const remaining = Math.max(0, pendingProof || count - complete);
+  const active = Math.max(0, toNum(group.active, 0));
+  const localProofComplete = Math.max(0, toNum(group.localProofComplete, 0));
+  const headProofComplete = Math.max(0, toNum(group.headProofComplete, 0));
+  const runs = Math.max(0, toNum(group.runs, 0));
+  const runDelta = Math.max(0, toNum(group.runDelta, 0));
+  const completedRuns = Math.max(0, toNum(group.completedRuns, 0));
+  const completedRunDelta = Math.max(0, toNum(group.completedRunDelta, 0));
+  const completedVerifiedRuns = Math.max(0, toNum(group.completedVerifiedRuns, 0));
+  const completedVerifiedDelta = Math.max(0, toNum(group.completedVerifiedDelta, 0));
+  const phaseType = String(group.phaseType || "").trim();
+  let summaryLine = [
+    `${fmt(count, 0)} wallets`,
+    `${fmt(complete, 0)} complete`,
+    `${fmt(remaining, 0)} remaining`,
+    active > 0 ? `${fmt(active, 0)} active now` : "",
+  ]
+    .filter(Boolean)
+    .join(" • ");
+  if (phaseType === "empty_metric_recovery") {
+    summaryLine = [
+      `${fmt(count, 0)} wallets`,
+      `${fmt(toNum(group.recoveredLocalCount, 0), 0)} recovered`,
+      `${fmt(toNum(group.stillEmptyCount, 0), 0)} still empty`,
+      active > 0 ? `${fmt(active, 0)} active now` : "",
+    ]
+      .filter(Boolean)
+      .join(" • ");
+  } else if (phaseType === "catch_up_verification") {
+    summaryLine = [
+      `${fmt(count, 0)} wallets`,
+      `${fmt(localProofComplete, 0)} local history complete`,
+      `${fmt(headProofComplete, 0)} verified through now`,
+      `${fmt(remaining, 0)} pending head proof`,
+      active > 0 ? `${fmt(active, 0)} active now` : "",
+    ]
+      .filter(Boolean)
+      .join(" • ");
+  } else if (phaseType === "online_live_tracking") {
+    summaryLine = [
+      `${fmt(count, 0)} wallets`,
+      `${fmt(trackedLive, 0)} live now`,
+      active > 0 ? `${fmt(active, 0)} refreshing now` : "",
+    ]
+      .filter(Boolean)
+      .join(" • ");
+  } else if (phaseType === "heavy_paused") {
+    summaryLine = [
+      `${fmt(count, 0)} wallets`,
+      `${fmt(complete, 0)} locally complete`,
+      "paused",
+    ]
+      .filter(Boolean)
+      .join(" • ");
+  } else if (phaseType === "history_completion" || phaseType === "history") {
+    summaryLine = [
+      `${fmt(count, 0)} wallets`,
+      "validating to deposit floor",
+      active > 0 ? `${fmt(active, 0)} active now` : "",
+    ]
+      .filter(Boolean)
+      .join(" • ");
+  } else if (phaseType === "deep_history_repair" || phaseType === "deep_repair") {
+    summaryLine = [
+      `${fmt(count, 0)} wallets`,
+      "deposit-floor breach detected",
+      active > 0 ? `${fmt(active, 0)} active now` : "",
+    ]
+      .filter(Boolean)
+      .join(" • ");
+  } else if (phaseType === "gap_recovery" || phaseType === "gap") {
+    summaryLine = [
+      `${fmt(count, 0)} wallets`,
+      "closing baseline-to-now gap",
+      active > 0 ? `${fmt(active, 0)} active now` : "",
+    ]
+      .filter(Boolean)
+      .join(" • ");
+  } else if (phaseType === "live_mode" || phaseType === "live" || phaseType === "live_transition") {
+    summaryLine = [
+      `${fmt(count, 0)} wallets`,
+      "in live transition or live upkeep",
+      active > 0 ? `${fmt(active, 0)} refreshing now` : "",
+    ]
+      .filter(Boolean)
+      .join(" • ");
+  }
+  const metaParts = [];
+  if (group.focusLabel) metaParts.push(String(group.focusLabel));
+  if (trackedLive > 0) metaParts.push(`${fmt(trackedLive, 0)} live`);
+  if (pendingProof > 0) metaParts.push(`${fmt(pendingProof, 0)} pending proof`);
+  if (toNum(group.stillEmptyCount, 0) > 0) {
+    metaParts.push(`${fmt(toNum(group.stillEmptyCount, 0), 0)} still empty locally`);
+  }
+  if (toNum(group.recoveredLocalCount, 0) > 0) {
+    metaParts.push(`${fmt(toNum(group.recoveredLocalCount, 0), 0)} recovered locally`);
+  }
+  if (localProofComplete > 0) metaParts.push(`${fmt(localProofComplete, 0)} local proof passed`);
+  if (headProofComplete > 0) metaParts.push(`${fmt(headProofComplete, 0)} head proof passed`);
+  if (group.openMismatchWallets !== undefined) {
+    metaParts.push(`${fmt(toNum(group.openMismatchWallets, 0), 0)} mismatch`);
+  }
+  if (runs > 0) metaParts.push(`${fmt(runs, 0)} total runs`);
+  if (runDelta > 0) metaParts.push(`+${fmt(runDelta, 0)} runs this refresh`);
+  if (completedRuns > 0) metaParts.push(`${fmt(completedRuns, 0)} finished runs`);
+  if (completedRunDelta > 0) metaParts.push(`+${fmt(completedRunDelta, 0)} finished this refresh`);
+  if (completedVerifiedRuns > 0) {
+    metaParts.push(`${fmt(completedVerifiedRuns, 0)} cumulative verified passes`);
+  }
+  if (completedVerifiedDelta > 0) {
+    metaParts.push(`+${fmt(completedVerifiedDelta, 0)} cumulative verified this refresh`);
+  }
+  if (group.lastCompletedAt) metaParts.push(`last finished ${fmtAgo(group.lastCompletedAt)}`);
+  if (group.lastPromotedAt) metaParts.push(`last promoted ${fmtAgo(group.lastPromotedAt)}`);
+  if (group.updatedAt) metaParts.push(`updated ${fmtAgo(group.updatedAt)}`);
+  const summaryMetrics = Array.isArray(group.summaryMetrics) ? group.summaryMetrics.filter(Boolean) : [];
+  const items =
+    mode === "shards"
+      ? Array.isArray(group.shards)
+        ? group.shards
+        : []
+      : Array.isArray(group.wallets)
+      ? group.wallets
+      : [];
+  const visibleItems = items.slice(0, mode === "shards" ? 8 : 12);
+  const rowsHtml = visibleItems
+    .map((item) => {
+      if (mode === "shards") {
+        const shardPct = clamp(toNum(item.progressPct, 0), 0, 100);
+        return `<div class="wallet-sync-row">
+          <div class="wallet-sync-row-head">
+            <div class="wallet-sync-row-copy">
+              <strong>Shard ${escapeHtml(item.shardIndex ?? "-")}</strong>
+              <span>${escapeHtml(
+                [
+                  `${fmt(toNum(item.hotWallets, 0), 0)} hot`,
+                  `${fmt(toNum(item.freshWallets, 0), 0)} fresh`,
+                  `${fmt(toNum(item.staleWallets, 0), 0)} stale`,
+                  item.mode || "normal",
+                ].join(" • ")
+              )}</span>
+            </div>
+            <span class="wallet-sync-row-value">${escapeHtml(`${fmt(shardPct, 1)}%`)}</span>
+          </div>
+          <div class="wallet-sync-progress"><span style="width:${shardPct}%"></span></div>
+        </div>`;
+      }
+      const itemPct = clamp(toNum(item.progressPct, 0), 0, 100);
+      const summaryLabel =
+        item.summaryLabel ||
+        [
+          `${fmt(toNum(item.tradeRowsLoaded, 0), 0)} trades`,
+          fmtWalletSyncUsd(item.volumeUsdRaw),
+          `${fmt(toNum(item.openPositions, 0), 0)} open`,
+        ].join(" • ");
+      const metaLabel =
+        item.metaLabel ||
+        [
+          item.updatedAt ? `tracker ${fmtAgo(item.updatedAt)}` : "",
+          item.liveUpdatedAt ? `live ${fmtAgo(item.liveUpdatedAt)}` : "",
+          toNum(item.tradePagesPending, 0) > 0 || toNum(item.fundingPagesPending, 0) > 0
+            ? `${fmt(toNum(item.tradePagesPending, 0) + toNum(item.fundingPagesPending, 0), 0)} pending`
+            : "",
+          toNum(item.tradePagesFailed, 0) > 0 || toNum(item.fundingPagesFailed, 0) > 0
+            ? `${fmt(toNum(item.tradePagesFailed, 0) + toNum(item.fundingPagesFailed, 0), 0)} retry`
+            : "",
+        ]
+          .filter(Boolean)
+          .join(" • ");
+      return `<div class="wallet-sync-row">
+        <div class="wallet-sync-row-head">
+          <div class="wallet-sync-row-copy">
+            <code class="wallet-sync-row-wallet">${escapeHtml(item.wallet || shortWalletAddress(item.wallet))}</code>
+            <span>${escapeHtml(summaryLabel)}</span>
+          </div>
+          <span class="wallet-sync-row-value">${escapeHtml(`${fmt(itemPct, 1)}%`)}</span>
+        </div>
+        <div class="wallet-sync-progress"><span style="width:${itemPct}%"></span></div>
+        <div class="wallet-sync-row-meta">
+          <span>${escapeHtml(item.remainingLabel || "-")}</span>
+          <span>${escapeHtml(metaLabel)}</span>
+        </div>
+      </div>`;
+    })
+    .join("");
+  const overflowCount = Math.max(0, items.length - visibleItems.length);
+  const metricsHtml = summaryMetrics.length
+    ? `<div class="wallet-sync-metric-grid">${summaryMetrics
+        .map((item) => {
+          const label = String(item.label || "").trim() || "-";
+          const value = String(item.value || "").trim() || "-";
+          const note = String(item.note || "").trim();
+          return `<div class="wallet-sync-metric-card">
+            <span class="wallet-sync-metric-label">${escapeHtml(label)}</span>
+            <strong class="wallet-sync-metric-value">${escapeHtml(value)}</strong>
+            ${
+              note
+                ? `<span class="wallet-sync-metric-note">${escapeHtml(note)}</span>`
+                : ""
+            }
+          </div>`;
+        })
+        .join("")}</div>`
+    : "";
+  const badgeLabel =
+    group.badgeLabel && String(group.badgeLabel).trim()
+      ? String(group.badgeLabel).trim()
+      : `${fmt(progressPct, 1)}%`;
+  node.innerHTML = `<div class="wallet-sync-group-head">
+      <div>
+        <h3>${escapeHtml(group.label || "Tracker Group")}</h3>
+        <p>${escapeHtml(summaryLine || "No status yet.")}</p>
+        <p>${escapeHtml(metaParts.join(" • ") || "No status yet.")}</p>
+      </div>
+      <span class="wallet-sync-group-badge">${escapeHtml(badgeLabel)}</span>
+    </div>
+    <div class="wallet-sync-progress wallet-sync-progress-wide"><span style="width:${progressPct}%"></span></div>
+    ${metricsHtml}
+    <div class="wallet-sync-group-list">${summaryMetrics.length ? "" : rowsHtml || '<div class="wallet-sync-row wallet-sync-row-empty">No wallets in this group.</div>'}${
+      overflowCount > 0
+        ? `<div class="wallet-sync-row wallet-sync-row-empty">+${escapeHtml(fmt(overflowCount, 0))} more</div>`
+        : ""
+    }</div>`;
+}
+
+function renderWalletSyncReporter(payload = {}) {
+  if (!el("wallet-sync-stage")) {
+    return;
+  }
+  const payloadSync =
+    payload && payload.syncHealth && typeof payload.syncHealth === "object"
+      ? payload.syncHealth
+      : null;
+  const liveSync =
+    state && state.walletSync && typeof state.walletSync === "object"
+      ? state.walletSync
+      : null;
+  const payloadGeneratedAt = toNum(payloadSync?.generatedAt, 0);
+  const liveGeneratedAt = toNum(liveSync?.generatedAt, 0);
+  const sync =
+    liveSync && (!payloadSync || liveGeneratedAt >= payloadGeneratedAt)
+      ? liveSync
+      : payloadSync;
+  if (!sync) {
+    applyWalletSyncPill("wallet-sync-status-pill", "Checking", "muted");
+    applyWalletSyncPill("wallet-sync-through-pill", "Through -", "muted");
+    setText(
+      "wallet-sync-meta",
+      "Checking wallet review pipeline state."
+    );
+    renderWalletSyncGroup("wallet-sync-history-group", null);
+    renderWalletSyncGroup("wallet-sync-repair-group", null);
+    renderWalletSyncGroup("wallet-sync-gap-group", null);
+    renderWalletSyncGroup("wallet-sync-live-group", null);
+    return;
+  }
+  const hasDetailedSync =
+    Boolean(sync?.reviewPipeline?.groups && typeof sync.reviewPipeline.groups === "object") ||
+    Boolean(sync?.trackerPool && typeof sync.trackerPool === "object") ||
+    Boolean(sync?.groups && typeof sync.groups === "object");
+  if (!hasDetailedSync) {
+    applyWalletSyncPill(
+      "wallet-sync-status-pill",
+      sync.fixed ? "Fixed" : titleCase(sync.overallStatus || "checking"),
+      sync.overallStatus || "muted"
+    );
+    applyWalletSyncPill(
+      "wallet-sync-through-pill",
+      sync?.counts?.totalWallets
+        ? `${fmt(toNum(sync.counts.totalWallets, 0), 0)} wallets`
+        : "Waiting",
+      "muted"
+    );
+    setText(
+      "wallet-sync-meta",
+      [
+        sync?.visibleWallets ? `${fmt(toNum(sync.visibleWallets, 0), 0)} visible` : "",
+        sync?.hiddenZeroTradeWallets
+          ? `${fmt(toNum(sync.hiddenZeroTradeWallets, 0), 0)} hidden zero-trade`
+          : "",
+        sync?.reviewPipeline?.recentUpdates?.["1m"]
+          ? `${fmt(toNum(sync.reviewPipeline.recentUpdates["1m"], 0), 0)} updates in 1m`
+          : "",
+        sync?.generatedAt ? `updated ${fmtAgo(sync.generatedAt)}` : "waiting for detailed sync state",
+      ]
+        .filter(Boolean)
+        .join(" • ")
+    );
+    renderWalletSyncGroup("wallet-sync-history-group", null);
+    renderWalletSyncGroup("wallet-sync-repair-group", null);
+    renderWalletSyncGroup("wallet-sync-gap-group", null);
+    renderWalletSyncGroup("wallet-sync-live-group", null);
+    return;
+  }
+
+  const counts = sync.counts || {};
+  const freshness = sync.freshness || {};
+  const components = sync.components || {};
+  const groups = sync.groups || {};
+  const trackerPool =
+    sync && sync.trackerPool && typeof sync.trackerPool === "object"
+      ? sync.trackerPool
+      : {};
+  const trackerProgress =
+    trackerPool && trackerPool.progress && typeof trackerPool.progress === "object"
+      ? trackerPool.progress
+      : {};
+  const phaseOneLaneModes =
+    trackerProgress && trackerProgress.phase1LaneModes && typeof trackerProgress.phase1LaneModes === "object"
+      ? trackerProgress.phase1LaneModes
+      : {};
+  const probeMode = phaseOneLaneModes.probe || {};
+  const recoveryMode = phaseOneLaneModes.recovery || {};
+  const proofMode = phaseOneLaneModes.proof || {};
+  const trackerTargets =
+    trackerPool && trackerPool.targets && typeof trackerPool.targets === "object"
+      ? trackerPool.targets
+      : {};
+  const trackerBottlenecks =
+    trackerPool && trackerPool.bottlenecks && typeof trackerPool.bottlenecks === "object"
+      ? trackerPool.bottlenecks
+      : {};
+  const reviewPipeline =
+    sync && sync.reviewPipeline && typeof sync.reviewPipeline === "object"
+      ? sync.reviewPipeline
+      : null;
+  if (reviewPipeline && reviewPipeline.groups && typeof reviewPipeline.groups === "object") {
+    const reviewGroups = reviewPipeline.groups || {};
+    const findSummaryMetricValue = (group, label) => {
+      const metrics = Array.isArray(group?.summaryMetrics) ? group.summaryMetrics : [];
+      const match = metrics.find((item) => String(item?.label || "").trim().toLowerCase() === String(label || "").trim().toLowerCase());
+      return match ? toNum(match.value, 0) : 0;
+    };
+    const totalWallets = Math.max(0, toNum(reviewPipeline.totalWallets, 0));
+    const historyCount = Math.max(0, toNum(reviewGroups.historyCompletion?.count, 0));
+    const deepRepairCount = Math.max(0, toNum(reviewGroups.deepRepair?.count, 0));
+    const gapCount = Math.max(0, toNum(reviewGroups.gapRecovery?.count, 0));
+    const liveCount = Math.max(0, toNum(reviewGroups.liveMode?.count, 0));
+    const activeClaims = reviewPipeline.activeClaims && typeof reviewPipeline.activeClaims === "object"
+      ? reviewPipeline.activeClaims
+      : {};
+    const activeTotal = Object.values(activeClaims).reduce(
+      (sum, value) => sum + Math.max(0, toNum(value, 0)),
+      0
+    );
+    const recentUpdates1m = Math.max(
+      0,
+      toNum(reviewPipeline.recentUpdates?.["1m"], 0)
+    );
+    const verifiedZeroTradeWallets = Math.max(
+      0,
+      toNum(
+        reviewPipeline.verifiedZeroTradeWallets,
+        findSummaryMetricValue(reviewGroups.liveMode, "Verified Zero") ||
+          findSummaryMetricValue(reviewGroups.gapRecovery, "Verified Zero")
+      )
+    );
+    const visibleWallets = Math.max(
+      0,
+      toNum(reviewPipeline.visibleWallets, toNum(sync.visibleWallets, 0))
+    );
+    const hiddenZeroTradeWallets = Math.max(
+      0,
+      toNum(reviewPipeline.hiddenZeroTradeWallets, toNum(sync.hiddenZeroTradeWallets, 0))
+    );
+    const baselineThroughDate = String(reviewPipeline.baselineThroughDate || "-").trim() || "-";
+    const status =
+      liveCount >= totalWallets && totalWallets > 0
+        ? "good"
+        : activeTotal > 0
+        ? "good"
+        : deepRepairCount > 0
+        ? "warn"
+        : "bad";
+    const statusLabel =
+      liveCount >= totalWallets && totalWallets > 0
+        ? "Complete"
+        : activeTotal > 0
+        ? "Running"
+        : deepRepairCount > 0
+        ? "Review"
+        : "Waiting";
+    applyWalletSyncPill("wallet-sync-status-pill", statusLabel, status);
+    applyWalletSyncPill(
+      "wallet-sync-through-pill",
+      activeTotal > 0
+        ? `${fmt(activeTotal, 0)} active`
+        : `${fmt(totalWallets, 0)} wallets`,
+      "muted"
+    );
+    setText(
+      "wallet-sync-meta",
+      [
+        `${fmt(totalWallets, 0)} wallets in review pipeline`,
+        `${fmt(historyCount, 0)} in history completion`,
+        `${fmt(deepRepairCount, 0)} in deep repair`,
+        `${fmt(gapCount, 0)} in gap recovery`,
+        `${fmt(liveCount, 0)} in live mode`,
+        verifiedZeroTradeWallets > 0 ? `${fmt(verifiedZeroTradeWallets, 0)} verified zero-trade` : "",
+        visibleWallets > 0 ? `${fmt(visibleWallets, 0)} visible in explorer` : "",
+        hiddenZeroTradeWallets > 0 ? `${fmt(hiddenZeroTradeWallets, 0)} hidden zero-trade` : "",
+        activeTotal > 0 ? `${fmt(activeTotal, 0)} active claims` : "",
+        recentUpdates1m > 0 ? `${fmt(recentUpdates1m, 0)} updates in 1m` : "",
+        `baseline through ${baselineThroughDate}`,
+        reviewPipeline.generatedAt ? `updated ${fmtAgo(reviewPipeline.generatedAt)}` : "",
+      ]
+        .filter(Boolean)
+        .join(" • ")
+    );
+    renderWalletSyncGroup("wallet-sync-history-group", reviewGroups.historyCompletion, "wallets");
+    renderWalletSyncGroup("wallet-sync-repair-group", reviewGroups.deepRepair, "wallets");
+    renderWalletSyncGroup("wallet-sync-gap-group", reviewGroups.gapRecovery, "wallets");
+    renderWalletSyncGroup("wallet-sync-live-group", reviewGroups.liveMode, "wallets");
+    return;
+  }
+  const cohortTotal = Math.max(
+    0,
+    toNum(trackerProgress.knownWallets, 0) ||
+      toNum(groups.untracked?.count, 0) +
+        toNum(groups.catchUp?.count, 0) +
+        toNum(groups.trackedPool?.count, 0)
+  );
+  const stillEmpty = Math.max(0, toNum(groups.untracked?.count, 0));
+  const zeroHistoryResolved = Math.max(
+    0,
+    toNum(groups.zeroHistory?.count, 0) || toNum(trackerProgress.zeroHistory, 0)
+  );
+  const locallyRecovered = Math.max(
+    0,
+    toNum(groups.catchUp?.count, 0) + toNum(groups.trackedPool?.count, 0)
+  );
+  const verifiedThroughNow = Math.max(0, toNum(groups.trackedPool?.count, 0));
+  const remainingToResolve = Math.max(
+    0,
+    cohortTotal - verifiedThroughNow - zeroHistoryResolved
+  );
+  const activeNow = Math.max(
+    0,
+    toNum(groups.untracked?.active, 0) +
+      toNum(groups.catchUp?.active, 0) +
+      toNum(groups.trackedPool?.active, 0)
+  );
+  const phaseOneProgressPct =
+    cohortTotal > 0 ? clamp((verifiedThroughNow / cohortTotal) * 100, 0, 100) : 0;
+  const phaseOneWallets = [
+    ...((groups.untracked && groups.untracked.wallets) || []),
+    ...((groups.catchUp && groups.catchUp.wallets) || []),
+    ...((groups.trackedPool && groups.trackedPool.wallets) || []),
+  ].slice(0, 12);
+  const phaseOneGroup = {
+    label: "Phase 1 • Empty-Metric Wallets",
+    phaseType: "catch_up_verification",
+    count: cohortTotal,
+    active: activeNow,
+    complete: verifiedThroughNow,
+    progressPct: phaseOneProgressPct,
+    pendingProofCount: stillEmpty + toNum(groups.catchUp?.count, 0),
+    localProofComplete: locallyRecovered,
+    headProofComplete: verifiedThroughNow,
+    stillEmptyCount: stillEmpty,
+    zeroHistoryResolved,
+    recoveredLocalCount: locallyRecovered,
+    runs: toNum(trackerProgress.pendingLaneRuns, 0),
+    runDelta: toNum(trackerProgress.pendingLaneRunDelta, 0),
+    completedRuns: toNum(trackerProgress.pendingLaneCompletedRuns, 0),
+    completedRunDelta: toNum(trackerProgress.pendingLaneCompletedRunDelta, 0),
+    completedVerifiedRuns: toNum(trackerProgress.pendingLaneCompletedVerifiedRuns, 0),
+    completedVerifiedDelta: toNum(trackerProgress.pendingLaneCompletedVerifiedDelta, 0),
+    lastCompletedAt: trackerProgress.pendingLaneLastCompletedAt || null,
+    lastCompletedWallet: trackerProgress.pendingLaneLastCompletedWallet || null,
+    lastPromotedAt: trackerProgress.pendingLaneLastPromotedAt || null,
+    lastPromotedWallet: trackerProgress.pendingLaneLastPromotedWallet || null,
+    badgeLabel: `${fmt(cohortTotal, 0)} cohort`,
+    focusLabel: "Only the original empty-metric cohort is being tracked in phase 1.",
+    updatedAt: toNum(trackerPool.updatedAt, 0) || toNum(sync.generatedAt, 0) || null,
+    summaryMetrics: [
+      {
+        label: "Currently Tracking",
+        value: fmt(activeNow, 0),
+        note: "wallets active right now",
+      },
+      {
+        label: "Tracked With Metrics",
+        value: fmt(verifiedThroughNow, 0),
+        note: "non-zero wallets verified",
+      },
+      {
+        label: "Zero-History Resolved",
+        value: fmt(zeroHistoryResolved, 0),
+        note: "confirmed empty-history wallets",
+      },
+      {
+        label: "Remaining",
+        value: fmt(remainingToResolve, 0),
+        note: "still being checked",
+      },
+    ],
+    wallets: [],
+  };
+
+  applyWalletSyncPill(
+    "wallet-sync-status-pill",
+    sync.fixed ? "Fixed" : titleCase(sync.overallStatus || "unknown"),
+    sync.overallStatus
+  );
+  applyWalletSyncPill(
+    "wallet-sync-through-pill",
+    `${fmt(phaseOneProgressPct, 1)}% Verified`,
+    trackerPool.mode || "muted"
+  );
+
+  setText(
+    "wallet-sync-meta",
+    [
+      `${fmt(cohortTotal, 0)} wallets in phase 1`,
+      `${fmt(stillEmpty, 0)} still empty`,
+      `${fmt(verifiedThroughNow, 0)} tracked with metrics`,
+      `${fmt(zeroHistoryResolved, 0)} zero-history resolved`,
+      activeNow > 0 ? `${fmt(activeNow, 0)} active now` : "",
+      toNum(probeMode.active, 0) > 0 ? `probe ${fmt(toNum(probeMode.active, 0), 0)} active` : "",
+      toNum(recoveryMode.active, 0) > 0
+        ? `recovery ${fmt(toNum(recoveryMode.active, 0), 0)} active`
+        : "",
+      toNum(proofMode.active, 0) > 0 ? `proof ${fmt(toNum(proofMode.active, 0), 0)} active` : "",
+      trackerProgress.pendingLaneRunDelta !== undefined &&
+      toNum(trackerProgress.pendingLaneRunDelta, 0) > 0
+        ? `+${fmt(toNum(trackerProgress.pendingLaneRunDelta, 0), 0)} lane runs`
+        : "",
+      trackerProgress.pendingLaneCompletedVerifiedDelta !== undefined &&
+      toNum(trackerProgress.pendingLaneCompletedVerifiedDelta, 0) > 0
+        ? `+${fmt(toNum(trackerProgress.pendingLaneCompletedVerifiedDelta, 0), 0)} verified`
+        : "",
+      trackerProgress.pendingLaneLastCompletedAt
+        ? `last completion ${fmtAgo(trackerProgress.pendingLaneLastCompletedAt)}`
+        : "",
+      trackerBottlenecks.headProofMismatch !== undefined
+        ? `${fmt(toNum(trackerBottlenecks.headProofMismatch, 0), 0)} head mismatch`
+        : "",
+      trackerPool.mode ? `${titleCase(String(trackerPool.mode).replace(/_/g, " "))} mode` : "",
+    ]
+      .filter(Boolean)
+      .join(" • ")
+  );
+  renderWalletSyncGroup("wallet-sync-history-group", phaseOneGroup, "wallets");
+  renderWalletSyncGroup("wallet-sync-repair-group", null);
+  renderWalletSyncGroup("wallet-sync-gap-group", null);
+  renderWalletSyncGroup("wallet-sync-live-group", null);
 }
 
 function renderWallets() {
-  const payload = state.wallets || {};
-  const rows = Array.isArray(payload.rows) ? payload.rows : [];
+  const payload = state.wallets;
+  renderWalletSyncReporter(payload);
+  const body = el("wallet-table-body");
+  const tableRenderSignature = `${state.walletsSignature || buildWalletsUiSignature(payload)}|${String(
+    state.selectedWallet || ""
+  )}`;
+  if (!payload || typeof payload !== "object") {
+    setText("wallet-page-label", "Page - / -");
+    setText("wallet-page-label-inline", "Page - / -");
+    setText("wallet-total-label", "- wallets");
+    setText("wallet-total-label-inline", "- wallets");
+    setText("wallet-last-updated", "Updated -");
+    syncWalletSortHeaders();
+    if (body && String(body.dataset.renderSignature || "") !== "wallets:loading") {
+      body.innerHTML = "<tr><td colspan='14' class='muted'>Wallet data is loading.</td></tr>";
+      body.dataset.renderSignature = "wallets:loading";
+    }
+    return;
+  }
 
-  setText("wallet-total-label", `${payload.total || 0} wallets`);
-  setText("wallet-page-label", `Page ${payload.page || 1} / ${payload.pages || 1}`);
+  const rows = Array.isArray(payload.rows) ? payload.rows : [];
+  const counts = payload.counts || {};
+  const warmup = payload.warmup || {};
+  const walletExplorerReady =
+    !warmup || !Object.prototype.hasOwnProperty.call(warmup, "walletExplorerReady")
+      ? true
+      : Boolean(warmup.walletExplorerReady);
+  const pageLabel = `Page ${payload.page || 1} / ${payload.pages || 1}`;
+  setText("wallet-page-label", pageLabel);
+  setText("wallet-page-label-inline", pageLabel);
+  const hiddenZeroTradeWallets = Math.max(0, toNum(counts.hiddenZeroTradeWallets, 0));
+  const totalLabel =
+    hiddenZeroTradeWallets > 0
+      ? `${fmt(toNum(counts.totalWallets, rows.length), 0)} wallets • ${fmt(hiddenZeroTradeWallets, 0)} hidden`
+      : `${fmt(toNum(counts.totalWallets, rows.length), 0)} wallets`;
+  setText(
+    "wallet-total-label",
+    totalLabel
+  );
+  setText("wallet-total-label-inline", totalLabel);
+  const currentUpdatedAt = Math.max(
+    toNum(payload?.generatedAt, 0),
+    toNum(payload?.runtime?.generatedAt, 0),
+    0
+  );
+  const fullBuildUpdatedAt = toNum(payload?.performance?.datasetBuiltAt, NaN);
+  setText(
+    "wallet-last-updated",
+    currentUpdatedAt > 0
+      ? Number.isFinite(fullBuildUpdatedAt) && fullBuildUpdatedAt > 0 && Math.abs(fullBuildUpdatedAt - currentUpdatedAt) > 60 * 1000
+        ? `Updated ${fmtAgo(currentUpdatedAt)} • full build ${fmtAgo(fullBuildUpdatedAt)}`
+        : `Updated ${fmtAgo(currentUpdatedAt)} • ${fmtUtcDateTime(currentUpdatedAt)} UTC`
+      : Number.isFinite(fullBuildUpdatedAt) && fullBuildUpdatedAt > 0
+      ? `Full build ${fmtAgo(fullBuildUpdatedAt)} • ${fmtUtcDateTime(fullBuildUpdatedAt)} UTC`
+      : "Updated -"
+  );
   syncWalletSortHeaders();
 
-  const body = el("wallet-table-body");
+  const pageSizeSelect = el("wallet-page-size");
+  if (pageSizeSelect) {
+    const effectivePageSize = String(
+      Math.max(1, toNum(payload?.pageSize, state.walletPageSize || 20))
+    );
+    if (String(pageSizeSelect.value || "") !== effectivePageSize) {
+      pageSizeSelect.value = effectivePageSize;
+    }
+  }
+
   if (body) {
-    body.innerHTML = rows.length
+    if (typeof window !== "undefined") {
+      window.__PF_WALLET_ROWS_BY_ID = Object.create(null);
+      rows.forEach((row) => {
+        if (row && row.wallet) {
+          window.__PF_WALLET_ROWS_BY_ID[String(row.wallet).trim()] = row;
+        }
+      });
+    }
+    const nextBodyHtml = rows.length
       ? rows
           .map((row) => {
             const pnlUsd = toNum(row?.pnlUsd, NaN);
-            const firstTrade = row?.firstTrade || null;
-            const lastTrade = row?.lastTrade || row?.lastActivity || row?.updatedAt || null;
-            const walletLabel = shortWalletAddress(row.wallet);
-            const isSelected = state.selectedWallet && state.selectedWallet === row.wallet;
+            const accountEquityUsd = toNum(
+              row?.accountEquityUsd ?? row?.all?.accountEquityUsd ?? row?.accountEquity,
+              NaN
+            );
+            const drawdownPct = toNum(
+              row?.drawdownPct ?? row?.all?.drawdownPct,
+              NaN
+            );
+            const returnPct = toNum(
+              row?.returnPct ?? row?.all?.returnPct,
+              NaN
+            );
+            const openPositions = toNum(
+              row?.openPositions ?? row?.all?.openPositions,
+              NaN
+            );
+            const firstTrade =
+              row?.firstTrade ||
+              row?.all?.firstTrade ||
+              row?.d30?.firstTrade ||
+              row?.d7?.firstTrade ||
+              row?.d24?.firstTrade ||
+              null;
+            const lastTrade =
+              row?.lastTrade ||
+              row?.lastActivity ||
+              row?.lastActivityAt ||
+              row?.updatedAt ||
+              row?.all?.lastTrade ||
+              null;
             const fmtMoney = (value) =>
-              Number.isFinite(value) ? `${value > 0 ? "+" : value < 0 ? "-" : ""}$${fmt(Math.abs(value), 2)}` : "-";
-            return `<tr class="wallet-list-row${isSelected ? " is-selected" : ""}" data-wallet="${row.wallet}">
-              <td class="wallet-cell"><span class="wallet-cell-value">${escapeHtml(walletLabel)}</span></td>
+              Number.isFinite(value)
+                ? `${value > 0 ? "+" : value < 0 ? "-" : ""}$${fmt(Math.abs(value), 2)}`
+                : "-";
+            const isSelected = state.selectedWallet && state.selectedWallet === row.wallet;
+            const walletValue = String(row.wallet || "").trim();
+            const shortWallet = shortWalletAddress(walletValue);
+            return `<tr class="wallet-list-row${isSelected ? " is-selected" : ""}" data-wallet="${row.wallet}" tabindex="0">
+              <td class="wallet-cell" title="${escapeHtml(walletValue)}"><span class="wallet-cell-inline"><span class="wallet-cell-value">${escapeHtml(shortWallet)}</span><button class="wallet-copy-btn wallet-copy-btn-inline" data-wallet-copy="${escapeHtml(walletValue)}" type="button" title="Copy wallet">Copy</button></span></td>
               <td class="wallet-metric-cell">${fmt(row.trades || 0, 0)}</td>
               <td class="wallet-metric-cell">${Number.isFinite(toNum(row.volumeUsd, NaN)) ? `$${fmtCompact(row.volumeUsd)}` : "-"}</td>
-              <td class="wallet-metric-cell">${fmt(row.totalWins || 0, 0)}</td>
-              <td class="wallet-metric-cell">${fmt(row.totalLosses || 0, 0)}</td>
-              <td class="wallet-metric-cell ${pnlUsd >= 0 ? "good" : "bad"}">${fmtMoney(pnlUsd)}</td>
-              <td class="wallet-metric-cell">${fmt(row.openPositions || 0, 0)}</td>
+              <td class="wallet-metric-cell">${fmt(row.totalWins || row.wins || 0, 0)}</td>
+              <td class="wallet-metric-cell">${fmt(row.totalLosses || row.losses || 0, 0)}</td>
+              <td class="${pnlUsd >= 0 ? "good" : "bad"}">${fmtMoney(pnlUsd)}</td>
+              <td class="wallet-metric-cell">${Number.isFinite(drawdownPct) ? `${fmt(drawdownPct, 2)}%` : "-"}</td>
+              <td class="${returnPct >= 0 ? "good" : "bad"}">${Number.isFinite(returnPct) ? `${returnPct > 0 ? "+" : ""}${fmt(returnPct, 2)}%` : "-"}</td>
+              <td class="wallet-metric-cell">${Number.isFinite(accountEquityUsd) ? `$${fmtCompact(accountEquityUsd)}` : "-"}</td>
+              <td class="wallet-metric-cell">${Number.isFinite(openPositions) ? fmt(openPositions, 0) : "-"}</td>
               <td class="wallet-metric-cell">${Number.isFinite(toNum(row.winRate, NaN)) ? `${fmt(row.winRate, 2)}%` : "-"}</td>
-              <td class="wallet-date-cell">${escapeHtml(fmtDateOnly(firstTrade))}</td>
-              <td class="wallet-date-cell">${escapeHtml(fmtDateOnly(lastTrade))}</td>
-              <td class="wallet-action-cell"><button class="btn-ghost inspect-btn" data-wallet="${row.wallet}">Inspect</button></td>
+              <td class="wallet-date-cell" title="${escapeHtml(fmtDateOnly(firstTrade))}">${escapeHtml(fmtDateOnly(firstTrade))}</td>
+              <td class="wallet-date-cell" title="${escapeHtml(fmtDateOnly(lastTrade))}">${escapeHtml(fmtDateOnly(lastTrade))}</td>
+              <td><button class="btn-ghost inspect-btn" data-wallet="${row.wallet}" type="button">Inspect</button></td>
             </tr>`;
           })
           .join("")
-      : "<tr><td colspan='11' class='muted'>No wallets match the current filters.</td></tr>";
+      : `<tr><td colspan="14" class="muted">${
+          !walletExplorerReady
+            ? escapeHtml(warmup.message || "Wallet data is loading.")
+            : toNum(counts.totalWallets, 0) > 0
+            ? "No wallet records match the current filters."
+            : "No wallet records have been discovered yet."
+        }</td></tr>`;
+    if (String(body.dataset.renderSignature || "") !== tableRenderSignature) {
+      body.innerHTML = nextBodyHtml;
+      body.dataset.renderSignature = tableRenderSignature;
+    }
   }
 
   const prevBtn = el("wallet-prev-btn");
   const nextBtn = el("wallet-next-btn");
   if (prevBtn) prevBtn.disabled = (payload.page || 1) <= 1;
   if (nextBtn) nextBtn.disabled = (payload.page || 1) >= (payload.pages || 1);
+
+  if (state.selectedWallet) {
+    const currentRow = rows.find((row) => String(row?.wallet || "").trim() === state.selectedWallet) || null;
+    if (currentRow && (!state.walletProfile || String(state.walletProfile?.wallet || "").trim() !== state.selectedWallet)) {
+      inspectWallet(state.selectedWallet, currentRow).catch(() => null);
+    } else {
+      renderWalletProfile();
+    }
+  } else {
+    renderWalletProfile();
+  }
 }
 
 function syncWalletSortHeaders() {
@@ -3506,229 +7476,532 @@ function syncWalletSortHeaders() {
 function renderWalletProfile() {
   const profile = state.walletProfile;
   const panel = el("wallet-profile-panel");
-  const body = el("wallet-profile-body");
+  const kpiWrap = el("wallet-profile-kpis");
+  const metaWrap = el("wallet-profile-meta");
+  const symbolsBody = el("wallet-profile-symbols");
   const emptyCopy = el("wallet-profile-empty-copy");
-  if (!panel || !body || !emptyCopy) return;
+  const copyBtn = el("wallet-profile-copy-btn");
+  if (!panel || !kpiWrap || !metaWrap || !symbolsBody || !emptyCopy) return;
+  const appLayout = document.querySelector(".app-layout");
 
-  if (!profile || !profile.found || !profile.summary) {
+  const selectedWallet = String(state.selectedWallet || "").trim();
+  if (!profile || !profile.summary) {
+    if (!selectedWallet) {
+      const nextSignature = buildWalletProfileUiSignature(profile, selectedWallet);
+      if (state.walletProfileSignature === nextSignature) return;
+      state.walletProfileSignature = nextSignature;
+      emptyCopy.hidden = false;
+      setText("wallet-profile-id", "Select a wallet");
+      setText("wallet-profile-subtitle", "Simple wallet performance and concentration overview.");
+      emptyCopy.textContent = "No wallet selected.";
+      kpiWrap.innerHTML = "";
+      metaWrap.innerHTML = "";
+      symbolsBody.innerHTML = "";
+      if (copyBtn) copyBtn.hidden = true;
+      panel.hidden = true;
+      if (appLayout) appLayout.classList.remove("wallet-drawer-open");
+      return;
+    }
+    const fallbackRow = Array.isArray(state.wallets?.rows)
+      ? state.wallets.rows.find((row) => String(row?.wallet || "").trim() === selectedWallet) || null
+      : null;
+    if (fallbackRow) {
+      state.walletProfile = buildWalletProfilePreviewFromSearchRow(fallbackRow, selectedWallet);
+      renderWalletProfile();
+      return;
+    }
+    const nextSignature = buildWalletProfileUiSignature(profile, selectedWallet);
+    if (state.walletProfileSignature === nextSignature) return;
+    state.walletProfileSignature = nextSignature;
     emptyCopy.hidden = false;
-    const closeBtn = el("wallet-profile-close-btn");
-    if (closeBtn) closeBtn.hidden = true;
-    body.innerHTML = `<div class="empty-state">${
-      profile && profile.error ? escapeHtml(profile.error) : "No wallet selected."
-    }</div>`;
+    setText("wallet-profile-id", shortWalletAddress(selectedWallet));
+    setText("wallet-profile-subtitle", "Simple wallet performance and concentration overview.");
+    emptyCopy.textContent = "Fetching wallet details...";
+    kpiWrap.innerHTML = "";
+    metaWrap.innerHTML = "";
+    symbolsBody.innerHTML = "";
+    if (copyBtn) {
+      copyBtn.hidden = false;
+      copyBtn.dataset.walletCopy = selectedWallet;
+      copyBtn.textContent = "Copy";
+    }
+    panel.hidden = false;
+    if (appLayout) appLayout.classList.add("wallet-drawer-open");
+    return;
+  }
+  if (!profile.found) {
+    const nextSignature = buildWalletProfileUiSignature(profile, selectedWallet);
+    if (state.walletProfileSignature === nextSignature) return;
+    state.walletProfileSignature = nextSignature;
+    emptyCopy.hidden = false;
+    setText("wallet-profile-id", shortWalletAddress(selectedWallet || profile.wallet || ""));
+    setText("wallet-profile-subtitle", "Wallet profile is temporarily unavailable.");
+    emptyCopy.textContent = "Wallet profile is temporarily unavailable.";
+    kpiWrap.innerHTML = "";
+    metaWrap.innerHTML = "";
+    symbolsBody.innerHTML = "";
+    if (copyBtn) {
+      copyBtn.hidden = false;
+      copyBtn.dataset.walletCopy = String(profile.wallet || selectedWallet || "");
+      copyBtn.textContent = "Copy";
+    }
+    panel.hidden = false;
+    if (appLayout) appLayout.classList.add("wallet-drawer-open");
     return;
   }
 
+  const nextSignature = buildWalletProfileUiSignature(profile, selectedWallet);
+  if (state.walletProfileSignature === nextSignature) return;
+  state.walletProfileSignature = nextSignature;
+  panel.hidden = false;
+  if (appLayout) appLayout.classList.add("wallet-drawer-open");
   emptyCopy.hidden = true;
-  const closeBtn = el("wallet-profile-close-btn");
-  if (closeBtn) closeBtn.hidden = false;
   const s = profile.summary;
-  const positions = Array.isArray(profile.positions) ? profile.positions : [];
-  const topSymbols = Array.isArray(s.concentration) ? s.concentration : [];
-  const money = (value) => {
-    const num = toNum(value, NaN);
-    if (!Number.isFinite(num)) return "-";
-    return `${num > 0 ? "+" : num < 0 ? "-" : ""}$${fmt(Math.abs(num), 2)}`;
-  };
-  const shortAddress = shortWalletAddress(profile.wallet);
-  const totalVolume = toNum(s.all?.volumeUsd, 0);
-  const allTimePnl = toNum(s.all?.pnlUsd, 0);
-  const allTimeTrades = toNum(s.all?.trades, 0);
-  const has24h =
-    Math.abs(toNum(s.d24?.volumeUsd, 0)) > 0 ||
-    Math.abs(toNum(s.d24?.pnlUsd, 0)) > 0 ||
-    toNum(s.d24?.trades, 0) > 0;
+  const rows = Array.isArray(profile.positions)
+    ? profile.positions
+    : Array.isArray(profile.positions?.positions)
+      ? profile.positions.positions
+      : [];
+  const concentration = Array.isArray(profile.symbolBreakdown)
+    ? profile.symbolBreakdown
+    : Array.isArray(s.concentration)
+      ? s.concentration
+      : Array.isArray(profile.topSymbols)
+        ? profile.topSymbols
+        : [];
 
-  const topSymbolsHtml = topSymbols.length
-    ? topSymbols
-        .map((entry) => {
-          const pct = Math.max(0, Math.min(100, Math.round(toNum(entry.sharePct, 0))));
-          const volumeLabel = `$${fmtCompact(entry.volumeUsd || 0)}`;
-          return `
-            <div class="wallet-symbol-row">
-              <div class="wallet-symbol-label">
-                <span class="wallet-symbol-name">${escapeHtml(entry.symbol || "-")}</span>
-                <span class="wallet-symbol-values">
-                  <strong>${escapeHtml(volumeLabel)}</strong>
-                  <span class="wallet-symbol-pct">${escapeHtml(`${pct}%`)}</span>
-                </span>
-              </div>
-              <div class="wallet-symbol-bar"><span style="width:${Math.max(0, Math.min(100, pct))}%"></span></div>
+  setText("wallet-profile-id", shortWalletAddress(profile.wallet));
+  setText("wallet-profile-subtitle", `${String(s.freshness || "current")} snapshot • clean performance overview`);
+  if (copyBtn) {
+    copyBtn.hidden = false;
+    copyBtn.dataset.walletCopy = String(profile.wallet || "");
+    copyBtn.textContent = "Copy";
+  }
+
+  const longCount = rows.filter((row) => String(row?.side || "").toLowerCase() === "long").length;
+  const shortCount = rows.filter((row) => String(row?.side || "").toLowerCase() === "short").length;
+  const totalPositionUsd = Number(
+    rows.reduce(
+      (sum, row) => sum + toNum(row?.positionUsd ?? row?.notionalUsd ?? row?.positionValueUsd, 0),
+      0
+    ).toFixed(2)
+  );
+  const totalUnrealizedPnlUsd = Number(
+    rows.reduce(
+      (sum, row) => sum + toNum(extractUnrealizedPnlUsdFromRow(row), 0),
+      0
+    ).toFixed(2)
+  );
+  kpiWrap.innerHTML = [
+    [
+      "Total PnL",
+      fmtSigned(
+        toNum(
+          s.totalPnlUsd ?? s.all?.totalPnlUsd ?? s.all?.pnlUsd ?? s.pnlUsd,
+          NaN
+        ),
+        2
+      ),
+    ],
+    ["Max Drawdown", Number.isFinite(toNum(s.drawdownPct, NaN)) ? `${fmt(s.drawdownPct, 2)}%` : "-"],
+    ["Return %", Number.isFinite(toNum(s.returnPct, NaN)) ? `${toNum(s.returnPct, 0) > 0 ? "+" : ""}${fmt(s.returnPct, 2)}%` : "-"],
+  ]
+    .map(([label, value]) => {
+      const numericValue =
+        label === "Total PnL"
+            ? toNum(s.totalPnlUsd ?? s.all?.pnlUsd ?? s.pnlUsd, NaN)
+            : label === "Return %"
+              ? toNum(s.returnPct, NaN)
+              : NaN;
+      const toneClass =
+        Number.isFinite(numericValue) && (label === "Total PnL" || label === "Return %")
+          ? numericValue > 0
+            ? "good"
+            : numericValue < 0
+              ? "bad"
+              : ""
+          : "";
+      return `<div class="profile-kpi"><div>${label}</div><strong class="${toneClass}">${escapeHtml(
+        String(value ?? "-")
+      )}</strong></div>`;
+    })
+    .join("");
+  metaWrap.innerHTML = [
+    ["Account Equity", Number.isFinite(toNum(s.accountEquityUsd, NaN)) ? `$${fmtCompact(s.accountEquityUsd)}` : "-"],
+    ["Open Positions", fmt(s.openPositions, 0)],
+    ["First Trade", fmtDateOnly(s.firstTrade ?? s.all?.firstTrade)],
+    ["Last Trade", fmtDateOnly(s.lastActivityAt ?? s.lastTrade ?? s.all?.lastTrade)],
+  ]
+    .map(
+      ([label, value]) =>
+        `<div class="wallet-profile-meta-item"><span>${escapeHtml(label)}</span><strong class="${
+          label === "Open Positions" ? "wallet-profile-open-positions" : ""
+        }">${escapeHtml(String(value ?? "-"))}</strong></div>`
+    )
+    .join("");
+  if (rows.length) {
+    metaWrap.insertAdjacentHTML(
+      "beforeend",
+      `<div class="wallet-profile-summary-inline">
+        <span>${fmt(rows.length, 0)} positions</span>
+        <span>${fmt(longCount, 0)} long / ${fmt(shortCount, 0)} short</span>
+        <span>$${fmtCompact(totalPositionUsd)} exposure</span>
+        <span class="${totalUnrealizedPnlUsd < 0 ? "bad" : totalUnrealizedPnlUsd > 0 ? "good" : ""}">${fmtSigned(totalUnrealizedPnlUsd, 2)} unrealized</span>
+      </div>`
+    );
+  }
+
+  const normalizedConcentration = concentration
+    .map((row) => ({
+      symbol: String(row?.symbol || "").trim().toUpperCase(),
+      volumeUsd: toNum(row?.volumeUsd, NaN),
+      sharePct: Number.isFinite(toNum(row?.sharePct, NaN)) ? toNum(row?.sharePct, NaN) : NaN,
+    }))
+    .filter((row) => row.symbol && Number.isFinite(row.volumeUsd))
+    .sort((left, right) => toNum(right.volumeUsd, 0) - toNum(left.volumeUsd, 0));
+  const totalSymbolVolumeUsd = normalizedConcentration.reduce((sum, row) => sum + toNum(row.volumeUsd, 0), 0);
+  const maxConcentrationVolumeUsd = normalizedConcentration.reduce(
+    (max, row) => Math.max(max, toNum(row.volumeUsd, 0)),
+    0
+  );
+  symbolsBody.innerHTML = normalizedConcentration.length
+    ? normalizedConcentration
+        .map((row) => {
+          const sharePct = Number.isFinite(row.sharePct)
+            ? row.sharePct
+            : totalSymbolVolumeUsd > 0
+            ? (toNum(row.volumeUsd, 0) / totalSymbolVolumeUsd) * 100
+            : 0;
+          const widthPct =
+            maxConcentrationVolumeUsd > 0 ? (toNum(row.volumeUsd, 0) / maxConcentrationVolumeUsd) * 100 : 0;
+          return `<div class="wallet-concentration-row">
+            <div class="wallet-concentration-head">
+              <strong>${escapeHtml(row.symbol)}</strong>
+              <span>${escapeHtml(`${fmt(sharePct, 2)}%`)}</span>
             </div>
-          `;
+            <div class="wallet-concentration-bar"><span style="width:${clamp(widthPct, 0, 100).toFixed(2)}%"></span></div>
+            <div class="wallet-concentration-meta">$${escapeHtml(fmtCompact(row.volumeUsd))}</div>
+          </div>`;
         })
         .join("")
-    : `<div class="empty-state">No symbol data yet.</div>`;
+    : "<div class='muted'>No symbol data yet.</div>";
+}
 
-  const positionsHtml = positions.length
-    ? `
-      <div class="wallet-positions-table-wrap">
-        <div class="wallet-positions-table-grid">
-          <div class="wallet-positions-head">
-            <div>Symbol</div>
-            <div>Side</div>
-            <div class="is-number">Position USD</div>
-            <div class="is-number">Entry</div>
-            <div class="is-number">Mark</div>
-            <div class="is-number">PnL</div>
-          </div>
-          <div class="wallet-positions-body">
-            ${positions
-              .map((row) => {
-                const longSide = toNum(row.size, 0) >= 0 && String(row.side || "").toLowerCase() !== "short";
-                const statusClass = toNum(row.unrealizedPnlUsd, 0) > 0 ? "good" : toNum(row.unrealizedPnlUsd, 0) < 0 ? "bad" : "";
-                return `
-                  <div class="wallet-positions-row">
-                    <div>${escapeHtml(row.symbol || "-")}</div>
-                    <div><span class="wallet-position-side ${longSide ? "long" : "short"}">${escapeHtml(
-                      longSide ? "Long" : "Short"
-                    )}</span></div>
-                    <div class="is-number">${escapeHtml(`$${fmtCompact(row.positionUsd)}`)}</div>
-                    <div class="is-number">${escapeHtml(Number.isFinite(toNum(row.entry, NaN)) ? fmt(row.entry, 4) : "-")}</div>
-                    <div class="is-number">${escapeHtml(Number.isFinite(toNum(row.mark, NaN)) ? fmt(row.mark, 4) : "-")}</div>
-                    <div class="is-number"><span class="wallet-position-status ${statusClass}">${escapeHtml(
-                      money(row.unrealizedPnlUsd)
-                    )}</span></div>
-                  </div>
-                `;
-              })
-              .join("")}
-          </div>
-        </div>
-      </div>
-    `
-    : `<div class="empty-state">No open positions.</div>`;
-
-  const summaryParts = [];
-  if (Number.isFinite(toNum(s.all?.winRatePct, NaN))) {
-    summaryParts.push(`Win Rate ${fmt(toNum(s.all.winRatePct, 0), 2)}%`);
+function normalizeWalletProfilePayload(rawProfile) {
+  const profile = rawProfile && typeof rawProfile === "object" ? { ...rawProfile } : {};
+  const summary = profile.summary && typeof profile.summary === "object" ? { ...profile.summary } : {};
+  const normalizeSymbolBreakdownRows = (input, limit = 12) => {
+    let rows = [];
+    if (Array.isArray(input)) {
+      rows = input
+        .map((row) => ({
+          symbol: String((row && row.symbol) || "").trim().toUpperCase(),
+          volumeUsd: Number(toNum(row && row.volumeUsd, 0).toFixed(2)),
+        }))
+        .filter((row) => row.symbol && row.volumeUsd > 0);
+    } else if (input && typeof input === "object") {
+      rows = Object.entries(input)
+        .map(([symbol, volumeUsd]) => ({
+          symbol: String(symbol || "").trim().toUpperCase(),
+          volumeUsd: Number(toNum(volumeUsd, 0).toFixed(2)),
+        }))
+        .filter((row) => row.symbol && row.volumeUsd > 0);
+    }
+    return rows
+      .sort((left, right) => toNum(right.volumeUsd, 0) - toNum(left.volumeUsd, 0))
+      .slice(0, Math.max(1, Number(limit || 12)));
+  };
+  const resolveWalletSymbolBreakdown = (source, limit = 12) => {
+    const candidates = [
+      source?.symbolBreakdown,
+      source?.topSymbols,
+      source?.concentration,
+      source?.summary?.symbolBreakdown,
+      source?.summary?.topSymbols,
+      source?.summary?.concentration,
+      source?.all?.topSymbols,
+      source?.all?.symbolVolumes,
+      source?.summary?.all?.topSymbols,
+      source?.summary?.all?.symbolVolumes,
+      source?.d30?.topSymbols,
+      source?.d30?.symbolVolumes,
+      source?.summary?.d30?.topSymbols,
+      source?.summary?.d30?.symbolVolumes,
+      source?.d7?.topSymbols,
+      source?.d7?.symbolVolumes,
+      source?.summary?.d7?.topSymbols,
+      source?.summary?.d7?.symbolVolumes,
+      source?.d24?.topSymbols,
+      source?.d24?.symbolVolumes,
+      source?.summary?.d24?.topSymbols,
+      source?.summary?.d24?.symbolVolumes,
+    ];
+    for (const candidate of candidates) {
+      const rows = normalizeSymbolBreakdownRows(candidate, limit);
+      if (rows.length) return rows;
+    }
+    return [];
+  };
+  const rawPositions = Array.isArray(profile.positions)
+    ? profile.positions
+    : Array.isArray(profile.positions?.positions)
+      ? profile.positions.positions
+      : [];
+  const normalizedPositions = rawPositions.map((row) => {
+    const base = row && typeof row === "object" ? { ...row } : {};
+    const explicitUnrealized = toNum(extractUnrealizedPnlUsdFromRow(base), NaN);
+    const unrealizedPnlUsd = Number.isFinite(explicitUnrealized)
+      ? Number(explicitUnrealized.toFixed(2))
+      : 0;
+    return {
+      ...base,
+      unrealizedPnlUsd,
+      positionPnlUsd: Number(
+        toNum(extractUnrealizedPnlUsdFromRow(base), unrealizedPnlUsd).toFixed(2)
+      ),
+    };
+  });
+  const derivedUnrealizedPnlUsd = Number(
+    normalizedPositions.reduce((sum, row) => sum + toNum(row && row.unrealizedPnlUsd, 0), 0).toFixed(2)
+  );
+  const realizedPnlUsd = Number(toNum(summary.pnlUsd, 0).toFixed(2));
+  const explicitUnrealized = toNum(extractUnrealizedPnlUsdFromSummary(summary), NaN);
+  const rawTotalPnlUsd = toNum(
+    summary.totalPnlUsd ?? summary.all?.totalPnlUsd ?? summary.all?.pnlUsd ?? summary.pnlUsd,
+    NaN
+  );
+  const rawRealizedPnlUsd = toNum(
+    summary.pnlUsd ?? summary.all?.pnlUsd ?? summary.all?.realizedPnlUsd,
+    NaN
+  );
+  const derivedUnrealizedFromTotal =
+    Number.isFinite(rawTotalPnlUsd) && Number.isFinite(rawRealizedPnlUsd)
+      ? Number((rawTotalPnlUsd - rawRealizedPnlUsd).toFixed(2))
+      : NaN;
+  const unrealizedPnlUsd =
+    Number.isFinite(explicitUnrealized) && Math.abs(explicitUnrealized) >= 0.005
+      ? Number(explicitUnrealized.toFixed(2))
+      : Number.isFinite(derivedUnrealizedPnlUsd) && Math.abs(derivedUnrealizedPnlUsd) >= 0.005
+        ? derivedUnrealizedPnlUsd
+        : Number.isFinite(derivedUnrealizedFromTotal) && Math.abs(derivedUnrealizedFromTotal) >= 0.005
+          ? derivedUnrealizedFromTotal
+          : 0;
+  const explicitTotalPnl = toNum(summary.totalPnlUsd, NaN);
+  const totalPnlUsd = Number.isFinite(explicitTotalPnl)
+    ? Number(explicitTotalPnl.toFixed(2))
+    : Number((realizedPnlUsd + unrealizedPnlUsd).toFixed(2));
+  const accountEquityUsd = toNum(
+    summary.accountEquityUsd ??
+      summary.walletEquityUsd ??
+      profile.accountEquityUsd ??
+      profile.walletEquityUsd ??
+      profile.accountEquity ??
+      summary.all?.accountEquityUsd ??
+      profile.all?.accountEquityUsd,
+    NaN
+  );
+  const drawdownPct = toNum(
+    summary.drawdownPct ??
+      profile.drawdownPct ??
+      summary.all?.drawdownPct ??
+      profile.all?.drawdownPct,
+    NaN
+  );
+  const returnPct = toNum(
+    summary.returnPct ??
+      profile.returnPct ??
+      summary.all?.returnPct ??
+      profile.all?.returnPct,
+    NaN
+  );
+  const symbolBreakdown = resolveWalletSymbolBreakdown(profile, 12);
+  const normalizedSummary = {
+    ...summary,
+    pnlUsd: realizedPnlUsd,
+    unrealizedPnlUsd,
+    totalPnlUsd,
+    accountEquityUsd: Number.isFinite(accountEquityUsd)
+      ? Number(accountEquityUsd.toFixed(2))
+      : null,
+    drawdownPct: Number.isFinite(drawdownPct) ? Number(drawdownPct.toFixed(2)) : null,
+    returnPct: Number.isFinite(returnPct) ? Number(returnPct.toFixed(2)) : null,
+    symbolBreakdown,
+  };
+  if (Array.isArray(profile.positions)) {
+    profile.positions = normalizedPositions;
+  } else if (profile.positions && typeof profile.positions === "object") {
+    profile.positions = {
+      ...profile.positions,
+      positions: normalizedPositions,
+    };
+  } else {
+    profile.positions = normalizedPositions;
   }
-  if (allTimeTrades > 0) {
-    summaryParts.push(`Total Trades ${fmt(allTimeTrades, 0)}`);
+  profile.symbolBreakdown = symbolBreakdown;
+  if (!Array.isArray(profile.topSymbols) || !profile.topSymbols.length) {
+    profile.topSymbols = symbolBreakdown.slice();
   }
-  const summaryLine = summaryParts.join(" · ");
+  if (!Array.isArray(profile.concentration) || !profile.concentration.length) {
+    profile.concentration = symbolBreakdown.slice();
+  }
+  profile.accountEquityUsd = normalizedSummary.accountEquityUsd;
+  profile.drawdownPct = normalizedSummary.drawdownPct;
+  profile.returnPct = normalizedSummary.returnPct;
+  profile.summary = normalizedSummary;
+  return profile;
+}
 
-  body.innerHTML = `
-    <div class="wallet-detail-header">
-      <div class="wallet-detail-identity">
-        <span class="wallet-detail-label">Wallet</span>
-        <span class="wallet-detail-address">${escapeHtml(shortAddress)}</span>
-        <div class="wallet-detail-actions">
-          <button type="button" class="btn-ghost wallet-copy-btn" data-copy-wallet="${escapeHtml(profile.wallet)}">Copy</button>
-        </div>
-      </div>
-      <div class="wallet-detail-badges">
-        <div class="wallet-detail-badge-pill">
-          <span>Tracked</span>
-          <strong>${escapeHtml(titleCase(String(s.freshness || "unknown")))}</strong>
-        </div>
-        <div class="wallet-detail-badge-pill">
-          <span>Open positions</span>
-          <strong>${escapeHtml(fmt(s.openPositions || positions.length, 0))}</strong>
-        </div>
-      </div>
-    </div>
-    ${summaryLine ? `<div class="wallet-detail-summary">${escapeHtml(summaryLine)}</div>` : ""}
-    <div class="wallet-detail-kpi-grid">
-      <div class="wallet-detail-kpi-card">
-        <span>Total volume</span>
-        <strong>${escapeHtml(`$${fmtCompact(totalVolume)}`)}</strong>
-      </div>
-      <div class="wallet-detail-kpi-card">
-        <span>Wallet PnL</span>
-        <strong class="${allTimePnl >= 0 ? "good" : "bad"}">${escapeHtml(money(allTimePnl))}</strong>
-      </div>
-      <div class="wallet-detail-kpi-card">
-        <span>Total trades</span>
-        <strong>${escapeHtml(fmt(allTimeTrades, 0))}</strong>
-      </div>
-    </div>
-    <div class="wallet-detail-section-block">
-      <h4>All-time</h4>
-      <div class="wallet-detail-section-grid">
-        <div class="wallet-detail-item">
-          <div class="wallet-detail-item-label">Win rate</div>
-          <div class="wallet-detail-item-value">${
-            Number.isFinite(toNum(s.all?.winRatePct, NaN)) ? `${fmt(toNum(s.all.winRatePct, 0), 2)}%` : "N/A"
-          }</div>
-        </div>
-        <div class="wallet-detail-item">
-          <div class="wallet-detail-item-label">First trade</div>
-          <div class="wallet-detail-item-value">${escapeHtml(fmtDateOnly(s.all?.firstTrade))}</div>
-        </div>
-        <div class="wallet-detail-item">
-          <div class="wallet-detail-item-label">Last trade</div>
-          <div class="wallet-detail-item-value">${escapeHtml(fmtDateOnly(s.all?.lastTrade))}</div>
-        </div>
-        <div class="wallet-detail-item">
-          <div class="wallet-detail-item-label">Exposure</div>
-          <div class="wallet-detail-item-value">${escapeHtml(`$${fmtCompact(s.exposureUsd)}`)}</div>
-        </div>
-        <div class="wallet-detail-item">
-          <div class="wallet-detail-item-label">Wallet unrealized</div>
-          <div class="wallet-detail-item-value ${toNum(s.unrealizedPnlUsd, 0) >= 0 ? "good" : "bad"}">${escapeHtml(
-            money(s.unrealizedPnlUsd)
-          )}</div>
-        </div>
-      </div>
-    </div>
-    <div class="wallet-detail-section-block">
-      <h4>Last 24 hours</h4>
-      ${
-        has24h
-          ? `<div class="wallet-detail-section-grid">
-              <div class="wallet-detail-item">
-                <div class="wallet-detail-item-label">Trades</div>
-                <div class="wallet-detail-item-value">${escapeHtml(fmt(s.d24?.trades || 0, 0))}</div>
-              </div>
-              <div class="wallet-detail-item">
-                <div class="wallet-detail-item-label">Volume</div>
-                <div class="wallet-detail-item-value">${escapeHtml(`$${fmtCompact(s.d24?.volumeUsd || 0)}`)}</div>
-              </div>
-              <div class="wallet-detail-item">
-                <div class="wallet-detail-item-label">PnL</div>
-                <div class="wallet-detail-item-value ${toNum(s.d24?.pnlUsd, 0) >= 0 ? "good" : "bad"}">${escapeHtml(
-                  money(s.d24?.pnlUsd)
-                )}</div>
-              </div>
-            </div>`
-          : `<div class="empty-state">No activity in the last 24 hours.</div>`
-      }
-    </div>
-    <div class="wallet-detail-columns">
-      <div>
-        <h4>Top symbols</h4>
-        <div class="wallet-symbol-bars">${topSymbolsHtml}</div>
-      </div>
-      <div>
-        <h4>Open positions</h4>
-        ${positionsHtml}
-      </div>
-    </div>
-  `;
-
-  body.querySelectorAll("[data-copy-wallet]").forEach((button) => {
-    button.addEventListener("click", async () => {
-      const walletValue = String(button.getAttribute("data-copy-wallet") || "").trim();
-      if (!walletValue) return;
-      const original = button.textContent || "Copy";
-      try {
-        const copied = await copyTextToClipboard(walletValue);
-        button.textContent = copied ? "Copied" : "Copy failed";
-      } catch (_error) {
-        button.textContent = "Copy failed";
-      }
-      window.setTimeout(() => {
-        button.textContent = original;
-      }, 1400);
-    });
+function buildWalletProfilePreviewFromSearchRow(seedRow, wallet) {
+  const normalizedWallet = String(wallet || seedRow?.wallet || "").trim();
+  const source = seedRow && typeof seedRow === "object" ? seedRow : {};
+  const fallbackAll = source.all && typeof source.all === "object" ? source.all : {};
+  const fallbackD30 = source.d30 && typeof source.d30 === "object" ? source.d30 : {};
+  const primaryBucket =
+    (Object.keys(fallbackAll).length ? fallbackAll : null) ||
+    (Object.keys(fallbackD30).length ? fallbackD30 : null) ||
+    {};
+  const realizedPnlUsd = toNum(source.pnlUsd, 0);
+  const totalPnlUsd = toNum(source.totalPnlUsd ?? source.pnlUsd, 0);
+  const sourceUnrealizedPnlUsd = toNum(extractUnrealizedPnlUsdFromSummary(source), NaN);
+  const bucketUnrealizedPnlUsd = toNum(extractUnrealizedPnlUsdFromRow(primaryBucket), NaN);
+  const candidateUnrealizedPnlUsd = Number.isFinite(sourceUnrealizedPnlUsd)
+    ? sourceUnrealizedPnlUsd
+    : Number.isFinite(bucketUnrealizedPnlUsd)
+      ? bucketUnrealizedPnlUsd
+      : NaN;
+  const unrealizedPnlUsd = Number.isFinite(candidateUnrealizedPnlUsd)
+    ? candidateUnrealizedPnlUsd
+    : Number.isFinite(totalPnlUsd) && Number.isFinite(realizedPnlUsd)
+      ? Number((totalPnlUsd - realizedPnlUsd).toFixed(2))
+      : 0;
+  const openPositions = Number(source.openPositions ?? primaryBucket.openPositions ?? 0);
+  const unrealizedPnlPending =
+    openPositions > 0 &&
+    !Number.isFinite(candidateUnrealizedPnlUsd) &&
+    Math.abs(toNum(unrealizedPnlUsd, 0)) < 0.005;
+  const summary = {
+    wallet: normalizedWallet,
+    trades: Number(source.trades ?? primaryBucket.trades ?? 0),
+    volumeUsd: toNum(source.volumeUsd ?? primaryBucket.volumeUsd, 0),
+    volumeUsdRaw: toNum(source.volumeUsdRaw ?? source.volumeUsd, 0),
+    pnlUsd: toNum(source.pnlUsd ?? primaryBucket.pnlUsd, 0),
+    totalPnlUsd,
+    unrealizedPnlUsd,
+    openPositions,
+    totalWins: Number(source.totalWins ?? primaryBucket.wins ?? 0),
+    totalLosses: Number(source.totalLosses ?? primaryBucket.losses ?? 0),
+    winRate: toNum(source.winRate ?? primaryBucket.winRatePct, 0),
+    feesPaidUsd: toNum(source.feesPaidUsd ?? source.feesUsd ?? primaryBucket.feesPaidUsd ?? primaryBucket.feesUsd, 0),
+    firstTrade: Number(source.firstTrade || primaryBucket.firstTrade || 0) || null,
+    lastTrade: Number(source.lastTrade || primaryBucket.lastTrade || 0) || null,
+    lastActivity:
+      Number(
+        source.lastActivity ||
+          source.lastActivityAt ||
+          source.lastTrade ||
+          source.lastOpenedAt ||
+          source.lastOpenedPosition?.openedAt ||
+          source.summary?.lastOpenedPosition?.openedAt ||
+          primaryBucket.lastTrade ||
+          primaryBucket.lastOpenedAt ||
+          0
+      ) || null,
+    lastOpenedAt:
+      Number(
+        source.lastOpenedAt ||
+          source.lastOpenedPosition?.openedAt ||
+          source.summary?.lastOpenedPosition?.openedAt ||
+          0
+      ) || null,
+    accountEquityUsd: Number(
+      toNum(
+        source.accountEquityUsd ??
+          source.walletEquityUsd ??
+          source.accountEquity ??
+          primaryBucket.accountEquityUsd ??
+          (Math.max(1, toNum(source.exposureUsd, 0) + realizedPnlUsd + unrealizedPnlUsd)),
+        0
+      ).toFixed(2)
+    ),
+    drawdownUsd: Number(
+      toNum(
+        source.drawdownUsd ??
+          (Number.isFinite(toNum(primaryBucket.drawdownPct, NaN)) &&
+          Number.isFinite(
+            toNum(
+              source.accountEquityUsd ??
+                source.walletEquityUsd ??
+                source.accountEquity ??
+                primaryBucket.accountEquityUsd,
+              NaN
+            )
+          )
+            ? (toNum(primaryBucket.drawdownPct, 0) / 100) *
+              toNum(
+                source.accountEquityUsd ??
+                  source.walletEquityUsd ??
+                  source.accountEquity ??
+                  primaryBucket.accountEquityUsd,
+                0
+              )
+            : Math.max(0, -unrealizedPnlUsd)),
+        0
+      ).toFixed(2)
+    ),
+    drawdownPct: Number(
+      toNum(
+        source.drawdownPct ?? primaryBucket.drawdownPct,
+        ((Math.max(0, -unrealizedPnlUsd) / Math.max(1, toNum(source.exposureUsd, 0) + realizedPnlUsd + unrealizedPnlUsd)) * 100)
+      ).toFixed(2)
+    ),
+    returnPct: Number(
+      toNum(source.returnPct ?? primaryBucket.returnPct, 0).toFixed(2)
+    ),
+    unrealizedPnlPending,
+    d24: source.d24 || null,
+    d7: source.d7 || null,
+    d30: source.d30 || null,
+    all: source.all || null,
+  };
+  const symbolBreakdown =
+    Array.isArray(source.symbolBreakdown) && source.symbolBreakdown.length
+      ? source.symbolBreakdown.slice()
+      : Array.isArray(source.topSymbols) && source.topSymbols.length
+        ? source.topSymbols.slice()
+        : Array.isArray(source.concentration) && source.concentration.length
+          ? source.concentration.slice()
+          : Array.isArray(source.summary?.topSymbols) && source.summary.topSymbols.length
+            ? source.summary.topSymbols.slice()
+            : primaryBucket.symbolVolumes && typeof primaryBucket.symbolVolumes === "object"
+              ? Object.entries(primaryBucket.symbolVolumes)
+                  .map(([symbol, volumeUsd]) => ({
+                    symbol: String(symbol || "").trim().toUpperCase(),
+                    volumeUsd: Number(toNum(volumeUsd, 0).toFixed(2)),
+                  }))
+                  .filter((row) => row.symbol && row.volumeUsd > 0)
+                  .sort((left, right) => toNum(right.volumeUsd, 0) - toNum(left.volumeUsd, 0))
+                  .slice(0, 12)
+            : [];
+  summary.symbolBreakdown = symbolBreakdown;
+  return normalizeWalletProfilePayload({
+    generatedAt: Date.now(),
+    wallet: normalizedWallet,
+    found: Boolean(normalizedWallet),
+    summary,
+    symbolBreakdown,
+    positions: [],
+    recentTrades: [],
+    tradeStore: null,
+    warmup: typeof getStartupStatus === "function" ? getStartupStatus() : null,
   });
 }
 
 function applyView(nextView, options = {}) {
   const skipRoute = Boolean(options.skipRoute);
   const replaceRoute = Boolean(options.replaceRoute);
+  if (nextView === "token" && !TOKEN_ANALYSIS_ENABLED) {
+    nextView = "exchange";
+  }
   state.view = nextView;
   if (nextView !== "wallets" && state.selectedWallet) {
     state.selectedWallet = null;
@@ -3744,6 +8017,7 @@ function applyView(nextView, options = {}) {
 
   const exchangeView = el("exchange-view");
   const walletsView = el("wallets-view");
+  const tokenView = el("token-view");
   if (exchangeView) {
     const isActive = nextView === "exchange";
     exchangeView.classList.toggle("active", isActive);
@@ -3756,30 +8030,140 @@ function applyView(nextView, options = {}) {
     walletsView.hidden = !isActive;
     walletsView.setAttribute("aria-hidden", isActive ? "false" : "true");
   }
+  if (tokenView) {
+    const isActive = nextView === "token";
+    tokenView.classList.toggle("active", isActive);
+    tokenView.hidden = !isActive;
+    tokenView.setAttribute("aria-hidden", isActive ? "false" : "true");
+  }
 
   if (!skipRoute) {
     syncRouteFromState({ replace: replaceRoute });
+  }
+  if (nextView === "token") {
+    renderTokenView();
+    refreshTokenAnalytics({ force: Boolean(options.forceTokenRefresh) }).catch(() => null);
+  }
+  if (nextView === "exchange" || nextView === "token") {
+    if (nextView === "exchange") {
+      renderExchange();
+      refreshExchange().catch(() => null);
+    }
+    scheduleExchangeSeriesBoot();
+    scheduleExchangeSupplementalHydration();
   }
 }
 
 async function refreshExchange() {
   return runSingleFlight("exchange", async () => {
-    const data = await fetchJson(`/api/exchange/overview?timeframe=${encodeURIComponent(state.timeframe)}`);
-    if (!Array.isArray(data?.source?.prices) || !data.source.prices.length) {
-      try {
-        const pricesPayload = await fetchJson("/api/prices");
-        if (Array.isArray(pricesPayload?.prices) && pricesPayload.prices.length) {
-          data.source = {
-            ...(data.source || {}),
-            prices: pricesPayload.prices,
-          };
-        }
-      } catch (_error) {
-        // Keep overview payload as-is when fallback prices endpoint is unavailable.
+    const cachedExchange = state.exchange && typeof state.exchange === "object" ? state.exchange : null;
+    const previousExchangeSignature = state.exchangeSignature || buildExchangeUiSignature(cachedExchange);
+    if (
+      cachedExchange &&
+      isFreshSessionPayload(cachedExchange, 90_000) &&
+      String(cachedExchange.timeframe || "").trim() === String(state.timeframe || "").trim()
+    ) {
+      if (!state.exchangeSignature) {
+        state.exchangeSignature = previousExchangeSignature;
       }
+      renderExchange();
+      return cachedExchange;
     }
+    const timeframe = encodeURIComponent(state.timeframe);
+    const [overviewResult] = await Promise.allSettled([
+      fetchJson(`/api/exchange/overview?timeframe=${timeframe}`, { timeoutMs: 30000 }),
+    ]);
+    const previousExchange =
+      state.exchange && typeof state.exchange === "object" ? state.exchange : null;
+    const data =
+      overviewResult.status === "fulfilled" && overviewResult.value
+        ? overviewResult.value
+        : previousExchange
+          ? {
+              ...previousExchange,
+              generatedAt: Date.now(),
+              timeframe: state.timeframe,
+              source: {
+                ...(previousExchange.source || {}),
+                overviewFallbackReused: true,
+                overviewLastError:
+                  overviewResult.status === "rejected" && overviewResult.reason
+                    ? String(
+                        overviewResult.reason?.message || overviewResult.reason || "overview_fetch_failed"
+                      )
+                    : null,
+              },
+            }
+        : {
+            ok: true,
+            generatedAt: Date.now(),
+            timeframe: state.timeframe,
+            kpis: {},
+            metricSemantics: {},
+            kpiPeriodChanges: {},
+            kpiComparisons: { metrics: {} },
+            source: {
+              mode: "wallet_kpis_fast_path_only",
+            },
+            volumeRank: [],
+          };
+    const needsWalletKpiFallback =
+      !data?.kpis ||
+      Boolean(data?.source?.overviewFallbackReused) ||
+      (
+        !Number.isFinite(Number(data.kpis.totalAccounts)) &&
+        !Number.isFinite(Number(data.kpis.totalTrades)) &&
+        !Number.isFinite(Number(data.kpis.totalFeesUsd))
+      );
+    const walletKpisPayload = needsWalletKpiFallback
+      ? await fetchJson(`/api/exchange/overview/wallet-kpis?timeframe=${timeframe}`, {
+          timeoutMs: 30000,
+        }).catch(() => null)
+      : null;
+    if (walletKpisPayload?.kpis) {
+      data.kpis = {
+        ...(data.kpis || {}),
+        totalAccounts: walletKpisPayload.kpis.totalAccounts,
+        activeAccounts: walletKpisPayload.kpis.totalAccounts,
+        activeWallets: walletKpisPayload.kpis.activeWallets,
+        totalTrades: walletKpisPayload.kpis.totalTrades,
+        totalFeesUsd: walletKpisPayload.kpis.totalFeesUsd,
+        totalFeesCompact:
+          walletKpisPayload.kpis.totalFeesCompact ??
+          (data.kpis ? data.kpis.totalFeesCompact : undefined),
+      };
+      data.metricSemantics = {
+        ...(data.metricSemantics || {}),
+        totalAccounts:
+          walletKpisPayload.metricSemantics?.totalAccounts ||
+          data.metricSemantics?.totalAccounts,
+        activeAccounts:
+          walletKpisPayload.metricSemantics?.totalAccounts ||
+          data.metricSemantics?.activeAccounts,
+        activeWallets:
+          walletKpisPayload.metricSemantics?.activeWallets ||
+          data.metricSemantics?.activeWallets,
+        totalTrades:
+          walletKpisPayload.metricSemantics?.totalTrades ||
+          data.metricSemantics?.totalTrades,
+        totalFeesUsd:
+          walletKpisPayload.metricSemantics?.totalFeesUsd ||
+          data.metricSemantics?.totalFeesUsd,
+      };
+      data.source = {
+        ...(data.source || {}),
+        walletKpisFastPath: true,
+      };
+    }
+    const nextExchangeSignature = buildExchangeUiSignature(data);
     state.exchange = data;
-    renderExchange();
+    state.exchangeSignature = nextExchangeSignature;
+    writeSessionJson(SESSION_CACHE_KEYS.exchange, data);
+    populateTokenSymbolOptions();
+    if (nextExchangeSignature !== previousExchangeSignature) {
+      renderExchange();
+    }
+    scheduleExchangeSupplementalHydration();
     return data;
   });
 }
@@ -3789,51 +8173,192 @@ async function refreshDashboard() {
   state.dashboard = data;
 }
 
+async function refreshWalletSync() {
+  return runSingleFlight("walletSync", async () => {
+    const data = await fetchJson("/api/wallets/sync-health", { timeoutMs: 15000 });
+    const previousSyncAt = getWalletSyncGeneratedAt(state.walletSync);
+    state.walletSync = data;
+    const nextSyncAt = getWalletSyncGeneratedAt(data);
+    if (
+      nextSyncAt > previousSyncAt &&
+      (state.view === "wallets" || state.selectedWallet)
+    ) {
+      if (isWalletPayloadBehindSync(state.wallets, data, 1000)) {
+        requestManagedRefresh("walletsSyncRefresh", () => refreshWallets({ force: true }).catch(() => null), 8000);
+      }
+      if (
+        state.selectedWallet &&
+        nextSyncAt > getWalletProfileGeneratedAt(state.walletProfile) + 1000
+      ) {
+        requestManagedRefresh("walletProfileSyncRefresh", () => inspectWallet(state.selectedWallet).catch(() => null), 8000);
+      }
+    }
+    if (state.view === "wallets" || state.selectedWallet) {
+      renderWalletSyncReporter(state.wallets || { syncHealth: data });
+    } else if (state.view === "exchange" || state.view === "token") {
+      renderWalletSyncReporter({ syncHealth: data });
+    }
+    return data;
+  });
+}
+
 async function refreshTokenAnalytics(options = {}) {
-  const force = Boolean(options.force);
-  const symbol = ensureTokenSymbol();
-  if (!symbol) {
+  if (!TOKEN_ANALYSIS_ENABLED) {
     state.tokenAnalytics = null;
     return null;
   }
-  const existing = getTokenAnalyticsSnapshot(symbol);
-  const existingAgeMs = Date.now() - Number(existing?.generatedAt || 0);
-  if (!force && existing && existingAgeMs >= 0 && existingAgeMs < 10000) {
-    return existing;
+  const symbol = ensureTokenSymbol();
+  if (!symbol) {
+    state.tokenAnalytics = null;
+    if (state.view === "token" && !options.silent) renderTokenView();
+    return null;
   }
-  const params = new URLSearchParams({
-    symbol,
-    timeframe: String(state.timeframe || "all"),
-  });
-  if (force) params.set("force", "1");
-  const payload = await fetchJson(`/api/token-analytics?${params.toString()}`);
-  if (payload && payload.ok !== false) {
-    state.tokenAnalytics = payload;
-    return payload;
+  try {
+    const params = new URLSearchParams({
+      symbol,
+      timeframe: "24h",
+      walletPage: String(Math.max(1, toNum(state.tokenWalletPage, 1))),
+      walletPageSize: String(Math.max(1, toNum(state.tokenWalletPageSize, 20))),
+      walletSortKey: String(state.tokenWalletSortKey || "openedAt"),
+      walletSortDir: String(state.tokenWalletSortDir || "asc"),
+    });
+    if (options.force) params.set("force", "1");
+    const data = await fetchJson(`/api/token-analytics?${params.toString()}`, {
+      timeoutMs: options.force ? 60000 : 45000,
+    });
+    const nextSignature = buildTokenAnalyticsUiSignature(data);
+    const changed = nextSignature !== state.tokenAnalyticsSignature;
+    state.tokenAnalytics = data;
+    state.tokenAnalyticsSignature = nextSignature;
+    if (state.view === "token" && (!options.silent || changed)) renderTokenView();
+    return data;
+  } catch (_error) {
+    const currentSnapshotSymbol = resolveCanonicalTokenSymbol(state.tokenAnalytics?.symbol || "");
+    if (currentSnapshotSymbol && currentSnapshotSymbol !== symbol) {
+      state.tokenAnalytics = null;
+      state.tokenAnalyticsSignature = "";
+      if (state.view === "token" && !options.silent) renderTokenView();
+      return null;
+    }
+    return state.tokenAnalytics || null;
   }
-  return null;
 }
 
 async function refreshVolumeSeries() {
   return runSingleFlight("volumeSeries", async () => {
-    const data = await fetchJson("/api/volume-series");
-    if (data && data.volume && data.fees) {
-      state.volumeSeries = data;
-    } else if (data && data.daily) {
+    if (isMinimalUiMode() || isMinimalExchangePayload(state.exchange)) {
       state.volumeSeries = {
-        volume: data,
-        fees: { daily: [], weekly: [], monthly: [], yearly: [] },
+        accounts: { live: [], daily: [], weekly: [], monthly: [] },
+        activeWallets: { live: [], daily: [], weekly: [], monthly: [] },
+        trades: { live: [], daily: [], weekly: [], monthly: [] },
+        volume: { live: [], daily: [], weekly: [], monthly: [] },
+        fees: { live: [], daily: [], weekly: [], monthly: [] },
+        openInterest: { live: [], daily: [], weekly: [], monthly: [] },
+        minimal: true,
       };
-    } else {
-      state.volumeSeries = data;
+      renderActiveSeries();
+      return state.volumeSeries;
     }
-    renderActiveSeries();
+    const data = await fetchJson("/api/exchange/metric-series", { timeoutMs: 30000 });
+    if (data && data.volume && data.accounts && data.activeWallets && data.trades && data.fees && data.openInterest) {
+      state.volumeSeries = data;
+    } else {
+      state.volumeSeries = {
+        accounts: { live: [], daily: [], weekly: [], monthly: [] },
+        activeWallets: { live: [], daily: [], weekly: [], monthly: [] },
+        trades: { live: [], daily: [], weekly: [], monthly: [] },
+        volume: { live: [], daily: [], weekly: [], monthly: [] },
+        fees: { live: [], daily: [], weekly: [], monthly: [] },
+        openInterest: { live: [], daily: [], weekly: [], monthly: [] },
+        minimal: true,
+      };
+    }
+    const nextVolumeSeriesSignature = buildVolumeSeriesUiSignature(state.volumeSeries);
+    const previousVolumeSeriesSignature = state.volumeSeriesSignature || "";
+    state.volumeSeriesSignature = nextVolumeSeriesSignature;
+    writeSessionJson(SESSION_CACHE_KEYS.volumeSeries, state.volumeSeries);
+    if (nextVolumeSeriesSignature !== previousVolumeSeriesSignature) {
+      renderActiveSeries();
+    }
     return state.volumeSeries;
   });
 }
 
 async function refreshWallets(options = {}) {
   return runSingleFlight("wallets", async () => {
+    const activeFilterCount = getActiveWalletFilterCount();
+    const cachedWallets = state.wallets && typeof state.wallets === "object" ? state.wallets : null;
+    const previousWalletsSignature = state.walletsSignature || buildWalletsUiSignature(cachedWallets);
+    const currentQuery = {
+      q: String(state.walletSearch || "").trim().toLowerCase(),
+      page: Math.max(1, toNum(state.walletPage, 1)),
+      pageSize: Math.max(1, toNum(state.walletPageSize, 20)),
+      sort: String(state.walletSortKey || "volumeUsd"),
+      dir: String(state.walletSortDir || "desc"),
+    };
+    const cachedQuery = cachedWallets && cachedWallets.query && typeof cachedWallets.query === "object"
+      ? cachedWallets.query
+      : null;
+    if (
+      cachedWallets &&
+      !options.force &&
+      !state.walletSearch &&
+      activeFilterCount === 0 &&
+      isFreshSessionPayload(cachedWallets, 10_000) &&
+      !isWalletPayloadBehindSync(cachedWallets, state.walletSync, 1000) &&
+      cachedQuery &&
+      String(cachedQuery.q || "").trim().toLowerCase() === currentQuery.q &&
+      Number(cachedQuery.page || 0) === currentQuery.page &&
+      Number(cachedQuery.pageSize || 0) === currentQuery.pageSize &&
+      String(cachedQuery.sort || "") === currentQuery.sort &&
+      String(cachedQuery.dir || "") === currentQuery.dir
+    ) {
+      state.walletAppliedFilters = Array.isArray(cachedWallets?.filters?.applied)
+        ? cachedWallets.filters.applied
+        : [];
+      state.walletAvailableSymbols = Array.isArray(cachedWallets?.filters?.availableSymbols)
+        ? cachedWallets.filters.availableSymbols
+        : [];
+      renderWalletFilterSuggestions();
+      renderWalletFilterSummary();
+      state.walletsSignature = previousWalletsSignature;
+      if (state.wallets && !options.force) {
+        setText(
+          "wallet-last-updated",
+          Number.isFinite(Number(cachedWallets?.generatedAt || 0))
+            ? `Updated ${fmtAgo(cachedWallets.generatedAt)} • ${fmtUtcDateTime(cachedWallets.generatedAt)} UTC`
+            : "Updated -"
+        );
+      } else {
+        renderWallets();
+      }
+      return cachedWallets;
+    }
+    let bootstrapPainted = false;
+    if (
+      !options.force &&
+      !state.wallets &&
+      typeof window !== "undefined" &&
+      window.__PF_BOOTSTRAP_WALLETS__ &&
+      (state.view === "wallets" || window.__PF_BOOTSTRAP_VIEW__ === "wallets")
+    ) {
+      const data = window.__PF_BOOTSTRAP_WALLETS__;
+      state.wallets = data;
+      state.walletAppliedFilters = Array.isArray(data?.filters?.applied) ? data.filters.applied : [];
+      state.walletAvailableSymbols = Array.isArray(data?.filters?.availableSymbols)
+        ? data.filters.availableSymbols
+        : [];
+      try {
+        delete window.__PF_BOOTSTRAP_WALLETS__;
+      } catch (_error) {
+        window.__PF_BOOTSTRAP_WALLETS__ = null;
+      }
+      renderWalletFilterSuggestions();
+      renderWalletFilterSummary();
+      renderWallets();
+      writeSessionJson(SESSION_CACHE_KEYS.wallets, data);
+      bootstrapPainted = true;
+    }
     const params = new URLSearchParams({
       timeframe: state.timeframe,
       q: state.walletSearch,
@@ -3846,48 +8371,274 @@ async function refreshWallets(options = {}) {
     if (options.force) {
       params.set("force", "1");
     }
-    const data = await fetchJson(`/api/wallets?${params.toString()}`);
+    let data;
+    try {
+      data = await fetchJson(`/api/wallets?${params.toString()}`, {
+        timeoutMs: options.force ? 45000 : 30000,
+      });
+      const exactWalletSearch = String(state.walletSearch || "").trim();
+      if (exactWalletSearch.length >= 24 && Array.isArray(data?.rows) && data.rows.length) {
+        const seedRow =
+          data.rows.find((row) => String((row && row.wallet) || "").trim() === exactWalletSearch) ||
+          data.rows[0];
+        if (seedRow) {
+          state.selectedWallet = exactWalletSearch;
+          state.walletProfile = buildWalletProfilePreviewFromSearchRow(seedRow, exactWalletSearch);
+          renderWalletProfile();
+        }
+      }
+    } catch (error) {
+      if ((state.wallets && typeof state.wallets === "object") || bootstrapPainted) {
+        renderWallets();
+        return state.wallets;
+      }
+      throw error;
+    }
+    const nextWalletsSignature = buildWalletsUiSignature(data);
+    const nextWalletsGeneratedAt = Number(data?.generatedAt || 0);
+    const currentWalletsGeneratedAt = Number(cachedWallets?.generatedAt || 0);
+    if (
+      cachedWallets &&
+      !options.force &&
+      cachedQuery &&
+      String(cachedQuery.q || "").trim().toLowerCase() === currentQuery.q &&
+      Number(cachedQuery.page || 0) === currentQuery.page &&
+      Number(cachedQuery.pageSize || 0) === currentQuery.pageSize &&
+      String(cachedQuery.sort || "") === currentQuery.sort &&
+      String(cachedQuery.dir || "") === currentQuery.dir &&
+      nextWalletsGeneratedAt > 0 &&
+      currentWalletsGeneratedAt > 0 &&
+      nextWalletsGeneratedAt < currentWalletsGeneratedAt
+    ) {
+      renderWalletFilterSuggestions();
+      renderWalletFilterSummary();
+      setText(
+        "wallet-last-updated",
+        `Updated ${fmtAgo(currentWalletsGeneratedAt)} • ${fmtUtcDateTime(currentWalletsGeneratedAt)} UTC`
+      );
+      return cachedWallets;
+    }
     state.wallets = data;
+    state.walletsSignature = nextWalletsSignature;
+    const walletExplorerReady =
+      !data?.warmup || !Object.prototype.hasOwnProperty.call(data.warmup, "walletExplorerReady")
+        ? true
+        : Boolean(data.warmup.walletExplorerReady);
+    if (walletWarmupRetryTimer) {
+      window.clearTimeout(walletWarmupRetryTimer);
+      walletWarmupRetryTimer = 0;
+    }
+    if (!options.force && !walletExplorerReady) {
+      const retryAfterMs = Math.max(750, Number(data?.warmup?.retryAfterMs || 1500));
+      walletWarmupRetryTimer = window.setTimeout(() => {
+        walletWarmupRetryTimer = 0;
+        refreshWallets().catch(() => null);
+      }, retryAfterMs);
+    }
     state.walletAppliedFilters = Array.isArray(data?.filters?.applied) ? data.filters.applied : [];
     state.walletAvailableSymbols = Array.isArray(data?.filters?.availableSymbols)
       ? data.filters.availableSymbols
       : [];
+    writeSessionJson(SESSION_CACHE_KEYS.wallets, data);
     renderWalletFilterSuggestions();
     renderWalletFilterSummary();
-    renderWallets();
+    if (nextWalletsSignature !== previousWalletsSignature || !cachedWallets) {
+      renderWallets();
+    } else {
+      setText(
+        "wallet-last-updated",
+        nextWalletsGeneratedAt > 0
+          ? `Updated ${fmtAgo(nextWalletsGeneratedAt)} • ${fmtUtcDateTime(nextWalletsGeneratedAt)} UTC`
+          : "Updated -"
+      );
+    }
     return data;
   });
 }
 
-async function inspectWallet(wallet) {
-  if (!wallet) return;
-  state.selectedWallet = wallet;
-  renderWallets();
-  return runSingleFlight("walletProfile", async () => {
+async function inspectWallet(wallet, seedRow = null) {
+  const normalizedWallet = String(wallet || "").trim();
+  if (!normalizedWallet) return;
+  state.selectedWallet = normalizedWallet;
+  const requestId = Number(state.walletProfileRequestId || 0) + 1;
+  state.walletProfileRequestId = requestId;
+  if (walletProfileInspectController && typeof walletProfileInspectController.abort === "function") {
     try {
-      state.walletProfile = await fetchJson(`/api/live-trades/wallet/${encodeURIComponent(wallet)}`);
+      walletProfileInspectController.abort();
+    } catch (_error) {
+      // ignore
+    }
+  }
+  walletProfileInspectController =
+    typeof AbortController !== "undefined" ? new AbortController() : null;
+  const currentListRow =
+    seedRow && typeof seedRow === "object"
+      ? seedRow
+      : Array.isArray(state.wallets?.rows)
+        ? state.wallets.rows.find((row) => String(row?.wallet || "").trim() === normalizedWallet) || null
+        : null;
+  try {
+    if (currentListRow) {
+      state.walletProfile = buildWalletProfilePreviewFromSearchRow(currentListRow, normalizedWallet);
+    }
+  } catch (error) {
+    // Keep the inspect flow alive if the preview build fails.
+  }
+  try {
+    renderWalletProfile();
+  } catch (error) {
+    // Keep the inspect flow alive if the optimistic render fails.
+  }
+  try {
+    window.requestAnimationFrame(() => {
+      const panel = el("wallet-profile-panel");
+      if (panel && !panel.hidden && state.selectedWallet === normalizedWallet) {
+        panel.scrollIntoView({ behavior: "smooth", block: "start" });
+      }
+    });
+  } catch (_error) {
+    // ignore scroll failures
+  }
+  const singleFlightKey = `walletProfile:${normalizedWallet}:${String(state.timeframe || "all")}`;
+  const fetchProfile = async () => {
+    try {
+      const params = new URLSearchParams({
+        wallet: normalizedWallet,
+        timeframe: String(state.timeframe || "all"),
+      });
+      const payload = normalizeWalletProfilePayload(
+        await fetchJson(`/api/wallets/profile?${params.toString()}`, {
+          timeoutMs: 30000,
+          signal: walletProfileInspectController ? walletProfileInspectController.signal : null,
+        })
+      );
+      if (state.walletProfileRequestId !== requestId || state.selectedWallet !== normalizedWallet) {
+        return payload;
+      }
+      state.walletProfile = payload;
+      renderWalletProfile();
+      window.__PF_INSPECT_REPLACED = normalizedWallet;
     } catch (error) {
-      state.walletProfile = {
-        wallet,
+      window.__PF_INSPECT_ERROR = String(error && error.message ? error.message : error || "unknown");
+      if (state.walletProfileRequestId === requestId && state.selectedWallet === normalizedWallet) {
+        if (!state.walletProfile && currentListRow) {
+          state.walletProfile = buildWalletProfilePreviewFromSearchRow(currentListRow, normalizedWallet);
+        }
+        renderWalletProfile();
+      }
+      return normalizeWalletProfilePayload({
+        wallet: normalizedWallet,
         found: false,
         error: error && error.message ? error.message : "wallet_detail_unavailable",
-      };
+      });
     }
-    renderWalletProfile();
     return state.walletProfile;
-  });
+  };
+  runSingleFlight(singleFlightKey, fetchProfile).catch(() => null);
+  return Promise.resolve(state.walletProfile);
+}
+
+if (typeof window !== "undefined") {
+  window.__PF_OPEN_WALLET_INSPECT = (wallet) => {
+    const normalizedWallet = String(wallet || "").trim();
+    const row =
+      normalizedWallet &&
+      window.__PF_WALLET_ROWS_BY_ID &&
+      window.__PF_WALLET_ROWS_BY_ID[normalizedWallet]
+        ? window.__PF_WALLET_ROWS_BY_ID[normalizedWallet]
+        : null;
+    return inspectWallet(normalizedWallet, row).catch(() => null);
+  };
 }
 
 async function refreshAll() {
-  await Promise.allSettled([refreshExchange(), refreshVolumeSeries(), refreshWallets()]);
+  const tasks = [];
+  if (state.view === "wallets") {
+    tasks.push(refreshWallets());
+  } else if (state.view === "token") {
+    tasks.push(refreshExchange(), refreshTokenAnalytics({ silent: true }));
+    if (!(isMinimalUiMode() || isMinimalExchangePayload(state.exchange))) {
+      tasks.push(refreshVolumeSeries());
+    }
+  } else {
+    tasks.push(refreshExchange());
+    if (!(isMinimalUiMode() || isMinimalExchangePayload(state.exchange))) {
+      tasks.push(refreshVolumeSeries());
+    }
+  }
+  await Promise.allSettled(tasks);
   if (state.selectedWallet) {
     await inspectWallet(state.selectedWallet).catch(() => null);
   }
 }
 
 function bindEvents() {
+  bindWalletRangeControls();
+
   document.querySelectorAll(".tab-btn").forEach((btn) => {
-    btn.addEventListener("click", () => applyView(btn.dataset.view));
+    btn.addEventListener("click", (event) => {
+      const nextView = btn.dataset.view;
+      if (nextView === "token") {
+        event.preventDefault();
+        openTokenAnalytics(getPhaseOneTokenSymbol(), state.analyticsTab, {
+          replaceRoute: false,
+          force: false,
+        });
+        return;
+      }
+      applyView(nextView);
+    });
+  });
+
+  document.querySelectorAll("#analytics-tabs .analytics-tab").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const nextMetric = normalizeAnalyticsTab(btn.dataset.analyticsTab || TOKEN_DEFAULT_METRIC);
+      if (!nextMetric) return;
+      state.analyticsTab = nextMetric;
+      syncAnalyticsTabs();
+      renderTokenView();
+      syncRouteFromState({ replace: false });
+    });
+  });
+
+  document.querySelectorAll("[data-token-wallet-sort-key]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const nextKey = String(btn.getAttribute("data-token-wallet-sort-key") || "").trim();
+      if (!nextKey) return;
+      if (state.tokenWalletSortKey === nextKey) {
+        state.tokenWalletSortDir = state.tokenWalletSortDir === "asc" ? "desc" : "asc";
+      } else {
+        state.tokenWalletSortKey = nextKey;
+        state.tokenWalletSortDir = nextKey === "openedAt" ? "asc" : "desc";
+      }
+      state.tokenWalletPage = 1;
+      refreshTokenAnalytics().catch(() => null);
+    });
+  });
+
+  el("token-load-btn")?.addEventListener("click", async () => {
+    const value = resolveTokenSearchSymbol(el("token-symbol-input")?.value || "");
+    if (!value) return;
+    openTokenAnalytics(value, state.analyticsTab, { replaceRoute: false, force: true });
+  });
+
+  el("token-refresh-btn")?.addEventListener("click", async () => {
+    await refreshTokenAnalytics({ force: true });
+  });
+
+  el("token-symbol-input")?.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    el("token-load-btn")?.click();
+  });
+
+  document.querySelectorAll("[data-token-timeframe]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      state.tokenTimeframe = "24h";
+      syncTokenTimeframeButtons();
+      renderTokenView();
+      await refreshTokenAnalytics({ force: true });
+    });
   });
 
   document.querySelectorAll("[data-timeframe]").forEach((btn) => {
@@ -3901,9 +8652,14 @@ function bindEvents() {
     });
   });
 
-  el("wallet-refresh-btn")?.addEventListener("click", async () => {
-    await refreshWallets({ force: true });
-    if (state.selectedWallet) await inspectWallet(state.selectedWallet);
+  document.querySelectorAll("[data-volume-rank-timeframe]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      state.timeframe = btn.dataset.volumeRankTimeframe || "all";
+      state.analyticsTab = "volume";
+      state.volumeRankPage = 1;
+      syncTimeframeButtons();
+      await refreshAll();
+    });
   });
 
   el("wallet-search")?.addEventListener("input", (event) => {
@@ -3920,6 +8676,17 @@ function bindEvents() {
 
   el("wallet-filter-btn")?.addEventListener("click", () => {
     openWalletFiltersModal();
+  });
+
+  el("wallet-page-size")?.addEventListener("change", async (event) => {
+    const nextPageSize = Math.max(
+      1,
+      Math.min(100, toNum(event?.target && "value" in event.target ? event.target.value : state.walletPageSize, 20))
+    );
+    state.walletPageSize = nextPageSize;
+    if (event.target && "value" in event.target) event.target.value = String(nextPageSize);
+    state.walletPage = 1;
+    await refreshWallets({ force: true });
   });
 
   el("wallet-clear-filters-btn")?.addEventListener("click", async () => {
@@ -3987,12 +8754,6 @@ function bindEvents() {
     );
   });
 
-  el("wallet-page-size")?.addEventListener("change", async (event) => {
-    state.walletPageSize = Number(event.target.value || 20);
-    state.walletPage = 1;
-    await refreshWallets();
-  });
-
   el("wallet-prev-btn")?.addEventListener("click", async () => {
     state.walletPage = Math.max(1, state.walletPage - 1);
     await refreshWallets();
@@ -4007,15 +8768,41 @@ function bindEvents() {
   el("wallet-table-body")?.addEventListener("click", async (event) => {
     const target = event.target;
     if (!(target instanceof HTMLElement)) return;
-    const btn = target.closest(".inspect-btn");
-    if (!btn) return;
-    const wallet = btn.getAttribute("data-wallet");
-    if (!wallet) return;
-    await inspectWallet(wallet);
-    const detailCard = el("wallet-profile-panel");
-    if (detailCard) {
-      detailCard.scrollIntoView({ behavior: "smooth", block: "start" });
+    const copyBtn = target.closest("[data-wallet-copy]");
+    if (copyBtn instanceof HTMLElement) {
+      event.preventDefault();
+      event.stopPropagation();
+      const walletValue = String(copyBtn.getAttribute("data-wallet-copy") || "").trim();
+      if (!walletValue) return;
+      const original = copyBtn.textContent || "Copy";
+      try {
+        const copied = await copyTextToClipboard(walletValue);
+        copyBtn.textContent = copied ? "Copied" : "Copy failed";
+      } catch (_error) {
+        copyBtn.textContent = "Copy failed";
+      }
+      window.setTimeout(() => {
+        copyBtn.textContent = original;
+      }, 1200);
+      return;
     }
+    const btn = target.closest(".inspect-btn");
+    const row = target.closest(".wallet-list-row");
+    const wallet = btn?.getAttribute("data-wallet") || row?.getAttribute("data-wallet");
+    if (!wallet) return;
+    inspectWallet(wallet).catch(() => null);
+  });
+
+  el("wallet-table-body")?.addEventListener("keydown", async (event) => {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) return;
+    const row = target.closest(".wallet-list-row");
+    if (!(row instanceof HTMLElement)) return;
+    const wallet = row.getAttribute("data-wallet");
+    if (!wallet) return;
+    event.preventDefault();
+    inspectWallet(wallet).catch(() => null);
   });
 
   el("wallet-profile-close-btn")?.addEventListener("click", () => {
@@ -4023,6 +8810,23 @@ function bindEvents() {
     state.walletProfile = null;
     renderWallets();
     renderWalletProfile();
+  });
+
+  el("wallet-profile-copy-btn")?.addEventListener("click", async (event) => {
+    const target = event.currentTarget;
+    if (!(target instanceof HTMLElement)) return;
+    const walletValue = String(target.getAttribute("data-wallet-copy") || state.selectedWallet || "").trim();
+    if (!walletValue) return;
+    const original = target.textContent || "Copy";
+    try {
+      const copied = await copyTextToClipboard(walletValue);
+      target.textContent = copied ? "Copied" : "Copy failed";
+    } catch (_error) {
+      target.textContent = "Copy failed";
+    }
+    window.setTimeout(() => {
+      target.textContent = original;
+    }, 1200);
   });
 
   document.querySelectorAll("[data-wallet-sort-key]").forEach((btn) => {
@@ -4046,16 +8850,6 @@ function bindEvents() {
     renderExchange();
   });
 
-  document.querySelectorAll("#volume-sort-toggle .sort-mode-btn").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const nextSort = String(btn.dataset.sortMode || "volume");
-      if (!nextSort || state.volumeSort === nextSort) return;
-      state.volumeSort = nextSort;
-      state.volumeRankPage = 1;
-      renderExchange();
-    });
-  });
-
   el("volume-prev-btn")?.addEventListener("click", () => {
     state.volumeRankPage = Math.max(1, state.volumeRankPage - 1);
     renderExchange();
@@ -4071,10 +8865,122 @@ function bindEvents() {
     renderExchange();
   });
 
+  el("volume-rank-focus-btn")?.addEventListener("click", () => {
+    const stage = document.querySelector(".tidal-rank-stage");
+    if (!(stage instanceof HTMLElement)) return;
+    const next = !stage.classList.contains("is-focus-mode");
+    stage.classList.toggle("is-focus-mode", next);
+    const btn = el("volume-rank-focus-btn");
+    if (btn) btn.setAttribute("aria-pressed", next ? "true" : "false");
+  });
+
+  el("volume-rank-body")?.addEventListener("click", (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) return;
+    const row = target.closest("[data-token-symbol]");
+    if (!(row instanceof HTMLElement)) return;
+    const symbol = row.getAttribute("data-token-symbol");
+    if (!symbol) return;
+    openTokenAnalytics(symbol, state.analyticsTab, { replaceRoute: false });
+  });
+
+  el("volume-rank-body")?.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) return;
+    const row = target.closest("[data-token-symbol]");
+    if (!(row instanceof HTMLElement)) return;
+    event.preventDefault();
+    const symbol = row.getAttribute("data-token-symbol");
+    if (!symbol) return;
+    openTokenAnalytics(symbol, state.analyticsTab, { replaceRoute: false });
+  });
+
+  const openTokenWallet = async (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) return;
+    const button = target.closest("[data-token-wallet]");
+    if (!(button instanceof HTMLElement)) return;
+    const wallet = button.getAttribute("data-token-wallet");
+    if (!wallet) return;
+    applyView("wallets");
+    await refreshWallets().catch(() => null);
+    await inspectWallet(wallet).catch(() => null);
+  };
+  el("token-holder-list")?.addEventListener("click", openTokenWallet);
+  el("token-profitable-list")?.addEventListener("click", openTokenWallet);
+  el("token-entry-exit-list")?.addEventListener("click", openTokenWallet);
+  el("token-activity-body")?.addEventListener("click", openTokenWallet);
+  el("token-wallet-position-table")?.addEventListener("click", async (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) return;
+    const button = target.closest("[data-token-wallet-copy]");
+    if (!(button instanceof HTMLElement)) return;
+    const walletValue = String(button.getAttribute("data-token-wallet-copy") || "").trim();
+    if (!walletValue) return;
+    const original = button.textContent || "Copy";
+    try {
+      const copied = await copyTextToClipboard(walletValue);
+      button.textContent = copied ? "Copied" : "Copy failed";
+    } catch (_error) {
+      button.textContent = "Copy failed";
+    }
+    window.setTimeout(() => {
+      button.textContent = original;
+    }, 1400);
+  });
+  el("token-btc-trade-table")?.addEventListener("click", async (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) return;
+    const walletButton = target.closest("[data-token-wallet-trade]");
+    if (walletButton instanceof HTMLElement) {
+      const walletValue = String(walletButton.getAttribute("data-token-wallet-trade") || "").trim();
+      if (!walletValue) return;
+      const original = walletButton.textContent || "Copy";
+      try {
+        const copied = await copyTextToClipboard(walletValue);
+        walletButton.textContent = copied ? "Copied" : "Copy failed";
+      } catch (_error) {
+        walletButton.textContent = "Copy failed";
+      }
+      window.setTimeout(() => {
+        walletButton.textContent = original;
+      }, 1400);
+      return;
+    }
+  });
+  el("token-wallet-prev-btn")?.addEventListener("click", () => {
+    state.tokenWalletPage = Math.max(1, toNum(state.tokenWalletPage, 1) - 1);
+    refreshTokenAnalytics().catch(() => null);
+  });
+  el("token-wallet-next-btn")?.addEventListener("click", () => {
+    state.tokenWalletPage = Math.max(1, toNum(state.tokenWalletPage, 1) + 1);
+    refreshTokenAnalytics().catch(() => null);
+  });
+  el("token-btc-trade-prev-btn")?.addEventListener("click", () => {
+    state.tokenTradePage = Math.max(1, toNum(state.tokenTradePage, 1) - 1);
+    refreshTokenAnalytics().catch(() => null);
+  });
+  el("token-btc-trade-next-btn")?.addEventListener("click", () => {
+    state.tokenTradePage = Math.max(1, toNum(state.tokenTradePage, 1) + 1);
+    refreshTokenAnalytics().catch(() => null);
+  });
+
   el("seriesDaily")?.addEventListener("click", () => updateSeriesToggle("daily"));
   el("seriesWeekly")?.addEventListener("click", () => updateSeriesToggle("weekly"));
   el("seriesMonthly")?.addEventListener("click", () => updateSeriesToggle("monthly"));
-  el("chartCumulative")?.addEventListener("click", () => updateChartType("line"));
+  el("seriesLive")?.addEventListener("click", () => updateSeriesToggle("live"));
+  document.querySelectorAll("[data-exchange-chart-metric]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const nextMetric = normalizeExchangeChartMetric(btn.getAttribute("data-exchange-chart-metric") || "volume");
+      if (state.exchangeChartMetric === nextMetric) return;
+      state.exchangeChartMetric = nextMetric;
+      activeSeries = "daily";
+      activeChartType = "bars";
+      chartHasUserControl = false;
+      renderActiveSeries();
+    });
+  });
 
   const volumeChart = el("volumeChart");
   if (volumeChart) {
@@ -4121,13 +9027,21 @@ function bindEvents() {
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible") {
       handleChartResize();
-      refreshExchange().catch(() => null);
-      refreshVolumeSeries().catch(() => null);
+      requestManagedRefresh("exchangeVisible", () => refreshExchange().catch(() => null), 10000);
+      requestManagedRefresh("walletSyncVisible", () => refreshWalletSync().catch(() => null), 8000);
+      if (!(isMinimalUiMode() || isMinimalExchangePayload(state.exchange)) && exchangeSeriesBootStarted) {
+        requestManagedRefresh("volumeSeriesVisible", () => refreshVolumeSeries().catch(() => null), 15000);
+      }
+      scheduleExchangeSeriesBoot();
+      scheduleExchangeSupplementalHydration();
       if (state.view === "wallets" || state.selectedWallet) {
-        refreshWallets().catch(() => null);
+        requestManagedRefresh("walletsVisible", () => refreshWallets().catch(() => null), 8000);
       }
       if (state.selectedWallet) {
-        inspectWallet(state.selectedWallet).catch(() => null);
+        requestManagedRefresh("walletProfileVisible", () => inspectWallet(state.selectedWallet).catch(() => null), 8000);
+      }
+      if (state.view === "token") {
+        requestManagedRefresh("tokenVisible", () => refreshTokenAnalytics({ silent: true }).catch(() => null), 8000);
       }
     }
   });
@@ -4142,7 +9056,12 @@ function bindEvents() {
 }
 
 function initBackgroundMotion() {
-  if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  if (
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches ||
+    window.matchMedia("(pointer: coarse)").matches
+  ) {
+    return;
+  }
   const root = document.documentElement;
   let targetX = 0;
   let targetY = 0;
@@ -4168,10 +9087,14 @@ function initBackgroundMotion() {
   window.addEventListener(
     "pointermove",
     (event) => {
+      if (document.visibilityState === "hidden") return;
       const w = window.innerWidth || 1;
       const h = window.innerHeight || 1;
-      targetX = ((event.clientX / w) * 2 - 1) * 0.85;
-      targetY = ((event.clientY / h) * 2 - 1) * 0.85;
+      const nextX = ((event.clientX / w) * 2 - 1) * 0.85;
+      const nextY = ((event.clientY / h) * 2 - 1) * 0.85;
+      if (Math.abs(nextX - targetX) < 0.01 && Math.abs(nextY - targetY) < 0.01) return;
+      targetX = nextX;
+      targetY = nextY;
       schedule();
     },
     { passive: true }
@@ -4199,42 +9122,106 @@ async function init() {
   }
   bindEvents();
   closeWalletFiltersModal();
-  renderWalletProfile();
-
-  if (typeof window !== "undefined") {
-    window.__PF_APP_BOOT_STEP = "background_motion";
-  }
-  initBackgroundMotion();
 
   if (typeof window !== "undefined") {
     window.__PF_APP_BOOT_STEP = "apply_route";
   }
+  hydrateInitialStateFromSession();
   applyRouteFromLocation({ replace: true });
+  if (state.view === "wallets") {
+    renderWallets();
+    renderWalletProfile();
+  } else if (state.view === "token") {
+    renderExchange();
+    renderTokenView();
+  } else {
+    renderExchange();
+  }
+  scheduleCrossPageWarmup();
+
+  if (typeof window !== "undefined") {
+    window.__PF_APP_BOOT_STEP = "background_motion";
+  }
+  afterWindowLoad(() => {
+    scheduleIdleTask(() => initBackgroundMotion(), 4000);
+  }, 1200);
 
   if (typeof window !== "undefined") {
     window.__PF_APP_BOOT_STEP = "refresh_exchange";
   }
-  await refreshExchange().catch((error) => {
-    console.warn("initial exchange refresh failed", error);
-  });
-
-  refreshVolumeSeries().catch(() => null);
-  refreshWallets().catch(() => null);
+  if (state.view === "exchange") {
+    if (hasFreshExchangeBootstrap()) {
+      afterWindowLoad(() => {
+        refreshExchange().catch((error) => {
+          console.warn("delayed exchange refresh failed", error);
+        });
+      }, 12000);
+    } else {
+      afterWindowLoad(() => {
+        refreshExchange().catch((error) => {
+          console.warn("initial exchange refresh failed", error);
+        });
+      }, 400);
+    }
+    afterWindowLoad(() => {
+      refreshWalletSync().catch(() => null);
+    }, 2500);
+    afterWindowLoad(() => {
+      scheduleExchangeSeriesBoot();
+    }, 1400);
+  } else if (state.view === "wallets" || state.selectedWallet) {
+    refreshWallets().catch(() => null);
+    afterWindowLoad(() => {
+      refreshWalletSync().catch(() => null);
+    }, 1800);
+  }
+  if (state.view === "token") {
+    afterWindowLoad(() => {
+      refreshTokenAnalytics().catch(() => null);
+    }, 300);
+  }
   if (state.selectedWallet) {
     inspectWallet(state.selectedWallet).catch(() => null);
   }
 
-  startPollingLoop("exchange", () => refreshExchange(), 8000);
-  startPollingLoop("volumeSeries", () => refreshVolumeSeries(), 30000);
-  startPollingLoop("wallets", () => {
-    if (state.view !== "wallets" && !state.selectedWallet) return Promise.resolve(null);
-    return refreshWallets();
-  }, 12000);
-  startPollingLoop("walletProfile", () => {
-    if (!state.selectedWallet) return Promise.resolve(null);
-    return inspectWallet(state.selectedWallet);
+  afterWindowLoad(() => {
+    startPollingLoop("exchange", () => {
+      if (state.view !== "exchange") return Promise.resolve(null);
+      return refreshExchange();
+    }, 30000);
+  }, 45000);
+  afterWindowLoad(() => {
+    startPollingLoop("walletSync", () => {
+      if (state.view !== "exchange" && state.view !== "wallets" && !state.selectedWallet) {
+        return Promise.resolve(null);
+      }
+      return refreshWalletSync();
+    }, 15000);
+  }, 10000);
+  afterWindowLoad(() => {
+    startPollingLoop("volumeSeries", () => {
+      if (state.view !== "exchange") return Promise.resolve(null);
+      if (isMinimalUiMode() || isMinimalExchangePayload(state.exchange)) return Promise.resolve(null);
+      if (!exchangeSeriesBootStarted) return Promise.resolve(null);
+      return refreshVolumeSeries();
+    }, 60000);
+  }, 60000);
+  afterWindowLoad(() => {
+    startPollingLoop("wallets", () => {
+      if (state.view !== "wallets" && !state.selectedWallet) return Promise.resolve(null);
+      return refreshWallets();
+    }, 15000);
+    startPollingLoop("walletProfile", () => {
+      if (!state.selectedWallet) return Promise.resolve(null);
+      return inspectWallet(state.selectedWallet);
+    }, 15000);
   }, 15000);
-
+  afterWindowLoad(() => {
+    startPollingLoop("tokenAnalytics", () => {
+      if (state.view !== "token") return Promise.resolve(null);
+      return refreshTokenAnalytics({ silent: true });
+    }, 15000);
+  }, 20000);
   if (typeof window !== "undefined") {
     window.__PF_APP_BOOT_STEP = "steady_state";
   }
@@ -4247,3 +9234,4 @@ init().catch((error) => {
   }
   setText("status-sync", `Error: ${error.message}`);
 });
+})();

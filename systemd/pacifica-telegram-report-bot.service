@@ -1,0 +1,18 @@
+[Unit]
+Description=Pacifica Telegram Report Bot
+After=network-online.target pacifica-ui-api.service
+Wants=network-online.target
+PartOf=pacifica-flow.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/pacifica-flow
+EnvironmentFile=/root/pacifica-flow/config/runtime.env
+ExecStart=/usr/bin/env PATH=/usr/local/bin:/usr/bin:/bin npm run service:telegram-report-bot
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=15
+
+[Install]
+WantedBy=pacifica-flow.target

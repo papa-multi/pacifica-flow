@@ -1,9 +1,9 @@
-# PacificaFlow Scaffold
+# PacificaFlow
 
-PacificaFlow is a Pacifica-native project scaffold with two core principles:
+PacificaFlow is a Pacifica-native analytics, wallet intelligence, copy trading, and workflow control platform with two core principles:
 
 - Live, replay-safe market/account analytics behind a stable internal API.
-- Self-serve marketplace UX: users can create collections and configure mint launches from UI without manual backend/admin setup.
+- Self-serve product UX: users can operate the platform from the UI without manual backend/admin setup.
 
 ## Run
 
@@ -57,6 +57,16 @@ PORT=3203 npm run worker:global-kpi
 # Terminal 4: UI + API service (reads checkpoints, no background indexing)
 PORT=3200 npm run service:ui-api
 ```
+
+## Configuration and Secrets
+
+Use `config/runtime.example.env` as the template for local configuration.
+
+- Copy it to `config/runtime.env` on your machine.
+- Keep `config/runtime.env` out of git.
+- Store personal API keys, bot tokens, and other secrets only in local runtime files or your deployment environment.
+
+The repository is safe to publish as long as those local runtime files are not committed.
 
 If the UI/API node should only serve merged shard output and not run its own wallet-first scanner:
 

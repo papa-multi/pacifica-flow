@@ -1,4 +1,29 @@
-const WebSocket = global.WebSocket || require("ws");
+let WebSocketImpl = null;
+try {
+  WebSocketImpl = require("ws");
+} catch (_error) {
+  WebSocketImpl = global.WebSocket;
+}
+
+function bindWsEvent(ws, eventName, handler) {
+  if (ws && typeof ws.on === "function") {
+    ws.on(eventName, handler);
+    return;
+  }
+  if (ws && typeof ws.addEventListener === "function") {
+    const mapped =
+      eventName === "message"
+        ? (event) => handler(event && event.data !== undefined ? event.data : event)
+        : eventName === "close"
+        ? () => handler()
+        : eventName === "error"
+        ? (event) => handler(event && event.error ? event.error : event)
+        : handler;
+    ws.addEventListener(eventName, mapped);
+    return;
+  }
+  throw new TypeError(`unsupported_websocket_api:${eventName}`);
+}
 
 function normalizeWallet(value) {
   const text = String(value || "").trim();
@@ -259,10 +284,10 @@ class SolanaLogsTriggerMonitor {
   connect() {
     if (!this.shouldRun || !this.status.enabled) return;
     this.status.connection = "connecting";
-    const ws = new WebSocket(this.wsUrl);
+    const ws = new WebSocketImpl(this.wsUrl);
     this.ws = ws;
 
-    ws.on("open", () => {
+    bindWsEvent(ws, "open", () => {
       this.status.connection = "open";
       this.pendingSubscribeIds.clear();
       this.subscriptionIds.clear();
@@ -280,17 +305,17 @@ class SolanaLogsTriggerMonitor {
       });
     });
 
-    ws.on("message", (buf) => {
-      this.handleMessage(buf.toString());
+    bindWsEvent(ws, "message", (buf) => {
+      this.handleMessage(Buffer.isBuffer(buf) ? buf.toString() : String(buf || ""));
     });
 
-    ws.on("error", (error) => {
+    bindWsEvent(ws, "error", (error) => {
       this.status.lastErrorAt = Date.now();
       this.status.lastError = String(error && error.message ? error.message : error || "ws_error");
       this.status.connection = "error";
     });
 
-    ws.on("close", () => {
+    bindWsEvent(ws, "close", () => {
       this.ws = null;
       this.status.connection = this.shouldRun ? "closed" : "stopped";
       this.scheduleReconnect();

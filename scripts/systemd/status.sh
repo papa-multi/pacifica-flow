@@ -3,12 +3,18 @@ set -euo pipefail
 
 systemctl --no-pager --full status \
   pacifica-flow.target \
+  pacifica-wallet-indexers.target \
   pacifica-live-positions.target \
+  pacifica-repo-state-sync.timer \
+  pacifica-repo-state-sync.service \
   pacifica-proxy-refresh.timer \
   pacifica-proxy-refresh.service \
   pacifica-wallet-indexer.service \
   pacifica-onchain-discovery.service \
   pacifica-global-kpi.service \
-  pacifica-ui-api.service
+  pacifica-ui-api.service \
+  pacifica-telegram-report-bot.service \
+  pacifica-telegram-copilot-bot.service
 
+systemctl --no-pager --full list-units 'pacifica-wallet-indexer@*.service' 2>/dev/null || true
 systemctl --no-pager --full list-units 'pacifica-live-positions@*.service' 2>/dev/null || true

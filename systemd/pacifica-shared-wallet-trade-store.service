@@ -1,0 +1,12 @@
+[Unit]
+Description=Pacifica Shared Wallet Trade Store Builder
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/root/pacifica-flow
+EnvironmentFile=/root/pacifica-flow/config/runtime.env
+ExecStart=/usr/bin/env node /root/pacifica-flow/scripts/build_shared_wallet_trade_store.js
+

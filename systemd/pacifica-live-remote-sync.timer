@@ -1,0 +1,10 @@
+[Unit]
+Description=PacificaFlow Live Remote Sync Timer
+
+[Timer]
+OnBootSec=45s
+OnUnitActiveSec=5min
+Unit=pacifica-live-remote-sync.service
+
+[Install]
+WantedBy=timers.target

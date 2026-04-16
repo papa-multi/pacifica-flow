@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Wallet Explorer Public Detail Worker
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+Persistent=true
+Unit=pacifica-wallet-explorer-public-detail-worker.service
+
+[Install]
+WantedBy=timers.target

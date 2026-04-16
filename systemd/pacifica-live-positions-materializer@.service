@@ -1,0 +1,19 @@
+[Unit]
+Description=PacificaFlow Live Positions Materializer Worker Shard %i
+After=network-online.target
+Wants=network-online.target
+PartOf=pacifica-live-positions.target pacifica-flow.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/pacifica-flow
+Nice=0
+OOMScoreAdjust=-100
+ExecStart=/root/pacifica-flow/scripts/systemd/run_live_positions_materializer_shard.sh %i 4
+Restart=always
+RestartSec=3
+TimeoutStopSec=30
+
+[Install]
+WantedBy=pacifica-live-positions.target

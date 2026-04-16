@@ -1,0 +1,6 @@
+[Unit]
+Description=Pacifica Wallet Explorer V2 Workers
+Requires=pacifica-wallet-explorer-v2-mux@0.service pacifica-wallet-explorer-v2-mux@1.service pacifica-wallet-explorer-v2-mux@2.service pacifica-wallet-explorer-v2-mux@3.service
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,11 @@
+[Unit]
+Description=PacificaFlow Live Remote Sync
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/root/pacifica-flow
+ExecStart=/root/pacifica-flow/scripts/systemd/sync_live_remote.sh
+

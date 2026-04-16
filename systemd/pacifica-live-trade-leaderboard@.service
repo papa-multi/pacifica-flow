@@ -1,0 +1,18 @@
+[Unit]
+Description=PacificaFlow Live Trade Leaderboard Worker Shard %i
+After=network-online.target
+Wants=network-online.target
+PartOf=pacifica-live-trade-leaderboard.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/pacifica-flow
+LimitNOFILE=65535
+ExecStart=/root/pacifica-flow/scripts/systemd/run_live_trade_leaderboard_shard.sh %i 8
+Restart=always
+RestartSec=3
+TimeoutStopSec=30
+
+[Install]
+WantedBy=pacifica-live-trade-leaderboard.target

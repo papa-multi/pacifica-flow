@@ -3,9 +3,12 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>PacificaFlow Live Trade</title>
+    <title>PacificaFlow | Live Trade</title>
+    <link rel="icon" type="image/png" href="/favicon.png?v=20260325-brand1" />
+    <link rel="shortcut icon" type="image/png" href="/favicon.png?v=20260325-brand1" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png?v=20260325-brand1" />
     <link rel="stylesheet" href="/theme.css?v=20260310-perf1" />
-    <link rel="stylesheet" href="/live-trade/styles.css?v=20260312-uiaudit1" />
+    <link rel="stylesheet" href="/live-trade/styles.css?v=20260412-ordermarginfix2" />
   </head>
   <body class="lt-body">
     <div class="lt-bg" aria-hidden="true">
@@ -15,28 +18,102 @@
 
     <div class="app-layout">
       <aside class="sidebar">
-        <a class="brand sidebar-brand" href="/">
+        <a class="brand sidebar-brand sidebar-brand-collapsed" href="/" aria-label="PacificaFlow home">
           <span class="brand-mark">
-            <img src="/assets/logo-pacifica.png" alt="Pacifica logo" />
+            <img src="/favicon.png?v=20260325-brand1" alt="Pacifica logo" width="40" height="40" decoding="async" />
+          </span>
+        </a>
+        <a class="brand sidebar-brand sidebar-brand-expanded" href="/" aria-label="PacificaFlow home">
+          <span class="brand-mark">
+            <img src="/favicon.png?v=20260325-brand1" alt="Pacifica logo" width="40" height="40" decoding="async" />
           </span>
           <span class="brand-stack">
             <strong class="brand-wordmark-text">PacificaFlow</strong>
-            <span class="brand-sub">Live Intelligence Workspace</span>
+            <span class="brand-sub">Exchange Intelligence Console</span>
           </span>
         </a>
 
         <nav class="sidebar-nav">
           <a class="tab-link" href="/">
-            <span class="nav-icon" aria-hidden="true">◉</span>
+            <span class="nav-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M5 18V11"></path>
+                <path d="M12 18V6"></path>
+                <path d="M19 18V13"></path>
+                <path d="M4 18.5H20"></path>
+              </svg>
+            </span>
             <span class="nav-label">Exchange Overview</span>
           </a>
-          <a class="tab-link" href="/wallets">
-            <span class="nav-icon" aria-hidden="true">◎</span>
+          <a class="tab-link" href="/wallets-explorer/">
+            <span class="nav-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M4 8.5A2.5 2.5 0 0 1 6.5 6H18a2 2 0 0 1 2 2v1.5"></path>
+                <path d="M4 8.5v7A2.5 2.5 0 0 0 6.5 18H18a2 2 0 0 0 2-2v-5.5H15a2 2 0 0 1 0-4h5"></path>
+                <path d="M15 13h.01"></path>
+              </svg>
+            </span>
             <span class="nav-label">Wallet Explorer</span>
           </a>
+          <a class="tab-link" href="/coin/BTC">
+            <span class="nav-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 3 19 7v10l-7 4-7-4V7l7-4Z"></path>
+                <path d="M9.5 9.5h5v5h-5z"></path>
+              </svg>
+            </span>
+            <span class="nav-label">Coin Analysis</span>
+          </a>
           <a class="tab-link active" href="/live-trade/" aria-current="page">
-            <span class="nav-icon" aria-hidden="true">◌</span>
+            <span class="nav-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M4 17.5h16"></path>
+                <path d="M6.5 14.5 10 11l3 2.5 4.5-6"></path>
+                <path d="M16.5 7.5H19v2.5"></path>
+              </svg>
+            </span>
             <span class="nav-label">Live Trade</span>
+          </a>
+          <a class="tab-link" href="/wallet-performance/">
+            <span class="nav-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M4 18.5H20"></path>
+                <path d="M7 16v-4"></path>
+                <path d="M12 16V8"></path>
+                <path d="M17 16v-7"></path>
+              </svg>
+            </span>
+            <span class="nav-label">Wallet Performance</span>
+          </a>
+          <a class="tab-link" href="/settings/" data-auth-when="authed" hidden>
+            <span class="nav-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7Z"></path>
+                <path d="M4.5 12a7.5 7.5 0 0 1 .08-1.1l1.72-.38a5.8 5.8 0 0 1 .77-1.87l-.96-1.49a7.5 7.5 0 0 1 1.56-1.56l1.49.96a5.8 5.8 0 0 1 1.87-.77L10.45 3.5A7.5 7.5 0 0 1 11.55 3h.9a7.5 7.5 0 0 1 1.1.08l.38 1.72a5.8 5.8 0 0 1 1.87.77l1.49-.96a7.5 7.5 0 0 1 1.56 1.56l-.96 1.49a5.8 5.8 0 0 1 .77 1.87l1.72.38A7.5 7.5 0 0 1 19.5 12a7.5 7.5 0 0 1-.08 1.1l-1.72.38a5.8 5.8 0 0 1-.77 1.87l.96 1.49a7.5 7.5 0 0 1-1.56 1.56l-1.49-.96a5.8 5.8 0 0 1-1.87.77l-.38 1.72A7.5 7.5 0 0 1 12 20.5h-.9a7.5 7.5 0 0 1-1.1-.08l-.38-1.72a5.8 5.8 0 0 1-1.87-.77l-1.49.96a7.5 7.5 0 0 1-1.56-1.56l.96-1.49a5.8 5.8 0 0 1-.77-1.87l-1.72-.38A7.5 7.5 0 0 1 4.5 12Z"></path>
+              </svg>
+            </span>
+            <span class="nav-label">Settings</span>
+          </a>
+          <a class="tab-link" href="/copy-trading/" data-auth-when="copy-trading" hidden>
+            <span class="nav-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M6 8.5h12"></path>
+                <path d="M8 12h8"></path>
+                <path d="M10 15.5h4"></path>
+                <path d="M7 5.5h10a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2v-9a2 2 0 0 1 2-2Z"></path>
+              </svg>
+            </span>
+            <span class="nav-label">Copy Trading</span>
+          </a>
+          <a class="tab-link" href="/social-cart/">
+            <span class="nav-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M5 7.5A1.5 1.5 0 0 1 6.5 6h8A1.5 1.5 0 0 1 16 7.5v9A1.5 1.5 0 0 1 14.5 18h-8A1.5 1.5 0 0 1 5 16.5z"></path>
+                <path d="M14 10l5-5"></path>
+                <path d="M15.5 5H19v3.5"></path>
+              </svg>
+            </span>
+            <span class="nav-label">Social Cart</span>
           </a>
         </nav>
       </aside>
@@ -46,206 +123,50 @@
           <div class="lt-app">
             <div id="lt-runtime-error" class="lt-runtime-error" hidden></div>
 
-            <section class="lt-context-shell">
+            <section class="lt-context-shell lt-context-shell-minimal">
               <div class="lt-context-copy">
-                <span class="lt-context-kicker">Live Trading Workspace</span>
-                <h1>Live Trade Monitor</h1>
+                <span class="lt-context-kicker"></span>
+                <h1>Positions</h1>
               </div>
               <div class="lt-context-telemetry">
                 <span id="lt-live-badge" class="lt-pill lt-pill-live">LIVE</span>
-                <span id="lt-stage-freshness" class="lt-pill">Freshness -</span>
+                <span id="lt-stage-throughput" class="lt-pill">Events -</span>
               </div>
             </section>
 
-            <section class="lt-workbench">
-              <div class="lt-workbench-top">
-                <div class="lt-mode-switch" role="tablist" aria-label="Live trade views">
-                  <button id="lt-view-positions-btn" class="lt-mode-btn active" type="button" role="tab" aria-selected="true" data-view="positions">
-                    <span class="lt-mode-title">Positions</span>
-                  </button>
-                  <button id="lt-view-wallets-btn" class="lt-mode-btn" type="button" role="tab" aria-selected="false" data-view="wallets">
-                    <span class="lt-mode-title">Wallet Performance</span>
-                  </button>
+            <section class="lt-stage lt-stage-single" aria-live="polite">
+              <header class="lt-stage-head">
+                <div class="lt-stage-copy">
+                  <span id="lt-stage-kicker" class="lt-stage-kicker"></span>
+                  <h2 id="lt-stage-title"></h2>
                 </div>
+                <div class="lt-toolbar-actions">
+                  <span id="lt-toolbar-updated" class="lt-pill">Updated -</span>
+                </div>
+              </header>
 
-                <section class="lt-filter-bar">
-                  <div class="lt-filter-grid lt-filter-grid-basic">
-                    <label class="lt-filter-field lt-filter-field-wallet">
-                      <span>Wallet</span>
-                      <input id="lt-filter-wallet" type="text" placeholder="Wallet contains..." />
-                    </label>
-                    <label class="lt-filter-field lt-filter-field-symbol" data-filter-scope="positions">
-                      <span>Symbol</span>
-                      <select id="lt-filter-symbol">
-                        <option value="">All</option>
-                      </select>
-                    </label>
-                    <label class="lt-filter-field lt-filter-field-side" data-filter-scope="positions">
-                      <span>Side</span>
-                      <select id="lt-filter-side">
-                        <option value="">All</option>
-                      </select>
-                    </label>
-                    <label class="lt-filter-field">
-                      <span id="lt-filter-min-usd-label">Min Position USD</span>
-                      <input id="lt-filter-min-usd" type="number" min="0" step="100" placeholder="0" />
-                    </label>
-                    <label class="lt-filter-field">
-                      <span id="lt-filter-max-usd-label">Max Position USD</span>
-                      <input id="lt-filter-max-usd" type="number" min="0" step="100" placeholder="No cap" />
-                    </label>
-                    <button id="lt-reset-filters" class="lt-btn lt-btn-ghost" type="button">Reset</button>
+              <div class="lt-position-table-shell">
+	                <section class="lt-filter-bar" aria-label="Position filters">
+	                  <div class="lt-filter-grid lt-filter-grid-basic">
+	                    <label class="lt-filter-field">
+	                      <span>Wallet</span>
+	                      <input id="lt-filter-wallet" type="text" placeholder="Filter wallet" autocomplete="off" />
+	                    </label>
+	                  </div>
+	                </section>
+                <div id="lt-position-events-board" class="lt-position-events-board"></div>
+	                <footer class="lt-pagination">
+	                  <div class="lt-pagination-left">
+	                    <span id="lt-positions-page-window" class="lt-pill">Rows 0-0</span>
+	                    <span id="lt-positions-page-totals" class="lt-pill">Total rows: 0 • Total pages: 1</span>
+	                  </div>
+	                  <div class="lt-pagination-right">
+	                    <button id="lt-positions-page-prev" class="lt-btn lt-btn-ghost" type="button">Previous</button>
+	                    <span id="lt-positions-page-info" class="lt-pill">Page 1 of 1</span>
+	                    <button id="lt-positions-page-next" class="lt-btn lt-btn-ghost" type="button">Next</button>
                   </div>
-
-                  <details class="lt-filter-advanced">
-                    <summary>Advanced filters</summary>
-                    <div class="lt-filter-grid lt-filter-grid-advanced">
-                      <label class="lt-filter-field">
-                        <span>Freshness</span>
-                        <select id="lt-filter-freshness">
-                          <option value="">All</option>
-                          <option value="fresh">Fresh</option>
-                          <option value="cooling">Cooling</option>
-                          <option value="stale">Stale</option>
-                          <option value="unknown">Unknown</option>
-                          <option value="unresolved">Unresolved</option>
-                        </select>
-                      </label>
-                      <label class="lt-filter-field">
-                        <span id="lt-filter-min-pnl-label">Min Unrealized PnL</span>
-                        <input id="lt-filter-min-pnl" type="number" step="10" placeholder="No floor" />
-                      </label>
-                      <label class="lt-filter-field">
-                        <span id="lt-filter-max-pnl-label">Max Unrealized PnL</span>
-                        <input id="lt-filter-max-pnl" type="number" step="10" placeholder="No cap" />
-                      </label>
-                    </div>
-                    <div class="lt-filter-toggles">
-                      <label class="lt-checkbox">
-                        <input id="lt-filter-tracked" type="checkbox" />
-                        <span>Tracked wallets only</span>
-                      </label>
-                    </div>
-                  </details>
-
-                </section>
+                </footer>
               </div>
-
-              <section class="lt-stage" aria-live="polite">
-                <header class="lt-stage-head">
-                  <div class="lt-stage-copy">
-                    <span id="lt-stage-kicker" class="lt-stage-kicker">Live positions</span>
-                    <h2 id="lt-stage-title">Positions</h2>
-                  </div>
-                </header>
-
-                <details class="lt-system-drawer">
-                  <summary>System snapshot</summary>
-                  <section class="lt-observability-strip" aria-label="Live observability">
-                    <article class="lt-obs-card">
-                      <span class="lt-obs-label">Hot WS Tier</span>
-                      <strong id="lt-obs-hot-value" class="lt-obs-value">-</strong>
-                      <span id="lt-obs-hot-meta" class="lt-obs-meta">-</span>
-                    </article>
-                    <article class="lt-obs-card">
-                      <span class="lt-obs-label">Trigger Latency</span>
-                      <strong id="lt-obs-trigger-value" class="lt-obs-value">-</strong>
-                      <span id="lt-obs-trigger-meta" class="lt-obs-meta">-</span>
-                    </article>
-                    <article class="lt-obs-card">
-                      <span class="lt-obs-label">Public Active Coverage</span>
-                      <strong id="lt-obs-coverage-value" class="lt-obs-value">-</strong>
-                      <span id="lt-obs-coverage-meta" class="lt-obs-meta">-</span>
-                    </article>
-                    <article class="lt-obs-card">
-                      <span class="lt-obs-label">REST Reconciliation</span>
-                      <strong id="lt-obs-reconcile-value" class="lt-obs-value">-</strong>
-                      <span id="lt-obs-reconcile-meta" class="lt-obs-meta">-</span>
-                    </article>
-                  </section>
-                </details>
-
-                <div id="lt-view-positions" class="lt-view is-active" data-view="positions">
-                  <div class="lt-table-wrap lt-table-wrap-positions">
-                    <table id="lt-positions-table">
-                      <thead id="lt-positions-head"></thead>
-                      <tbody id="lt-positions-body"></tbody>
-                    </table>
-                  </div>
-                  <footer class="lt-pagination">
-                    <div class="lt-pagination-left">
-                      <label>
-                        Rows/page
-                        <select id="lt-positions-page-size">
-                          <option value="50">50</option>
-                          <option value="100" selected>100</option>
-                          <option value="250">250</option>
-                          <option value="500">500</option>
-                          <option value="1000">1000</option>
-                        </select>
-                      </label>
-                      <span id="lt-positions-page-window" class="lt-pill">0-0 of 0</span>
-                    </div>
-                    <div class="lt-pagination-right">
-                      <button id="lt-positions-page-prev" class="lt-btn lt-btn-ghost" type="button">Previous</button>
-                      <span id="lt-positions-page-info" class="lt-pill">Page 1 / 1</span>
-                      <button id="lt-positions-page-next" class="lt-btn lt-btn-ghost" type="button">Next</button>
-                    </div>
-                  </footer>
-                </div>
-
-                <div id="lt-view-wallets" class="lt-view" data-view="wallets" hidden>
-                  <section class="lt-wallet-highlights">
-                    <div class="lt-wallet-highlights-head">
-                      <div>
-                        <span class="lt-stage-kicker">Live highlights</span>
-                        <h3 class="lt-live-active-title">Wallet Intelligence Groups</h3>
-                        <p class="lt-wallet-highlights-copy">Most important wallets, ranked by why they matter right now.</p>
-                      </div>
-                      <span id="lt-live-active-total" class="lt-pill">0 wallets</span>
-                    </div>
-                    <div id="lt-wallet-groups-grid" class="lt-wallet-groups-grid"></div>
-                    <div id="lt-wallet-support-note" class="lt-wallet-support-note" hidden></div>
-                  </section>
-                  <div class="lt-table-wrap lt-table-wrap-wallets">
-                    <table id="lt-wallets-table">
-                      <thead id="lt-wallets-head"></thead>
-                      <tbody id="lt-wallets-body"></tbody>
-                    </table>
-                  </div>
-                  <footer class="lt-pagination">
-                    <div class="lt-pagination-left">
-                      <label>
-                        Rows/page
-                        <select id="lt-wallets-page-size">
-                          <option value="50">50</option>
-                          <option value="100" selected>100</option>
-                          <option value="250">250</option>
-                          <option value="500">500</option>
-                        </select>
-                      </label>
-                      <span id="lt-wallets-page-window" class="lt-pill">0-0 of 0</span>
-                    </div>
-                    <div class="lt-pagination-right">
-                      <button id="lt-wallets-page-prev" class="lt-btn lt-btn-ghost" type="button">Previous</button>
-                      <span id="lt-wallets-page-info" class="lt-pill">Page 1 / 1</span>
-                      <button id="lt-wallets-page-next" class="lt-btn lt-btn-ghost" type="button">Next</button>
-                    </div>
-                  </footer>
-                </div>
-
-                <section id="lt-detail-panel" class="lt-detail-panel" hidden tabindex="-1">
-                  <div class="lt-detail-panel-head">
-                    <div class="lt-detail-panel-copy">
-                      <span id="lt-detail-kicker" class="lt-stage-kicker">Wallet detail</span>
-                      <h3 id="lt-detail-title">Select a row</h3>
-                      <p id="lt-detail-subtitle">Choose a position or wallet to inspect more context.</p>
-                    </div>
-                    <button id="lt-detail-close" class="lt-btn lt-btn-ghost" type="button">Close</button>
-                  </div>
-                  <div id="lt-detail-body" class="lt-detail-panel-body"></div>
-                </section>
-              </section>
             </section>
           </div>
         </div>
@@ -295,10 +216,11 @@
         }, 15000);
       })();
     </script>
+    <script src="/auth-ui.js?v=20260413-authui1"></script>
     <script
-      src="/live-trade/app.js?v=20260312-uiaudit1"
+      src="/live-trade/app.v20260412-ordermarginfix2.js"
       onload="window.__PF_LIVE_TRADE_SCRIPT_NETWORK_OK = true;"
-      onerror="window.__PF_LIVE_TRADE_SCRIPT_NETWORK_OK = false; if (window.__PF_SHOW_LIVE_TRADE_RUNTIME_ERROR) { window.__PF_SHOW_LIVE_TRADE_RUNTIME_ERROR('frontend bundle failed to load from /live-trade/app.js'); }"
+      onerror="window.__PF_LIVE_TRADE_SCRIPT_NETWORK_OK = false; if (window.__PF_SHOW_LIVE_TRADE_RUNTIME_ERROR) { window.__PF_SHOW_LIVE_TRADE_RUNTIME_ERROR('frontend bundle failed to load from /live-trade/app.v20260412-ordermarginfix2.js'); }"
     ></script>
   </body>
 </html>

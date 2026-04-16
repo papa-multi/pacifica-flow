@@ -1,4 +1,8 @@
 node_modules
+*.pyc
+.pytest_cache/
+.mypy_cache/
+__pycache__/
 .env
 .env.*
 npm-debug.log*
@@ -7,5 +11,7 @@ npm-debug.log*
 *.log
 
 config/runtime.env
+config/repo-state-sync.json
+config/*.local.env
 data/
 logs/

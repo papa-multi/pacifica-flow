@@ -1,18 +1,22 @@
+const fs = require("fs");
 const path = require("path");
+const readline = require("readline");
 const {
   appendLine,
   ensureDir,
   readJson,
   writeJsonAtomic,
 } = require("../pipeline/utils");
+const { assignShardByKey, normalizeShardItems } = require("./sharding");
 const {
   extractCandidateWalletsFromTransaction,
   extractDepositWalletsFromTransaction,
   normalizeAddress,
 } = require("./wallet_extractor");
 
-const STATE_VERSION = 3;
-const DEFAULT_START_TIME_MS = Date.UTC(2025, 8, 9, 0, 0, 0, 0); // 2025-09-09
+const STATE_VERSION = 5;
+const RAW_TX_RECOVERY_VERSION = 1;
+const DEFAULT_START_TIME_MS = Date.UTC(2025, 4, 31, 23, 2, 32, 0); // 2025-05-31T23:02:32Z
 const DEFAULT_PACIFICA_VAULT = "72R843XwZxqWhsJceARQQTTbYtWy6Zw9et2YV4FpRHTa";
 
 function clamp(value, min, max) {
@@ -29,9 +33,59 @@ function normalizeProgramIds(list = []) {
   );
 }
 
+function normalizeScanTargets({
+  programIds = [],
+  depositVaults = [],
+  scanTargets = [],
+  discoveryType = "deposit_only",
+} = {}) {
+  const explicitTargets = normalizeShardItems(
+    (Array.isArray(scanTargets) ? scanTargets : []).map((target, idx) => ({
+      id: String((target && target.id) || `target_${idx + 1}`),
+      address: normalizeAddress(target && target.address),
+      type: String((target && target.type) || "program").trim().toLowerCase(),
+      label: String((target && target.label) || "").trim(),
+    }))
+  ).filter((target) => target.address);
+
+  if (explicitTargets.length) {
+    return explicitTargets.map((target) => ({
+      ...target,
+      label: target.label || `${target.type}:${target.address.slice(0, 8)}`,
+    }));
+  }
+
+  const discovered = [];
+  normalizeProgramIds(depositVaults).forEach((address, idx) => {
+    discovered.push({
+      id: `vault_${idx + 1}`,
+      address,
+      type: "deposit_vault",
+      label: `deposit_vault:${address.slice(0, 8)}`,
+    });
+  });
+  if (String(discoveryType || "deposit_only").toLowerCase() !== "deposit_only" || !discovered.length) {
+    normalizeProgramIds(programIds).forEach((address, idx) => {
+      if (discovered.some((row) => row.address === address)) return;
+      discovered.push({
+        id: `program_${idx + 1}`,
+        address,
+        type: "program",
+        label: `program:${address.slice(0, 8)}`,
+      });
+    });
+  }
+  return discovered;
+}
+
 function emptyProgramState(programId) {
   return {
     programId,
+    scanTargetId: null,
+    scanTargetType: "program",
+    scanTargetLabel: null,
+    preferredRpcShardId: null,
+    preferredRpcShardIndex: null,
     before: null,
     done: false,
     scannedPages: 0,
@@ -68,6 +122,12 @@ function emptyState(programIds, options = {}) {
     recentSignatures: [],
     pendingTransactions: {},
     walletCount: 0,
+    firstDepositAtMs: null,
+    backfillCompletedAt: null,
+    liveModeSince: null,
+    lastModeTransitionAt: null,
+    rawRecoveryVersion: 0,
+    rawRecoveryAt: null,
     lastScanAt: null,
     lastValidationAt: null,
     lastCheckpointAt: null,
@@ -124,6 +184,8 @@ class OnChainWalletDiscovery {
     this.dataDir = options.dataDir || path.join(process.cwd(), "data", "indexer");
     this.statePath = options.statePath || path.join(this.dataDir, "onchain_state.json");
     this.walletsPath = options.walletsPath || path.join(this.dataDir, "wallet_discovery.json");
+    this.summaryPath =
+      options.summaryPath || path.join(this.dataDir, "wallet_discovery_summary.json");
     this.depositWalletsPath =
       options.depositWalletsPath || path.join(this.dataDir, "deposit_wallets.json");
     this.rawSignaturesPath =
@@ -131,7 +193,8 @@ class OnChainWalletDiscovery {
     this.rawTransactionsPath =
       options.rawTransactionsPath || path.join(this.dataDir, "raw_transactions.ndjson");
 
-    this.programIds = normalizeProgramIds(options.programIds || []);
+    this.protocolProgramIds = normalizeProgramIds(options.programIds || []);
+    this.programIds = this.protocolProgramIds.slice();
     this.excludeAddresses = normalizeProgramIds(options.excludeAddresses || []);
     this.depositVaults = normalizeProgramIds(
       options.depositVaults && options.depositVaults.length
@@ -142,6 +205,16 @@ class OnChainWalletDiscovery {
       String(options.discoveryType || "deposit_only").toLowerCase() === "all_interactions"
         ? "all_interactions"
         : "deposit_only";
+    this.scanTargets = normalizeScanTargets({
+      programIds: this.protocolProgramIds,
+      depositVaults: this.depositVaults,
+      scanTargets: options.scanTargets,
+      discoveryType: this.discoveryType,
+    });
+    if (this.scanTargets.length) {
+      this.programIds = this.scanTargets.map((target) => target.address);
+    }
+    this.scanAddressIds = this.programIds.slice();
 
     this.signaturePageLimit = Math.max(
       1,
@@ -150,7 +223,7 @@ class OnChainWalletDiscovery {
     this.scanPagesPerCycle = Math.max(1, Number(options.scanPagesPerCycle || 1));
 
     this.txConcurrencyMin = 1;
-    this.txConcurrencyMax = Math.max(1, Math.min(8, Number(options.txConcurrency || 1)));
+    this.txConcurrencyMax = Math.max(1, Math.min(12, Number(options.txConcurrency || 1)));
     this.txConcurrency = this.txConcurrencyMax;
 
     this.validationBatchSize = Math.max(0, Number(options.validationBatchSize || 20));
@@ -180,6 +253,9 @@ class OnChainWalletDiscovery {
       endTimeMs: options.endTimeMs,
       mode: options.mode,
     });
+    this.configuredStartTimeMs = Number.isFinite(Number(options.startTimeMs))
+      ? Number(options.startTimeMs)
+      : null;
 
     this.wallets = {};
 
@@ -187,6 +263,9 @@ class OnChainWalletDiscovery {
       running: false,
       inScan: false,
       timer: null,
+      nextRunAt: null,
+      nextDelayMs: null,
+      lastStepDurationMs: null,
       recentSignatureSet: new Set(),
       lastCheckpointAt: 0,
       lastLogAt: 0,
@@ -197,6 +276,7 @@ class OnChainWalletDiscovery {
         lastRemainingMs: null,
         smoothedRate: null, // historical ms reduced per wall-clock ms
       },
+      rawRecoveryRunning: false,
     };
   }
 
@@ -206,7 +286,13 @@ class OnChainWalletDiscovery {
     const loadedState = readJson(this.statePath, null);
     if (
       loadedState &&
-      (loadedState.version === STATE_VERSION || loadedState.version === 2 || loadedState.version === 1)
+      (
+        loadedState.version === STATE_VERSION ||
+        loadedState.version === 4 ||
+        loadedState.version === 3 ||
+        loadedState.version === 2 ||
+        loadedState.version === 1
+      )
     ) {
       this.state = {
         ...emptyState(this.programIds, {
@@ -230,11 +316,28 @@ class OnChainWalletDiscovery {
     } else {
       this.state.startTimeMs = Number(this.state.startTimeMs);
     }
+    if (
+      Number.isFinite(this.configuredStartTimeMs) &&
+      this.configuredStartTimeMs > 0 &&
+      this.configuredStartTimeMs < this.state.startTimeMs
+    ) {
+      this.state.startTimeMs = this.configuredStartTimeMs;
+    }
 
     if (!Number.isFinite(Number(this.state.endTimeMs)) || Number(this.state.endTimeMs) <= 0) {
       this.state.endTimeMs = null;
     } else {
       this.state.endTimeMs = Number(this.state.endTimeMs);
+    }
+
+    if (this.state.mode === "live") {
+      const fallbackAt =
+        Number(this.state.liveModeSince || this.state.backfillCompletedAt || this.state.lastScanAt || 0) ||
+        nowMs();
+      this.state.backfillCompletedAt = Number(this.state.backfillCompletedAt || 0) || fallbackAt;
+      this.state.liveModeSince = Number(this.state.liveModeSince || 0) || fallbackAt;
+      this.state.lastModeTransitionAt =
+        Number(this.state.lastModeTransitionAt || 0) || this.state.liveModeSince;
     }
 
     if (!this.state.pendingTransactions || typeof this.state.pendingTransactions !== "object") {
@@ -312,16 +415,87 @@ class OnChainWalletDiscovery {
   }
 
   save() {
+    const summary = this.buildDiscoverySummary();
     writeJsonAtomic(this.statePath, this.state);
     writeJsonAtomic(this.walletsPath, {
       updatedAt: nowMs(),
       wallets: this.wallets,
     });
+    writeJsonAtomic(this.summaryPath, summary);
     writeJsonAtomic(this.depositWalletsPath, {
       updatedAt: nowMs(),
       total: Object.keys(this.wallets || {}).length,
       wallets: this.listDepositWalletAddresses(),
     });
+  }
+
+  buildDiscoverySummary() {
+    const now = nowMs();
+    const walletEntries = Object.entries(this.wallets || {});
+    const oneHourAgo = now - 60 * 60 * 1000;
+    const sixHoursAgo = now - 6 * 60 * 60 * 1000;
+    const twentyFourHoursAgo = now - 24 * 60 * 60 * 1000;
+    let confirmedWallets = 0;
+    let new1h = 0;
+    let new6h = 0;
+    let new24h = 0;
+    let latestNewWalletAt = 0;
+    const latestWallets = [];
+
+    for (const [wallet, row] of walletEntries) {
+      const validationStatus = String(
+        (row && row.validation && row.validation.status) || ""
+      ).trim().toLowerCase();
+      if (validationStatus === "confirmed") {
+        confirmedWallets += 1;
+      }
+
+      const firstSeenAt = Number((row && row.firstSeenAt) || 0) || 0;
+      if (!Number.isFinite(firstSeenAt) || firstSeenAt <= 0) continue;
+      if (firstSeenAt >= oneHourAgo) new1h += 1;
+      if (firstSeenAt >= sixHoursAgo) new6h += 1;
+      if (firstSeenAt >= twentyFourHoursAgo) new24h += 1;
+      if (firstSeenAt > latestNewWalletAt) latestNewWalletAt = firstSeenAt;
+      latestWallets.push({
+        wallet,
+        firstSeenAt,
+        validationStatus: validationStatus || "unknown",
+      });
+    }
+
+    latestWallets.sort((a, b) => Number(b.firstSeenAt || 0) - Number(a.firstSeenAt || 0));
+    const progress = this.computeProgress();
+    const lastScanAt = Number(this.state.lastScanAt || 0) || null;
+    const staleAfterMs = Math.max(this.scanIntervalMs * 3, 5 * 60 * 1000);
+    let status = "idle";
+    if (lastScanAt) {
+      status = now - lastScanAt <= staleAfterMs ? (this.state.mode === "live" ? "live" : "catch_up") : "stale";
+    }
+
+    return {
+      updatedAt: now,
+      status,
+      mode: String(this.state.mode || "backfill"),
+      scanIntervalMs: this.scanIntervalMs,
+      staleAfterMs,
+      lastScanAt,
+      lastValidationAt: Number(this.state.lastValidationAt || 0) || null,
+      lastCheckpointAt: Number(this.state.lastCheckpointAt || 0) || null,
+      backfillCompletedAt: Number(this.state.backfillCompletedAt || 0) || null,
+      liveModeSince: Number(this.state.liveModeSince || 0) || null,
+      latestNewWalletAt: latestNewWalletAt || null,
+      walletCount: walletEntries.length,
+      confirmedWallets,
+      historyExhausted: Boolean(progress && Number(progress.percentComplete || 0) >= 99.999),
+      percentComplete: Number(progress && progress.percentComplete) || 0,
+      pendingTransactions: Object.keys(this.state.pendingTransactions || {}).length,
+      newWallets: {
+        last1h: new1h,
+        last6h: new6h,
+        last24h: new24h,
+      },
+      latestWallets: latestWallets.slice(0, 5),
+    };
   }
 
   maybeCheckpoint(force = false) {
@@ -336,6 +510,194 @@ class OnChainWalletDiscovery {
     return true;
   }
 
+  noteDepositTime(blockTimeMs) {
+    const value = Number(blockTimeMs || 0);
+    if (!Number.isFinite(value) || value <= 0) return;
+    if (!this.state.firstDepositAtMs || value < Number(this.state.firstDepositAtMs)) {
+      this.state.firstDepositAtMs = value;
+    }
+  }
+
+  async recoverWalletsFromRawTransactions(options = {}) {
+    if (this.runtime.rawRecoveryRunning) {
+      return {
+        ok: true,
+        skipped: true,
+        reason: "recovery_already_running",
+        newWallets: [],
+      };
+    }
+
+    const force = Boolean(options.force);
+    if (
+      !force &&
+      Number(this.state.rawRecoveryVersion || 0) >= RAW_TX_RECOVERY_VERSION
+    ) {
+      return {
+        ok: true,
+        skipped: true,
+        reason: "recovery_up_to_date",
+        newWallets: [],
+      };
+    }
+
+    if (!this.rawTransactionsPath || !fs.existsSync(this.rawTransactionsPath)) {
+      this.state.rawRecoveryVersion = RAW_TX_RECOVERY_VERSION;
+      this.state.rawRecoveryAt = nowMs();
+      this.maybeCheckpoint(true);
+      return {
+        ok: true,
+        skipped: true,
+        reason: "raw_transactions_missing",
+        newWallets: [],
+      };
+    }
+
+    this.runtime.rawRecoveryRunning = true;
+    const newWalletSet = new Set();
+    const out = {
+      ok: true,
+      skipped: false,
+      lines: 0,
+      parsed: 0,
+      depositMatches: 0,
+      walletsDiscovered: 0,
+      walletsUpdated: 0,
+      newWallets: [],
+    };
+
+    try {
+      const rl = readline.createInterface({
+        input: fs.createReadStream(this.rawTransactionsPath, { encoding: "utf8" }),
+        crlfDelay: Infinity,
+      });
+
+      for await (const line of rl) {
+        const text = String(line || "").trim();
+        if (!text) continue;
+        out.lines += 1;
+
+        let row;
+        try {
+          row = JSON.parse(text);
+        } catch (_error) {
+          continue;
+        }
+
+        const tx = row && row.tx ? row.tx : null;
+        if (!tx) continue;
+        out.parsed += 1;
+
+        const signature = row && row.signature ? String(row.signature) : null;
+        const programId = row && row.programId ? String(row.programId) : null;
+        const slot = Number.isFinite(Number(row && row.slot)) ? Number(row.slot) : null;
+        const blockTimeMs =
+          Number.isFinite(Number(row && row.blockTimeMs)) ? Number(row.blockTimeMs) : null;
+
+        const extracted =
+          this.discoveryType === "deposit_only"
+            ? extractDepositWalletsFromTransaction(tx, {
+                programIds:
+                  this.protocolProgramIds && this.protocolProgramIds.length
+                    ? this.protocolProgramIds
+                    : this.programIds,
+                vaults: this.depositVaults,
+                exclude: this.excludeAddresses,
+              })
+            : extractCandidateWalletsFromTransaction(tx, {
+                programIds:
+                  this.protocolProgramIds && this.protocolProgramIds.length
+                    ? this.protocolProgramIds
+                    : this.programIds,
+                exclude: this.excludeAddresses,
+              });
+
+        const candidates = Array.isArray(extracted.candidates) ? extracted.candidates : [];
+        const deposits = Array.isArray(extracted.deposits) ? extracted.deposits : [];
+        out.depositMatches += deposits.length;
+
+        deposits.forEach((deposit) => {
+          if (!deposit || !deposit.wallet) return;
+          this.upsertWalletDepositEvidence({
+            wallet: deposit.wallet,
+            signature,
+            slot,
+            blockTimeMs,
+            programId,
+            deposit,
+          });
+          this.noteDepositTime(blockTimeMs);
+        });
+
+        candidates.forEach((candidate) => {
+          const isNew = this.upsertWalletEvidence({
+            wallet: candidate.wallet,
+            programId,
+            signature,
+            slot,
+            blockTimeMs,
+            candidate,
+          });
+          if (isNew) {
+            out.walletsDiscovered += 1;
+            newWalletSet.add(candidate.wallet);
+          } else {
+            out.walletsUpdated += 1;
+          }
+        });
+      }
+
+      out.newWallets = Array.from(newWalletSet.values());
+      this.state.rawRecoveryVersion = RAW_TX_RECOVERY_VERSION;
+      this.state.rawRecoveryAt = nowMs();
+      this.state.walletCount = Object.keys(this.wallets || {}).length;
+      this.maybeCheckpoint(true);
+      return out;
+    } finally {
+      this.runtime.rawRecoveryRunning = false;
+    }
+  }
+
+  getScanTarget(programId) {
+    const normalized = normalizeAddress(programId);
+    if (!normalized) return null;
+    return (
+      this.scanTargets.find((target) => target && target.address === normalized) || {
+        id: normalized,
+        address: normalized,
+        type: "program",
+        label: `program:${normalized.slice(0, 8)}`,
+      }
+    );
+  }
+
+  computeRpcShardPreference(programId) {
+    const rpcStats =
+      this.rpcClient && typeof this.rpcClient.getStats === "function"
+        ? this.rpcClient.getStats()
+        : null;
+    const shards =
+      rpcStats && Array.isArray(rpcStats.shards)
+        ? rpcStats.shards
+            .map((row, idx) => ({
+              id: String((row && row.id) || `rpc_${idx + 1}`),
+              index: idx,
+            }))
+            .filter((row) => row.id)
+        : [];
+    if (!shards.length) {
+      return {
+        preferredRpcShardId: null,
+        preferredRpcShardIndex: null,
+      };
+    }
+    const assigned = assignShardByKey(`scan:${programId}`, shards);
+    return {
+      preferredRpcShardId: assigned && assigned.item ? assigned.item.id : shards[0].id,
+      preferredRpcShardIndex: assigned ? assigned.index : 0,
+    };
+  }
+
   configurePrograms(programIds = []) {
     const nextIds = normalizeProgramIds(programIds);
     if (nextIds.length) {
@@ -348,10 +710,17 @@ class OnChainWalletDiscovery {
     const merged = {};
     this.programIds.forEach((programId) => {
       const prev = knownStates[programId] || emptyProgramState(programId);
+      const target = this.getScanTarget(programId);
+      const rpcShardPreference = this.computeRpcShardPreference(programId);
       merged[programId] = {
         ...emptyProgramState(programId),
         ...prev,
         programId,
+        scanTargetId: target && target.id ? target.id : programId,
+        scanTargetType: target && target.type ? target.type : "program",
+        scanTargetLabel: target && target.label ? target.label : null,
+        preferredRpcShardId: rpcShardPreference.preferredRpcShardId,
+        preferredRpcShardIndex: rpcShardPreference.preferredRpcShardIndex,
       };
     });
 
@@ -359,8 +728,36 @@ class OnChainWalletDiscovery {
   }
 
   setMode(mode) {
-    this.state.mode = mode === "live" ? "live" : "backfill";
+    const nextMode = mode === "live" ? "live" : "backfill";
+    const changed = this.state.mode !== nextMode;
+    this.state.mode = nextMode;
+    if (changed) {
+      const at = nowMs();
+      this.state.lastModeTransitionAt = at;
+      if (nextMode === "live") {
+        this.state.backfillCompletedAt = this.state.backfillCompletedAt || at;
+        this.state.liveModeSince = at;
+      }
+    }
     this.maybeCheckpoint(true);
+  }
+
+  shouldAutoPromoteToLive(progress = null) {
+    const safeProgress = progress && typeof progress === "object" ? progress : this.computeProgress();
+    return (
+      this.state.mode === "backfill" &&
+      Number(safeProgress && safeProgress.pct) >= 100 &&
+      Number(safeProgress && safeProgress.pendingTransactions) <= 0 &&
+      Boolean(safeProgress && safeProgress.historyExhausted) &&
+      Boolean(safeProgress && safeProgress.windowReached)
+    );
+  }
+
+  maybePromoteToLive(progress = null) {
+    const safeProgress = progress && typeof progress === "object" ? progress : this.computeProgress();
+    if (!this.shouldAutoPromoteToLive(safeProgress)) return false;
+    this.setMode("live");
+    return true;
   }
 
   setWindow({ startTimeMs, endTimeMs }) {
@@ -647,6 +1044,7 @@ class OnChainWalletDiscovery {
     record.updatedAt = nowMs();
     this.wallets[normalizedWallet] = record;
     this.state.walletCount = Object.keys(this.wallets).length;
+    this.noteDepositTime(blockTimeMs);
     return true;
   }
 
@@ -783,6 +1181,7 @@ class OnChainWalletDiscovery {
             commitment: options.commitment || "confirmed",
             cost: this.transactionScanCost,
             timeoutMs: 20000,
+            partitionKey: `transaction:${signature}`,
           });
 
           results[current] = {
@@ -992,12 +1391,18 @@ class OnChainWalletDiscovery {
       const extracted =
         this.discoveryType === "deposit_only"
           ? extractDepositWalletsFromTransaction(row.tx, {
-              programIds: this.programIds,
+              programIds:
+                this.protocolProgramIds && this.protocolProgramIds.length
+                  ? this.protocolProgramIds
+                  : this.programIds,
               vaults: this.depositVaults,
               exclude: this.excludeAddresses,
             })
           : extractCandidateWalletsFromTransaction(row.tx, {
-              programIds: this.programIds,
+              programIds:
+                this.protocolProgramIds && this.protocolProgramIds.length
+                  ? this.protocolProgramIds
+                  : this.programIds,
               exclude: this.excludeAddresses,
             });
 
@@ -1020,6 +1425,7 @@ class OnChainWalletDiscovery {
             programId,
             deposit,
           });
+          this.noteDepositTime(pending.blockTimeMs || null);
         }
       });
       for (const candidate of candidates) {
@@ -1051,9 +1457,16 @@ class OnChainWalletDiscovery {
   async scanProgram(programId) {
     const programState = this.state.programs[programId] || emptyProgramState(programId);
     this.state.programs[programId] = programState;
+    const scanTarget = this.getScanTarget(programId);
 
     const out = {
       programId,
+      scanTargetId: programState.scanTargetId || (scanTarget && scanTarget.id) || programId,
+      scanTargetType: programState.scanTargetType || (scanTarget && scanTarget.type) || "program",
+      scanTargetLabel:
+        programState.scanTargetLabel || (scanTarget && scanTarget.label) || null,
+      preferredRpcShardId: programState.preferredRpcShardId || null,
+      preferredRpcShardIndex: Number(programState.preferredRpcShardIndex || 0) || 0,
       pages: 0,
       signaturesFetched: 0,
       signaturesAccepted: 0,
@@ -1088,8 +1501,10 @@ class OnChainWalletDiscovery {
 
       let signatures;
       try {
-        signatures = await this.rpcClient.getSignaturesForAddress(programId, query, {
+        signatures = await this.rpcClient.getSignaturesForAddress(programId, {
+          ...query,
           cost: this.signatureScanCost,
+          partitionKey: `scan:${programId}`,
         });
       } catch (error) {
         programState.lastError = error.message;
@@ -1168,6 +1583,8 @@ class OnChainWalletDiscovery {
           observedAt: nowMs(),
           source: "solana_rpc",
           programId,
+          scanTargetId: out.scanTargetId,
+          scanTargetType: out.scanTargetType,
           ...row,
           blockTimeMs,
         });
@@ -1562,9 +1979,44 @@ class OnChainWalletDiscovery {
     this.runtime.inScan = true;
 
     try {
-      const pages = Math.max(1, Number(options.pages || 1));
       const scanResults = [];
       const newWalletSet = new Set();
+      const recovery = await this.recoverWalletsFromRawTransactions();
+      if (
+        recovery &&
+        !recovery.skipped &&
+        (
+          Number(recovery.depositMatches || 0) > 0 ||
+          Number(recovery.walletsDiscovered || 0) > 0 ||
+          Number(recovery.walletsUpdated || 0) > 0
+        )
+      ) {
+        scanResults.push({
+          programId: "__raw_recovery__",
+          pages: 0,
+          signaturesFetched: 0,
+          signaturesAccepted: 0,
+          pendingQueued: 0,
+          transactionsFetched: 0,
+          transactionsDeferred: 0,
+          transactionsMissing: 0,
+          transactionsRetried: 0,
+          retriesDropped: 0,
+          depositMatches: Number(recovery.depositMatches || 0),
+          walletsDiscovered: Number(recovery.walletsDiscovered || 0),
+          walletsUpdated: Number(recovery.walletsUpdated || 0),
+          pendingRemaining: Object.keys(this.state.pendingTransactions || {}).length,
+          currentSlot: null,
+          currentBlockTimeMs: null,
+          done: false,
+          reachedWindowStart: false,
+          errors: [],
+          newWallets: recovery.newWallets || [],
+        });
+        (recovery.newWallets || []).forEach((wallet) => newWalletSet.add(wallet));
+      }
+
+      const pages = Math.max(1, Number(options.pages || 1));
 
       for (let i = 0; i < pages; i += 1) {
         const programId = this.pickProgram();
@@ -1631,7 +2083,10 @@ class OnChainWalletDiscovery {
         ? this.rpcClient.getStats()
         : null;
 
-      const progress = this.computeProgress();
+      let progress = this.computeProgress();
+      if (this.maybePromoteToLive(progress)) {
+        progress = this.computeProgress();
+      }
 
       this.logCycleMetrics({
         scanResults,
@@ -1747,28 +2202,115 @@ class OnChainWalletDiscovery {
     };
   }
 
+  buildSchedulingSnapshot() {
+    return {
+      baseIntervalMs: this.scanIntervalMs,
+      nextRunAt: this.runtime.nextRunAt,
+      nextDelayMs: this.runtime.nextDelayMs,
+      lastDurationMs: this.runtime.lastStepDurationMs,
+    };
+  }
+
+  computeEtaMs(progress = null) {
+    const safeProgress = progress && typeof progress === "object" ? progress : this.computeProgress();
+    if (!Number.isFinite(Number(safeProgress.remainingMs))) return null;
+    const throughput = this.runtime.throughput;
+    if (
+      Number.isFinite(Number(throughput.smoothedRate)) &&
+      Number(throughput.smoothedRate) > 0
+    ) {
+      return Math.round(Number(safeProgress.remainingMs) / Number(throughput.smoothedRate));
+    }
+    return null;
+  }
+
+  computeStepDelayMs(lastResult = null) {
+    const progress = this.computeProgress();
+    const rpc =
+      this.rpcClient && typeof this.rpcClient.getStats === "function"
+        ? this.rpcClient.getStats()
+        : null;
+    const txMethod = rpc && rpc.methods ? rpc.methods.getTransaction : null;
+    const sigMethod = rpc && rpc.methods ? rpc.methods.getSignaturesForAddress : null;
+    const ratePressure =
+      Number((txMethod && txMethod.backoffRemainingMs) || 0) > 0 ||
+      Number((sigMethod && sigMethod.backoffRemainingMs) || 0) > 0 ||
+      Number((rpc && rpc.rate429PerMin) || 0) > 0;
+    let delayMs = this.scanIntervalMs;
+
+    if (progress.mode === "backfill" && Number(progress.pct || 0) < 100) {
+      delayMs = Math.min(delayMs, 5000);
+    }
+    if (Number(progress.pendingTransactions || 0) > 0) {
+      delayMs = Math.min(delayMs, 2500);
+    }
+    if (lastResult && Array.isArray(lastResult.newWallets) && lastResult.newWallets.length > 0) {
+      delayMs = Math.min(delayMs, 3000);
+    }
+    if (ratePressure) {
+      delayMs = Math.max(
+        delayMs,
+        Number((txMethod && txMethod.backoffRemainingMs) || 0),
+        Number((sigMethod && sigMethod.backoffRemainingMs) || 0),
+        Math.round(this.scanIntervalMs * 1.5)
+      );
+    }
+    if (
+      progress.mode === "backfill" &&
+      Number(progress.pct || 0) >= 100 &&
+      Number(progress.pendingTransactions || 0) <= 0
+    ) {
+      delayMs = Math.max(delayMs, Math.round(this.scanIntervalMs * 2));
+    }
+
+    return Math.max(1500, Math.round(delayMs));
+  }
+
+  scheduleLoop(delayMs = null) {
+    if (!this.runtime.running) return;
+    if (this.runtime.timer) {
+      clearTimeout(this.runtime.timer);
+      this.runtime.timer = null;
+    }
+    const nextDelay = Math.max(0, Number(delayMs !== null ? delayMs : this.computeStepDelayMs()) || 0);
+    this.runtime.nextDelayMs = nextDelay;
+    this.runtime.nextRunAt = Date.now() + nextDelay;
+    this.runtime.timer = setTimeout(async () => {
+      this.runtime.timer = null;
+      const startedAt = Date.now();
+      let result = null;
+      try {
+        result = await this.discoverStep({
+          pages: this.scanPagesPerCycle,
+          validateLimit: this.validationBatchSize,
+        });
+        this.maybePromoteToLive(result && result.progress ? result.progress : null);
+        this.state.lastError = null;
+      } catch (error) {
+        this.state.lastError = error.message;
+        this.maybeCheckpoint(true);
+      } finally {
+        this.runtime.lastStepDurationMs = Date.now() - startedAt;
+        this.scheduleLoop(this.computeStepDelayMs(result));
+      }
+    }, nextDelay);
+  }
+
   start() {
     if (this.runtime.running) return;
 
     this.runtime.running = true;
-
-    this.runtime.timer = setInterval(() => {
-      this.discoverStep({
-        pages: this.scanPagesPerCycle,
-        validateLimit: this.validationBatchSize,
-      }).catch((error) => {
-        this.state.lastError = error.message;
-        this.maybeCheckpoint(true);
-      });
-    }, this.scanIntervalMs);
+    this.scheduleLoop(0);
   }
 
   stop() {
     this.runtime.running = false;
     if (this.runtime.timer) {
-      clearInterval(this.runtime.timer);
+      clearTimeout(this.runtime.timer);
       this.runtime.timer = null;
     }
+    this.runtime.nextRunAt = null;
+    this.runtime.nextDelayMs = null;
     this.maybeCheckpoint(true);
   }
 
@@ -1776,6 +2318,12 @@ class OnChainWalletDiscovery {
     const now = nowMs();
     const programStatuses = Object.values(this.state.programs || {}).map((row) => ({
       programId: row.programId,
+      scanTargetId: row.scanTargetId || row.programId,
+      scanTargetType: row.scanTargetType || "program",
+      scanTargetLabel: row.scanTargetLabel || null,
+      preferredRpcShardId: row.preferredRpcShardId || null,
+      preferredRpcShardIndex:
+        Number.isFinite(Number(row.preferredRpcShardIndex)) ? Number(row.preferredRpcShardIndex) : null,
       before: row.before,
       done: Boolean(row.done),
       scannedPages: Number(row.scannedPages || 0),
@@ -1798,26 +2346,39 @@ class OnChainWalletDiscovery {
     const rpc = this.rpcClient && typeof this.rpcClient.getStats === "function"
       ? this.rpcClient.getStats()
       : null;
+    const progress = this.computeProgress();
+    const etaMs = this.computeEtaMs(progress);
 
     return {
       running: this.runtime.running,
       inScan: this.runtime.inScan,
       discoveryType: this.discoveryType,
+      protocolProgramIds: this.protocolProgramIds,
       depositVaults: this.depositVaults,
+      scanTargets: this.scanTargets,
       mode: this.state.mode,
+      backfillCompletedAt: Number(this.state.backfillCompletedAt || 0) || null,
+      liveModeSince: Number(this.state.liveModeSince || 0) || null,
+      lastModeTransitionAt: Number(this.state.lastModeTransitionAt || 0) || null,
       startTimeMs: this.state.startTimeMs,
       endTimeMs: this.state.endTimeMs,
       programCount: this.programIds.length,
       programs: programStatuses,
       walletCount: this.state.walletCount,
       confirmedWallets: confirmed,
+      firstDepositAtMs: this.state.firstDepositAtMs || null,
+      rawRecoveryVersion: Number(this.state.rawRecoveryVersion || 0),
+      rawRecoveryAt: this.state.rawRecoveryAt || null,
       pendingTransactions: Object.keys(this.state.pendingTransactions || {}).length,
       txConcurrency: {
         current: this.txConcurrency,
         min: this.txConcurrencyMin,
         max: this.txConcurrencyMax,
       },
-      progress: this.computeProgress(),
+      progress,
+      discoverySummary: this.buildDiscoverySummary(),
+      etaMs,
+      autoLiveTransitionReady: this.shouldAutoPromoteToLive(progress),
       lastScanAt: this.state.lastScanAt,
       lastValidationAt: this.state.lastValidationAt,
       lastCheckpointAt: this.state.lastCheckpointAt,
@@ -1825,6 +2386,7 @@ class OnChainWalletDiscovery {
       lastError: this.state.lastError,
       secondsSinceLastTx429:
         this.runtime.lastTx429At > 0 ? Math.floor((now - this.runtime.lastTx429At) / 1000) : null,
+      scheduling: this.buildSchedulingSnapshot(),
       rpc,
     };
   }

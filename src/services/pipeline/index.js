@@ -48,16 +48,24 @@ class PacificaPipelineService {
     this.serviceName = options.serviceName || "all";
     this.persistEveryMs = Math.max(200, Number(options.persistEveryMs || 1000));
     this.lastPersistAt = 0;
+    this.skipReplay =
+      options.skipReplay === undefined || options.skipReplay === null
+        ? null
+        : Boolean(options.skipReplay);
   }
 
-  async load() {
+  async load(options = {}) {
     this.identity.load();
     this.events.load();
     this.state.load();
     this.metrics.load();
 
     const skipReplay =
-      String(process.env.PACIFICA_PIPELINE_SKIP_REPLAY || "false").toLowerCase() === "true";
+      options.skipReplay !== undefined
+        ? Boolean(options.skipReplay)
+        : this.skipReplay !== null
+        ? this.skipReplay
+        : String(process.env.PACIFICA_PIPELINE_SKIP_REPLAY || "false").toLowerCase() === "true";
     if (skipReplay) {
       // Fast-start mode: trust persisted snapshots and avoid replaying large event logs.
       this.metrics.refresh(this.state.getState());

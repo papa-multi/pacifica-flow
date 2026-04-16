@@ -4,11 +4,27 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>PacificaFlow | Exchange Intelligence</title>
-    <link rel="stylesheet" href="/styles.css?v=20260312-uiaudit1" />
+    <link rel="icon" type="image/png" href="/favicon.png?v=20260325-brand1" />
+    <link rel="shortcut icon" type="image/png" href="/favicon.png?v=20260325-brand1" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png?v=20260325-brand1" />
+    <link rel="preload" href="/assets/bg_new_2048.webp?v=20260326-perf5" as="image" type="image/webp" fetchpriority="high" />
+    <style>
+      :root{--pf-sidebar-collapsed:74px;--pf-content-max:1560px;--pf-shell-gap:22px;--pf-bg:#0a1826;--pf-text-main:#f1f7fc;--pf-font-display:"Aptos","Segoe UI Semibold","Segoe UI","Helvetica Neue",Arial,sans-serif;--pf-font-body:"Aptos","Segoe UI","Helvetica Neue",Arial,sans-serif;--pf-font-mono:"Cascadia Mono","SFMono-Regular",Consolas,"Liberation Mono",monospace}
+      *{box-sizing:border-box}html,body{margin:0;min-height:100%}body{background:var(--pf-bg);color:var(--pf-text-main);font-family:var(--pf-font-body);line-height:1.45;overflow-x:hidden}[hidden]{display:none!important}
+      .bg-scene,.bg-layer,.bg-image{position:fixed;inset:0}.bg-scene{z-index:-3;pointer-events:none;overflow:hidden}.bg-image{width:100%;height:100%;object-fit:cover;opacity:.46;pointer-events:none}
+      .app-layout{display:flex;min-height:100vh}.sidebar{position:fixed;inset:0 auto 0 0;width:74px;padding:18px 12px}.shell{flex:1;min-width:0;padding-left:calc(var(--pf-sidebar-collapsed) + var(--pf-shell-gap))}.shell-container{width:min(var(--pf-content-max),calc(100vw - 120px));margin:0 auto;padding:24px 0 48px}
+      .sidebar-brand{display:inline-flex;align-items:center;justify-content:center;width:100%;gap:11px}.sidebar-brand-collapsed{display:inline-flex}.sidebar-brand-expanded{display:none}.sidebar:hover .sidebar-brand-collapsed{display:none}.sidebar:hover .sidebar-brand-expanded{display:inline-flex;justify-content:flex-start}.brand-mark{display:inline-flex;align-items:center;justify-content:center;width:44px;height:44px;flex:0 0 44px}.brand-mark img{display:block;width:44px;height:44px}.brand-stack{display:grid;align-content:center;gap:4px;max-width:0;opacity:0;overflow:hidden;transform:translateX(-5px)}.sidebar:not(:hover) .brand-stack{display:none!important;max-width:0!important;width:0!important;min-width:0!important;flex:0 0 0!important;opacity:0!important;margin-left:0!important;overflow:hidden;pointer-events:none}.sidebar:not(:hover) .brand-mark{margin:0 auto}.sidebar:not(:hover) .sidebar-brand-collapsed{width:44px!important;max-width:44px!important;margin-inline:auto!important;justify-content:center!important;gap:0!important;overflow:hidden!important}.sidebar:hover .brand-stack{display:grid!important;max-width:176px;opacity:1;transform:translateX(0)}
+      .exchange-topline h1,.view-header h1{margin:0;font-family:var(--pf-font-display);font-size:clamp(28px,3vw,40px);line-height:1.02}.markets-ticker{min-height:68px;margin-bottom:10px;visibility:hidden}.markets-ticker[data-ready="true"]{visibility:visible}
+      .kpi-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(188px,1fr));gap:14px;min-height:166px}.kpi-card{min-height:150px;padding:18px;border-radius:14px;border:1px solid rgba(221,239,250,.14);background:rgba(8,16,28,.16)}
+      .chart-wrap{min-height:430px;border-radius:18px;border:1px solid rgba(220,238,249,.18);background:rgba(9,17,29,.2)}.volume-chart{height:clamp(360px,46vh,470px);min-height:360px}.tidal-rank-list{min-height:0}
+    </style>
+    <link rel="preload" href="/styles.css?v=20260411-volumerankhero10" as="style" onload="this.onload=null;this.rel='stylesheet'" />
+    <noscript><link rel="stylesheet" href="/styles.css?v=20260411-volumerankhero10" /></noscript>
   </head>
   <body>
     <div id="pf-runtime-error" class="lt-runtime-error" hidden></div>
     <div class="bg-scene" aria-hidden="true">
+      <img class="bg-image" src="/assets/bg_new_2048.webp?v=20260326-perf5" width="2048" height="1152" alt="" fetchpriority="high" decoding="async" />
       <div class="bg-layer bg-main"></div>
       <div class="bg-layer bg-grade"></div>
       <div class="bg-layer bg-water-motion"></div>
@@ -19,9 +35,14 @@
     </div>
     <div class="app-layout">
       <aside class="sidebar">
-        <a class="brand sidebar-brand" href="/">
+        <a class="brand sidebar-brand sidebar-brand-collapsed" href="/" aria-label="PacificaFlow home">
           <span class="brand-mark">
-            <img src="/assets/logo-pacifica.png" alt="Pacifica logo" />
+            <img src="/favicon.png?v=20260325-brand1" alt="Pacifica logo" width="40" height="40" decoding="async" />
+          </span>
+        </a>
+        <a class="brand sidebar-brand sidebar-brand-expanded" href="/" aria-label="PacificaFlow home">
+          <span class="brand-mark">
+            <img src="/favicon.png?v=20260325-brand1" alt="Pacifica logo" width="40" height="40" decoding="async" />
           </span>
           <span class="brand-stack">
             <strong class="brand-wordmark-text">PacificaFlow</strong>
@@ -31,16 +52,99 @@
 
         <nav class="sidebar-nav">
           <button class="tab-btn active" data-view="exchange">
-            <span class="nav-icon" aria-hidden="true">◉</span>
-            <span class="nav-label">Exchange Overview</span>
+            <span class="nav-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M5 18V11"></path>
+                <path d="M12 18V6"></path>
+                <path d="M19 18V13"></path>
+                <path d="M4 18.5H20"></path>
+              </svg>
+            </span>
+            <span class="nav-label">Market Intelligence</span>
           </button>
-          <button class="tab-btn" data-view="wallets">
-            <span class="nav-icon" aria-hidden="true">◎</span>
+          <a
+            class="tab-link"
+            href="/wallets-explorer/"
+            title="Open the Wallet Explorer page."
+          >
+            <span class="nav-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M4 8.5A2.5 2.5 0 0 1 6.5 6H18a2 2 0 0 1 2 2v1.5"></path>
+                <path d="M4 8.5v7A2.5 2.5 0 0 0 6.5 18H18a2 2 0 0 0 2-2v-5.5H15a2 2 0 0 1 0-4h5"></path>
+                <path d="M15 13h.01"></path>
+              </svg>
+            </span>
             <span class="nav-label">Wallet Explorer</span>
-          </button>
-          <a class="tab-link" href="/live-trade/">
-            <span class="nav-icon" aria-hidden="true">◌</span>
-            <span class="nav-label">Live Trades</span>
+          </a>
+          <a
+            class="tab-btn"
+            data-view="token"
+            href="/coin/BTC"
+            title="Open Coin Analysis."
+            aria-label="Open Coin Analysis"
+          >
+            <span class="nav-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 3 19 7v10l-7 4-7-4V7l7-4Z"></path>
+                <path d="M9.5 9.5h5v5h-5z"></path>
+              </svg>
+            </span>
+            <span class="nav-label">Coin Analysis</span>
+          </a>
+          <a
+            class="tab-link"
+            href="/wallet-performance/"
+            title="Open the Wallet Performance page."
+          >
+            <span class="nav-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M4 18.5H20"></path>
+                <path d="M7 16v-4"></path>
+                <path d="M12 16V8"></path>
+                <path d="M17 16v-7"></path>
+              </svg>
+            </span>
+            <span class="nav-label">Wallet Performance</span>
+          </a>
+          <a
+            class="tab-link"
+            href="/social-cart/"
+            title="Open the Social Cart card generator."
+          >
+            <span class="nav-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M5 7.5A1.5 1.5 0 0 1 6.5 6h8A1.5 1.5 0 0 1 16 7.5v9A1.5 1.5 0 0 1 14.5 18h-8A1.5 1.5 0 0 1 5 16.5z"></path>
+                <path d="M14 10l5-5"></path>
+                <path d="M15.5 5H19v3.5"></path>
+              </svg>
+            </span>
+            <span class="nav-label">Social Cart</span>
+          </a>
+          <a class="tab-link" href="/settings/" title="Open Settings." data-auth-when="authed" hidden>
+            <span class="nav-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7Z"></path>
+                <path d="M4.5 12a7.5 7.5 0 0 1 .08-1.1l1.72-.38a5.8 5.8 0 0 1 .77-1.87l-.96-1.49a7.5 7.5 0 0 1 1.56-1.56l1.49.96a5.8 5.8 0 0 1 1.87-.77L10.45 3.5A7.5 7.5 0 0 1 11.55 3h.9a7.5 7.5 0 0 1 1.1.08l.38 1.72a5.8 5.8 0 0 1 1.87.77l1.49-.96a7.5 7.5 0 0 1 1.56 1.56l-.96 1.49a5.8 5.8 0 0 1 .77 1.87l1.72.38A7.5 7.5 0 0 1 19.5 12a7.5 7.5 0 0 1-.08 1.1l-1.72.38a5.8 5.8 0 0 1-.77 1.87l.96 1.49a7.5 7.5 0 0 1-1.56 1.56l-1.49-.96a5.8 5.8 0 0 1-1.87.77l-.38 1.72A7.5 7.5 0 0 1 12 20.5h-.9a7.5 7.5 0 0 1-1.1-.08l-.38-1.72a5.8 5.8 0 0 1-1.87-.77l-1.49.96a7.5 7.5 0 0 1-1.56-1.56l.96-1.49a5.8 5.8 0 0 1-.77-1.87l-1.72-.38A7.5 7.5 0 0 1 4.5 12Z"></path>
+              </svg>
+            </span>
+            <span class="nav-label">Settings</span>
+          </a>
+          <a
+            class="tab-link"
+            href="/copy-trading/"
+            title="Open Copy Trading."
+            data-auth-when="copy-trading"
+            hidden
+          >
+            <span class="nav-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M6 8.5h12"></path>
+                <path d="M8 12h8"></path>
+                <path d="M10 15.5h4"></path>
+                <path d="M7 5.5h10a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2v-9a2 2 0 0 1 2-2Z"></path>
+              </svg>
+            </span>
+            <span class="nav-label">Copy Trading</span>
           </a>
         </nav>
       </aside>
@@ -50,12 +154,11 @@
           <section id="exchange-view" class="view active">
             <section class="exchange-topline">
               <div class="exchange-topline-copy">
-                <p class="exchange-topline-kicker">Exchange Overview</p>
                 <h1>Pacifica Market Intelligence</h1>
               </div>
             </section>
 
-            <div class="markets-ticker card" id="marketsTicker" hidden>
+            <div class="markets-ticker card" id="marketsTicker" data-ready="false">
               <div class="markets-ticker-viewport" aria-live="polite" aria-label="Pacifica markets ticker">
                 <div class="markets-ticker-track" id="marketsTickerTrack"></div>
               </div>
@@ -67,27 +170,55 @@
                   <h2>Exchange Metrics</h2>
                 </div>
               </div>
-              <section class="kpi-grid" id="exchange-kpis"></section>
+              <section class="kpi-grid" id="exchange-kpis">
+                <article class="kpi-card" aria-hidden="true"></article>
+                <article class="kpi-card" aria-hidden="true"></article>
+                <article class="kpi-card" aria-hidden="true"></article>
+                <article class="kpi-card" aria-hidden="true"></article>
+                <article class="kpi-card" aria-hidden="true"></article>
+                <article class="kpi-card" aria-hidden="true"></article>
+              </section>
             </section>
 
             <section class="chart-stage">
               <div class="chart-stage-head">
                 <div class="chart-stage-title">
-                  <h2 id="chartTitle">Trading Volume</h2>
+                  <h2 id="chartTitle">Total Volume</h2>
+                  <div class="analytics-tabs" aria-label="Exchange metric chart selection">
+                    <button class="analytics-tab active" type="button" data-exchange-chart-metric="volume">
+                      Total Volume
+                    </button>
+                    <button class="analytics-tab" type="button" data-exchange-chart-metric="accounts">
+                      Total Accounts
+                    </button>
+                    <button class="analytics-tab" type="button" data-exchange-chart-metric="activeWallets">
+                      Active Wallets
+                    </button>
+                    <button class="analytics-tab" type="button" data-exchange-chart-metric="trades">
+                      Total Trades
+                    </button>
+                    <button class="analytics-tab" type="button" data-exchange-chart-metric="fees">
+                      Total Fees
+                    </button>
+                    <button class="analytics-tab" type="button" data-exchange-chart-metric="openInterest">
+                      Market Open Interest
+                    </button>
+                  </div>
+                  <p class="chart-stage-note" id="analytics-note"></p>
                   <div class="analytics-legend" id="analytics-legend" hidden></div>
                 </div>
-                <div class="chart-toggle-group" aria-label="Trading volume chart controls">
-                  <button class="chart-toggle-btn" id="seriesDaily" type="button" aria-label="Daily">
+                <div class="chart-toggle-group" aria-label="Metric chart controls">
+                  <button class="chart-toggle-btn active" id="seriesDaily" type="button" aria-label="Daily">
                     D
                   </button>
                   <button class="chart-toggle-btn" id="seriesWeekly" type="button" aria-label="Weekly">
                     W
                   </button>
-                  <button class="chart-toggle-btn active" id="seriesMonthly" type="button" aria-label="Monthly">
+                  <button class="chart-toggle-btn" id="seriesMonthly" type="button" aria-label="Monthly">
                     M
                   </button>
-                  <button class="chart-toggle-btn" id="chartCumulative" type="button" aria-label="Line chart">
-                    L
+                  <button class="chart-toggle-btn" id="seriesLive" type="button" aria-label="Cumulative">
+                    C
                   </button>
                 </div>
               </div>
@@ -109,285 +240,104 @@
               </div>
             </section>
 
-            <section class="rank-stage tidal-rank-stage">
-              <div class="tidal-rank-header panel">
+            <section class="tidal-rank-wrap" aria-labelledby="volume-rank-heading">
+              <div class="tidal-rank-header-outer">
                 <div class="tidal-rank-title-wrap">
-                  <h2>VOLUME RANK</h2>
-                </div>
-                <div class="tidal-rank-meta">
-                  <span class="live-badge tidal-live-badge">LIVE</span>
-                  <span class="muted-pill" id="tidal-last-updated">updated -</span>
+                  <h2 id="volume-rank-heading">Volume Rank</h2>
                 </div>
                 <div class="rank-head-tools tidal-rank-tools">
                   <input id="volume-filter" type="search" placeholder="Filter symbol" />
-                  <div class="sort-toggle" id="volume-sort-toggle">
-                    <button class="sort-mode-btn active" data-sort-mode="volume">Volume</button>
-                    <button class="sort-mode-btn" data-sort-mode="share">Share</button>
-                    <button class="sort-mode-btn" data-sort-mode="momentum">Momentum</button>
-                  </div>
                 </div>
               </div>
-              <div class="tidal-rank-board card">
-                <div class="tidal-rank-list" id="volume-rank-body"></div>
-              </div>
-              <div class="pagination-row volume-pagination-row">
-                <span id="volume-total-label" class="muted-pill">0 symbols</span>
-                <button id="volume-prev-btn" class="btn-ghost">Prev</button>
-                <span id="volume-page-label">Page 1 / 1</span>
-                <button id="volume-next-btn" class="btn-ghost">Next</button>
-              </div>
+              <section class="rank-stage tidal-rank-stage">
+                <div class="tidal-rank-board">
+                  <div class="tidal-rank-list" id="volume-rank-body"></div>
+                </div>
+                <div class="pagination-row volume-pagination-row">
+                  <span id="tidal-last-updated" class="muted-pill">updated -</span>
+                  <span id="volume-total-label" class="muted-pill">0 symbols</span>
+                  <button id="volume-prev-btn" class="btn-ghost">Prev</button>
+                  <span id="volume-page-label">Page 1 / 1</span>
+                  <button id="volume-next-btn" class="btn-ghost">Next</button>
+                </div>
+              </section>
             </section>
 
           </section>
 
-          <section id="wallets-view" class="view" hidden aria-hidden="true">
-            <header class="view-header">
-              <div class="view-header-copy">
-                <p class="view-kicker">Pacifica Intelligence</p>
-                <h1>Wallet Explorer</h1>
-                <p class="view-subtitle">
-                  Discover lifecycle, performance, and ranking of tracked wallets.
-                </p>
+          <section id="token-view" class="view" hidden aria-hidden="true">
+            <section class="token-phase-shell">
+              <div class="token-view-header">
+                <div>
+                  <h1 id="token-page-title">Coin Analysis</h1>
+                </div>
+                <div class="token-header-meta">
+                  <span id="token-symbol-pill" class="wallet-sync-pill muted">Coin BTC</span>
+                  <span id="token-timeframe-pill" class="wallet-sync-pill muted">Window 24H</span>
+                  <span id="token-freshness-pill" class="wallet-sync-pill muted">updated -</span>
+                </div>
               </div>
-            </header>
 
-            <section class="panel controls-panel wallet-controls">
-              <input id="wallet-search" placeholder="Search wallet or symbol" />
-              <select id="wallet-page-size">
-                <option value="20">20 / page</option>
-                <option value="50">50 / page</option>
-                <option value="100">100 / page</option>
-              </select>
-              <button id="wallet-refresh-btn" class="btn-ghost">Refresh</button>
-              <button
-                id="wallet-filter-btn"
-                class="btn-ghost"
-                type="button"
-                aria-haspopup="dialog"
-                aria-controls="wallet-filter-modal"
-                aria-expanded="false"
-              >
-                Filters
-              </button>
-              <button id="wallet-clear-filters-btn" class="btn-ghost" hidden>Clear all</button>
-            </section>
+              <section class="token-search-stage">
+                <article class="panel token-controls-panel">
+                  <div class="token-controls-grid">
+                    <label class="token-control-field" for="token-symbol-input">
+                      <span>Coin Search</span>
+                      <input
+                        id="token-symbol-input"
+                        type="search"
+                        placeholder="Search symbol or name (e.g. BTC, Bitcoin)"
+                        list="token-symbol-options"
+                        autocomplete="off"
+                      />
+                      <datalist id="token-symbol-options"></datalist>
+                    </label>
+                    <button id="token-load-btn" class="btn-ghost" type="button">Search</button>
+                  </div>
+                </article>
+              </section>
 
-            <section id="wallet-filter-summary" class="wallet-filter-summary" hidden></section>
+              <section class="token-pressure-stage">
+                <article class="token-trade-summary token-trade-summary-hero panel">
+                  <div id="token-pressure-overall"></div>
+                  <div id="token-pressure-profitable"></div>
+                </article>
+              </section>
 
-            <section class="panel">
-              <div class="panel-header">
-                <h2>WALLET EXPLORER</h2>
-                <span id="wallet-total-label" class="muted-pill">0 wallets</span>
-              </div>
-              <div class="table-wrap">
-                <table class="wallet-table">
-                  <thead>
-                    <tr>
-                      <th>Wallet</th>
-                      <th><button class="table-sort-btn" type="button" data-wallet-sort-key="trades" data-wallet-sort-label="Trades">Trades <span data-wallet-sort-indicator>↑↓</span></button></th>
-                      <th><button class="table-sort-btn" type="button" data-wallet-sort-key="volumeUsd" data-wallet-sort-label="Volume">Volume <span data-wallet-sort-indicator>↑↓</span></button></th>
-                      <th><button class="table-sort-btn" type="button" data-wallet-sort-key="totalWins" data-wallet-sort-label="Total Wins">Total Wins <span data-wallet-sort-indicator>↑↓</span></button></th>
-                      <th><button class="table-sort-btn" type="button" data-wallet-sort-key="totalLosses" data-wallet-sort-label="Total Losses">Total Losses <span data-wallet-sort-indicator>↑↓</span></button></th>
-                      <th><button class="table-sort-btn" type="button" data-wallet-sort-key="pnlUsd" data-wallet-sort-label="PnL">PnL <span data-wallet-sort-indicator>↑↓</span></button></th>
-                      <th><button class="table-sort-btn" type="button" data-wallet-sort-key="openPositions" data-wallet-sort-label="Open Positions">Open Positions <span data-wallet-sort-indicator>↑↓</span></button></th>
-                      <th><button class="table-sort-btn" type="button" data-wallet-sort-key="winRate" data-wallet-sort-label="Win Rate">Win Rate <span data-wallet-sort-indicator>↑↓</span></button></th>
-                      <th><button class="table-sort-btn" type="button" data-wallet-sort-key="firstTrade" data-wallet-sort-label="First Trade">First Trade <span data-wallet-sort-indicator>↑↓</span></button></th>
-                      <th><button class="table-sort-btn" type="button" data-wallet-sort-key="lastTrade" data-wallet-sort-label="Last Trade">Last Trade <span data-wallet-sort-indicator>↑↓</span></button></th>
-                      <th>Action</th>
-                    </tr>
-                  </thead>
-                  <tbody id="wallet-table-body"></tbody>
-                </table>
-              </div>
-              <div class="pagination-row">
-                <button id="wallet-prev-btn" class="btn-ghost">Prev</button>
-                <span id="wallet-page-label">Page 1 / 1</span>
-                <button id="wallet-next-btn" class="btn-ghost">Next</button>
-              </div>
-            </section>
-
-            <section id="wallet-profile-panel" class="panel detail-card wallet-detail-card">
-              <div class="panel-header wallet-detail-card-head">
-                <h2>Wallet Details</h2>
-                <button id="wallet-profile-close-btn" class="btn-ghost" type="button" hidden>Close</button>
-              </div>
-              <p id="wallet-profile-empty-copy" class="muted wallet-detail-card-copy">
-                Select a wallet to inspect top symbols and open positions.
-              </p>
-              <div id="wallet-profile-body"></div>
+              <section class="token-wallet-table-stage">
+                <article class="panel token-wallet-table-panel">
+                  <div class="panel-header token-wallet-table-panel-header">
+                    <span id="token-wallets-pill-2" class="muted-pill">0 wallets</span>
+                    <span id="token-wallet-validation-pill" class="muted-pill">validation pending</span>
+                  </div>
+                  <div class="token-wallet-table-wrap">
+                    <table class="token-wallet-table">
+                      <thead>
+                        <tr>
+                          <th><button type="button" class="token-table-sort-btn" data-token-wallet-sort-key="wallet"><span class="token-th-label">Wallet address</span><span class="token-sort-indicator" data-token-wallet-sort-indicator>↕</span></button></th>
+                          <th><button type="button" class="token-table-sort-btn" data-token-wallet-sort-key="direction"><span class="token-th-label">Direction</span><span class="token-sort-indicator" data-token-wallet-sort-indicator>↕</span></button></th>
+                          <th><button type="button" class="token-table-sort-btn" data-token-wallet-sort-key="entryPrice"><span class="token-th-label">Entry price</span><span class="token-sort-indicator" data-token-wallet-sort-indicator>↕</span></button></th>
+                          <th><button type="button" class="token-table-sort-btn" data-token-wallet-sort-key="positionSizeUsd"><span class="token-th-label">Position size (USDC)</span><span class="token-sort-indicator" data-token-wallet-sort-indicator>↕</span></button></th>
+                          <th><button type="button" class="token-table-sort-btn" data-token-wallet-sort-key="positionPnlUsd"><span class="token-th-label">Unrealized PnL</span><span class="token-sort-indicator" data-token-wallet-sort-indicator>↕</span></button></th>
+                          <th><button type="button" class="token-table-sort-btn" data-token-wallet-sort-key="openedAt"><span class="token-th-label">Open date</span><span class="token-sort-indicator" data-token-wallet-sort-indicator>↕</span></button></th>
+                        </tr>
+                      </thead>
+                      <tbody id="token-wallet-position-table"></tbody>
+                    </table>
+                  </div>
+                  <div class="pagination-row token-wallet-pagination-row">
+                    <span id="token-wallet-table-total" class="muted-pill">0 wallets</span>
+                    <button id="token-wallet-prev-btn" class="btn-ghost">Prev</button>
+                    <span id="token-wallet-page-label">Page 1 / 1</span>
+                    <button id="token-wallet-next-btn" class="btn-ghost">Next</button>
+                  </div>
+                </article>
+              </section>
             </section>
           </section>
         </div>
       </main>
     </div>
-
-    <div id="wallet-filter-modal" class="filter-modal-backdrop" hidden>
-      <section
-        class="filter-modal"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="wallet-filter-modal-title"
-        aria-hidden="true"
-        tabindex="-1"
-      >
-        <div class="filter-modal-head">
-          <div>
-            <p class="view-kicker">Wallet Explorer</p>
-            <h2 id="wallet-filter-modal-title">Smart Filters</h2>
-          </div>
-          <button id="wallet-filter-close-btn" class="btn-ghost" type="button">Close</button>
-        </div>
-        <div class="filter-modal-groups">
-          <details class="filter-group" data-wallet-filter-group="activity">
-            <summary class="filter-group-summary">
-              <span class="filter-group-title">Wallet Activity</span>
-              <span class="filter-group-meta">
-                <span class="filter-group-count" data-wallet-filter-group-count="activity">0</span>
-                <span class="filter-group-chevron">+</span>
-              </span>
-            </summary>
-            <section class="filter-card">
-              <label>
-                Symbols
-                <input id="wallet-filter-symbols" list="wallet-symbol-options" placeholder="BTC, ETH, SOL" />
-              </label>
-              <label>
-                Side
-                <select id="wallet-filter-side">
-                  <option value="">Any</option>
-                  <option value="long">Long</option>
-                  <option value="short">Short</option>
-                  <option value="mixed">Mixed</option>
-                  <option value="flat">No open positions</option>
-                </select>
-              </label>
-              <label>
-                Open Positions
-                <select id="wallet-filter-open-positions">
-                  <option value="">Any</option>
-                  <option value="has">Has open positions</option>
-                  <option value="none">No open positions</option>
-                </select>
-              </label>
-              <div class="filter-checkbox-group">
-                <span>Status</span>
-                <label><input type="checkbox" data-wallet-filter-status="fresh" /> Fresh</label>
-                <label><input type="checkbox" data-wallet-filter-status="warm" /> Warm</label>
-                <label><input type="checkbox" data-wallet-filter-status="stale" /> Stale</label>
-              </div>
-            </section>
-          </details>
-          <details class="filter-group" data-wallet-filter-group="performance">
-            <summary class="filter-group-summary">
-              <span class="filter-group-title">Performance</span>
-              <span class="filter-group-meta">
-                <span class="filter-group-count" data-wallet-filter-group-count="performance">0</span>
-                <span class="filter-group-chevron">+</span>
-              </span>
-            </summary>
-            <section class="filter-card">
-              <div class="filter-range-grid">
-                <label>
-                  Min Trades
-                  <input id="wallet-filter-min-trades" type="number" min="0" step="1" />
-                </label>
-                <label>
-                  Max Trades
-                  <input id="wallet-filter-max-trades" type="number" min="0" step="1" />
-                </label>
-                <label>
-                  Min Volume
-                  <input id="wallet-filter-min-volume" type="number" step="0.01" />
-                </label>
-                <label>
-                  Max Volume
-                  <input id="wallet-filter-max-volume" type="number" step="0.01" />
-                </label>
-                <label>
-                  Min PnL
-                  <input id="wallet-filter-min-pnl" type="number" step="0.01" />
-                </label>
-                <label>
-                  Max PnL
-                  <input id="wallet-filter-max-pnl" type="number" step="0.01" />
-                </label>
-                <label>
-                  Min Win Rate %
-                  <input id="wallet-filter-min-win-rate" type="number" min="0" max="100" step="0.1" />
-                </label>
-                <label>
-                  Max Win Rate %
-                  <input id="wallet-filter-max-win-rate" type="number" min="0" max="100" step="0.1" />
-                </label>
-              </div>
-            </section>
-          </details>
-          <details class="filter-group" data-wallet-filter-group="exposure">
-            <summary class="filter-group-summary">
-              <span class="filter-group-title">Exposure</span>
-              <span class="filter-group-meta">
-                <span class="filter-group-count" data-wallet-filter-group-count="exposure">0</span>
-                <span class="filter-group-chevron">+</span>
-              </span>
-            </summary>
-            <section class="filter-card">
-              <div class="filter-range-grid">
-                <label>
-                  Min Open Positions
-                  <input id="wallet-filter-min-open-positions" type="number" min="0" step="1" />
-                </label>
-                <label>
-                  Max Open Positions
-                  <input id="wallet-filter-max-open-positions" type="number" min="0" step="1" />
-                </label>
-                <label>
-                  Min Position USD
-                  <input id="wallet-filter-min-exposure" type="number" step="0.01" />
-                </label>
-                <label>
-                  Max Position USD
-                  <input id="wallet-filter-max-exposure" type="number" step="0.01" />
-                </label>
-              </div>
-            </section>
-          </details>
-          <details class="filter-group" data-wallet-filter-group="dates">
-            <summary class="filter-group-summary">
-              <span class="filter-group-title">Date Windows</span>
-              <span class="filter-group-meta">
-                <span class="filter-group-count" data-wallet-filter-group-count="dates">0</span>
-                <span class="filter-group-chevron">+</span>
-              </span>
-            </summary>
-            <section class="filter-card">
-              <div class="filter-range-grid">
-                <label>
-                  First Trade From
-                  <input id="wallet-filter-first-trade-from" type="date" />
-                </label>
-                <label>
-                  First Trade To
-                  <input id="wallet-filter-first-trade-to" type="date" />
-                </label>
-                <label>
-                  Last Trade From
-                  <input id="wallet-filter-last-trade-from" type="date" />
-                </label>
-                <label>
-                  Last Trade To
-                  <input id="wallet-filter-last-trade-to" type="date" />
-                </label>
-              </div>
-            </section>
-          </details>
-        </div>
-        <div class="filter-modal-actions">
-          <button id="wallet-filter-reset-btn" class="btn-ghost" type="button">Reset</button>
-          <button id="wallet-filter-apply-btn" class="btn-ghost" type="button">Apply filters</button>
-        </div>
-      </section>
-    </div>
-    <datalist id="wallet-symbol-options"></datalist>
 
     <script>
       (function () {
@@ -399,12 +349,36 @@
           node.textContent = "Dashboard runtime error: " + message;
           window.__PF_APP_RUNTIME_ERROR_SHOWN = true;
         }
+        function retryFrontendBundle() {
+          if (window.__PF_APP_SCRIPT_RETRY_ATTEMPTED) return false;
+          if (window.__PF_APP_INSTANCE_LOADED || window.__PF_APP_SCRIPT_EXECUTED || window.__PF_APP_BOOTED) return false;
+          if (document.querySelector('script[data-pf-retry-script="1"]')) return false;
+          var current = document.getElementById("pf-app-entry");
+          if (!current || !current.getAttribute) return false;
+          var src = current.getAttribute("src");
+          if (!src) return false;
+          window.__PF_APP_SCRIPT_RETRY_ATTEMPTED = true;
+          var retrySrc = src + (src.indexOf("?") >= 0 ? "&" : "?") + "retry=" + Date.now();
+          var next = document.createElement("script");
+          next.setAttribute("data-pf-retry-script", "1");
+          next.src = retrySrc;
+          next.async = true;
+          next.onload = function () {
+            window.__PF_APP_SCRIPT_NETWORK_OK = true;
+          };
+          next.onerror = function () {
+            window.__PF_APP_SCRIPT_NETWORK_OK = false;
+          };
+          document.body.appendChild(next);
+          return true;
+        }
         window.__PF_APP_SHOW_RUNTIME_ERROR = showRuntimeError;
         window.__PF_APP_SCRIPT_NETWORK_OK = false;
         window.__PF_APP_SCRIPT_EXECUTED = false;
         window.__PF_APP_BOOTED = false;
         window.__PF_APP_BOOT_STEP = "html_init";
         window.__PF_APP_RUNTIME_ERROR_SHOWN = false;
+        window.__PF_APP_SCRIPT_RETRY_ATTEMPTED = false;
         window.addEventListener("error", function (event) {
           var msg = (event && event.message) || "unknown";
           showRuntimeError(msg);
@@ -416,6 +390,16 @@
         });
         setTimeout(function () {
           if (!window.__PF_APP_SCRIPT_NETWORK_OK) {
+            if (retryFrontendBundle()) {
+              setTimeout(function () {
+                if (!window.__PF_APP_SCRIPT_NETWORK_OK) {
+                  showRuntimeError(
+                    "frontend bundle failed to load. Hard refresh (Ctrl+F5). If this persists, the public host is serving a stale or blocked JS asset."
+                  );
+                }
+              }, 8000);
+              return;
+            }
             showRuntimeError(
               "frontend bundle failed to load. Hard refresh (Ctrl+F5). If this persists, the public host is serving a stale or blocked JS asset."
             );
@@ -437,13 +421,76 @@
                 ". Browser JS, API mapping, or stream startup is blocked."
             );
           }
-        }, 15000);
+        }, 60000);
       })();
     </script>
+    <script>
+      (function () {
+        window.__PF_INSPECT_WALLET = function (wallet) {
+          var value = String(wallet || "").trim();
+          if (!value) return false;
+          var selector = '#wallet-table-body .wallet-list-row[data-wallet="' + CSS.escape(value) + '"]';
+          var row = document.querySelector(selector);
+          if (row && row.dispatchEvent) {
+            row.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
+            return true;
+          }
+          var btn = document.querySelector('#wallet-table-body .inspect-btn[data-wallet="' + CSS.escape(value) + '"]');
+          if (btn && btn.click) {
+            btn.click();
+            return true;
+          }
+          return false;
+        };
+      })();
+    </script>
+    <script>
+      (function () {
+        var seen = Object.create(null);
+        function normalizePath(href) {
+          try {
+            var url = new URL(href, window.location.origin);
+            if (url.origin !== window.location.origin) return null;
+            return url.pathname;
+          } catch (_error) {
+            return null;
+          }
+        }
+        function prefetchPath(href) {
+          var pathname = normalizePath(href);
+          if (!pathname || pathname === window.location.pathname || seen[pathname]) return;
+          seen[pathname] = true;
+          var link = document.createElement("link");
+          link.rel = "prefetch";
+          link.as = "document";
+          link.href = pathname;
+          document.head.appendChild(link);
+        }
+        var warm = function () {
+          ["/wallets-explorer/", "/social-cart/", "/copy-trading/", "/coin/BTC"].forEach(prefetchPath);
+        };
+        window.addEventListener("load", function () {
+          window.setTimeout(warm, 8000);
+        }, { once: true });
+        document.addEventListener(
+          "pointerenter",
+          function (event) {
+            var target = event.target;
+            if (!(target instanceof Element)) return;
+            var link = target.closest("a[href]");
+            if (!link) return;
+            prefetchPath(link.href);
+          },
+          true
+        );
+      })();
+    </script>
+    <script src="/auth-ui.js?v=20260413-authui1"></script>
     <script
-      src="/app.js?v=20260312-uiaudit1"
+      id="pf-app-entry"
+      src="/app.js?v=20260413-coin-analysis2"
       onload="window.__PF_APP_SCRIPT_NETWORK_OK = true;"
-      onerror="window.__PF_APP_SCRIPT_NETWORK_OK = false; if (window.__PF_APP_SHOW_RUNTIME_ERROR) { window.__PF_APP_SHOW_RUNTIME_ERROR('frontend bundle failed to load from /app.js'); }"
+      onerror="window.__PF_APP_SCRIPT_NETWORK_OK = false;"
     ></script>
   </body>
 </html>

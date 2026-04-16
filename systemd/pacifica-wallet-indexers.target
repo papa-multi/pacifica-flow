@@ -1,0 +1,6 @@
+[Unit]
+Description=PacificaFlow Wallet Indexer Shards
+PartOf=pacifica-flow.target
+
+[Install]
+WantedBy=pacifica-flow.target

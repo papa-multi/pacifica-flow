@@ -1,0 +1,17 @@
+[Unit]
+Description=Pacifica Storage Prune and Archive Compression
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/root/pacifica-flow
+EnvironmentFile=/root/pacifica-flow/config/runtime.env
+Nice=19
+IOSchedulingClass=idle
+ExecStart=/root/pacifica-flow/scripts/systemd/run_storage_prune.sh
+TimeoutStartSec=0
+
+[Install]
+WantedBy=multi-user.target

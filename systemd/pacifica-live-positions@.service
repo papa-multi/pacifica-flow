@@ -15,4 +15,3 @@ TimeoutStopSec=30
 
 [Install]
 WantedBy=pacifica-live-positions.target
-WantedBy=pacifica-flow.target

@@ -1,0 +1,14 @@
+[Unit]
+Description=PacificaFlow Live Positions Watchdog Timer
+After=network-online.target
+Wants=network-online.target
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+AccuracySec=15s
+Unit=pacifica-live-positions-watchdog.service
+
+[Install]
+WantedBy=timers.target
+

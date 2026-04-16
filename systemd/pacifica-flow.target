@@ -1,10 +1,8 @@
 [Unit]
 Description=PacificaFlow Full Worker Stack
-Wants=pacifica-wallet-indexer.service
-Wants=pacifica-onchain-discovery.service
-Wants=pacifica-global-kpi.service
 Wants=pacifica-ui-api.service
-Wants=pacifica-live-positions.target
+Wants=pacifica-repo-state-sync.timer
+Wants=pacifica-storage-prune.timer
 After=network-online.target
 
 [Install]

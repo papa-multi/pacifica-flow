@@ -1,0 +1,19 @@
+[Unit]
+Description=PacificaFlow Wallet Indexer Shard %i
+After=network-online.target
+Wants=network-online.target
+PartOf=pacifica-wallet-indexers.target pacifica-flow.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/pacifica-flow
+EnvironmentFile=/root/pacifica-flow/config/runtime.env
+Environment=NODE_OPTIONS=--max-old-space-size=2048
+ExecStart=/usr/bin/taskset -c %i /root/pacifica-flow/scripts/systemd/run_wallet_indexer_shard.sh %i
+Restart=always
+RestartSec=3
+TimeoutStopSec=20
+
+[Install]
+WantedBy=pacifica-wallet-indexers.target
