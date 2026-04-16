@@ -19,12 +19,6 @@
 - Copy trading and execution controls
 - Telegram copilot for wallet tracking
 
-## Visual preview
-
-| Copy Trading | Wallet Performance |
-|---|---|
-| <img src="pacifica-copytrade.png" alt="Copy Trading" width="100%" /> | <img src="exports/wallet-performance-live.png" alt="Wallet Performance" width="100%" /> |
-
 ## API surface
 
 <details>
